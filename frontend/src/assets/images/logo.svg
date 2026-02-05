@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="140" height="40" viewBox="0 0 140 40">
+  <!-- GraphInsight Logo - 专业现代版 -->
+  <defs>
+    <linearGradient id="primaryGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#1565c0;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#0d47a1;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="secondaryGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#2e7d32;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#1b5e20;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  
+  <!-- 图标部分 - 知识图谱网络 -->
+  <g transform="translate(5, 5)">
+    <!-- 主节点 -->
+    <circle cx="15" cy="15" r="6" fill="url(#primaryGrad)"/>
+    <!-- 子节点 -->
+    <circle cx="8" cy="8" r="3" fill="url(#secondaryGrad)"/>
+    <circle cx="22" cy="8" r="3" fill="url(#secondaryGrad)"/>
+    <circle cx="8" cy="22" r="3" fill="url(#secondaryGrad)"/>
+    <circle cx="22" cy="22" r="3" fill="url(#secondaryGrad)"/>
+    
+    <!-- 连接线 -->
+    <line x1="15" y1="15" x2="8" y2="8" stroke="#1565c0" stroke-width="2" opacity="0.7"/>
+    <line x1="15" y1="15" x2="22" y2="8" stroke="#1565c0" stroke-width="2" opacity="0.7"/>
+    <line x1="15" y1="15" x2="8" y2="22" stroke="#1565c0" stroke-width="2" opacity="0.7"/>
+    <line x1="15" y1="15" x2="22" y2="22" stroke="#1565c0" stroke-width="2" opacity="0.7"/>
+    
+    <!-- 中心点 -->
+    <circle cx="15" cy="15" r="2" fill="white"/>
+  </g>
+  
+  <!-- 文字部分 -->
+  <text x="45" y="18" font-family="Inter, SF Pro Display, sans-serif" font-size="16" font-weight="700" fill="#1565c0">Graph</text>
+  <text x="45" y="32" font-family="Inter, SF Pro Display, sans-serif" font-size="12" font-weight="500" fill="#2e7d32">Insight</text>
+</svg>

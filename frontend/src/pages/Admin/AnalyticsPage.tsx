@@ -1,0 +1,178 @@
+/**
+ * 数据分析页面
+ * 显示操作统计和趋势分析
+ */
+import React, { useEffect, useState } from 'react';
+import {
+  Box,
+  Container,
+  Card,
+  CardContent,
+  Typography,
+  AppBar,
+  Toolbar,
+  IconButton,
+  Button,
+  CircularProgress,
+  Alert,
+  Stack,
+} from '@mui/material';
+import { 
+  ArrowBack, 
+  Refresh,
+  Analytics as AnalyticsIcon,
+} from '@mui/icons-material';
+import { useNavigate } from 'react-router-dom';
+import { logApi } from '../../services/adminService';
+import OperationTypeChart from '../../components/Admin/Charts/OperationTypeChart';
+import LogStatsChart from '../../components/Admin/Charts/LogStatsChart';
+import type { LogStats } from '../../types/admin';
+
+const AnalyticsPage: React.FC = () => {
+  const navigate = useNavigate();
+  const [logStats, setLogStats] = useState<LogStats | null>(null);
+  const [operationStats, setOperationStats] = useState<any[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    loadData();
+  }, []);
+
+  const loadData = async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const stats = await logApi.getStats();
+      setLogStats(stats);
+      
+      // 模拟操作类型统计（实际应该从后端获取）
+      const mockOperationStats = [
+        { operation: '查询', count: 150 },
+        { operation: '配置更新', count: 45 },
+        { operation: '登录', count: 89 },
+        { operation: '导出', count: 23 },
+        { operation: '测试连接', count: 67 },
+      ];
+      setOperationStats(mockOperationStats);
+      
+    } catch (err: any) {
+      console.error('加载数据失败:', err);
+      setError(err.message || '加载数据失败');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <Box>
+      <AppBar position="static">
+        <Toolbar>
+          <IconButton
+            edge="start"
+            color="inherit"
+            onClick={() => navigate('/admin/dashboard')}
+            sx={{ mr: 2 }}
+          >
+            <ArrowBack />
+          </IconButton>
+          <Typography variant="h6" component="div" sx={{ flexGrow: 1 }}>
+            数据分析
+          </Typography>
+          <Button
+            color="inherit"
+            startIcon={<Refresh />}
+            onClick={loadData}
+            disabled={loading}
+          >
+            刷新
+          </Button>
+        </Toolbar>
+      </AppBar>
+
+      <Container maxWidth="lg" sx={{ mt: 4, mb: 4 }}>
+        {error && (
+          <Alert severity="error" sx={{ mb: 3 }}>
+            {error}
+          </Alert>
+        )}
+
+        {loading && !logStats ? (
+          <Box sx={{ display: 'flex', justifyContent: 'center', p: 4 }}>
+            <CircularProgress />
+          </Box>
+        ) : (
+          <Stack spacing={3}>
+            {/* 页面标题 */}
+            <Card>
+              <CardContent>
+                <Box sx={{ display: 'flex', alignItems: 'center' }}>
+                  <AnalyticsIcon sx={{ mr: 1, fontSize: 32 }} />
+                  <Box>
+                    <Typography variant="h5">系统数据分析</Typography>
+                    <Typography variant="body2" color="text.secondary">
+                      查看系统操作统计和趋势分析
+                    </Typography>
+                  </Box>
+                </Box>
+              </CardContent>
+            </Card>
+
+            {/* 图表展示 */}
+            <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: 'repeat(2, 1fr)' }, gap: 3 }}>
+              {logStats && (
+                <LogStatsChart 
+                  successCount={logStats.success_count}
+                  failedCount={logStats.failed_count}
+                />
+              )}
+              
+              {operationStats.length > 0 && (
+                <OperationTypeChart data={operationStats} />
+              )}
+            </Box>
+
+            {/* 统计摘要 */}
+            {logStats && (
+              <Card>
+                <CardContent>
+                  <Typography variant="h6" gutterBottom>
+                    统计摘要
+                  </Typography>
+                  <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: 'repeat(3, 1fr)' }, gap: 2 }}>
+                    <Box>
+                      <Typography variant="body2" color="text.secondary">
+                        总操作数
+                      </Typography>
+                      <Typography variant="h4" color="primary">
+                        {logStats.total_logs.toLocaleString()}
+                      </Typography>
+                    </Box>
+                    <Box>
+                      <Typography variant="body2" color="text.secondary">
+                        成功率
+                      </Typography>
+                      <Typography variant="h4" color="success.main">
+                        {(logStats.success_rate * 100).toFixed(1)}%
+                      </Typography>
+                    </Box>
+                    <Box>
+                      <Typography variant="body2" color="text.secondary">
+                        失败次数
+                      </Typography>
+                      <Typography variant="h4" color="error.main">
+                        {logStats.failed_count.toLocaleString()}
+                      </Typography>
+                    </Box>
+                  </Box>
+                </CardContent>
+              </Card>
+            )}
+          </Stack>
+        )}
+      </Container>
+    </Box>
+  );
+};
+
+export default AnalyticsPage;

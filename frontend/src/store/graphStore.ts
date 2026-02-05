@@ -1,0 +1,330 @@
+import { create } from 'zustand';
+import { persist } from 'zustand/middleware';
+
+// 类型定义
+export interface Node {
+  id: string;
+  labels: string[];
+  properties: Record<string, any>;
+}
+
+export interface Edge {
+  id: string;
+  source: string;
+  target: string;
+  type: string;
+  properties: Record<string, any>;
+}
+
+export interface GraphData {
+  nodes: Node[];
+  edges: Edge[];
+  stats?: {
+    nodeCount: number;
+    edgeCount: number;
+    executionTime: number;
+  };
+}
+
+export interface QueryHistoryItem {
+  id: string;
+  cypher: string;
+  timestamp: number;
+  resultCount: number;
+}
+
+export interface FilterState {
+  nodeTypes: string[];
+  relationshipTypes: string[];
+}
+
+// 节点分组相关类型
+export interface NodeGroup {
+  id: string;
+  name: string;
+  nodeIds: string[];
+  color: string;
+  collapsed: boolean;
+  position?: { x: number; y: number };
+  style?: {
+    backgroundColor: string;
+    borderColor: string;
+    borderWidth: number;
+    opacity: number;
+  };
+}
+
+export interface GroupingState {
+  groups: NodeGroup[];
+  autoGroupByType: boolean;
+  showGroupLabels: boolean;
+}
+
+interface GraphStore {
+  // 图数据
+  graphData: GraphData | null;
+  setGraphData: (data: GraphData) => void;
+  
+  // 选中的节点
+  selectedNodeId: string | null;
+  setSelectedNodeId: (id: string | null) => void;
+  
+  // 查询历史
+  queryHistory: QueryHistoryItem[];
+  addQueryToHistory: (cypher: string, resultCount: number) => void;
+  clearQueryHistory: () => void;
+  
+  // 过滤器
+  activeFilters: FilterState;
+  setNodeTypeFilter: (types: string[]) => void;
+  setRelationshipTypeFilter: (types: string[]) => void;
+  clearFilters: () => void;
+  
+  // 主题
+  isDarkMode: boolean;
+  toggleTheme: () => void;
+  
+  // 查询统计
+  lastQueryStats: {
+    nodeCount: number;
+    edgeCount: number;
+    executionTime: number;
+  } | null;
+  setLastQueryStats: (stats: { nodeCount: number; edgeCount: number; executionTime: number }) => void;
+  
+
+  
+  // 节点样式配置 - 按标签类型配置
+  nodeTypeStyles: Record<string, {
+    color: string;
+    size: number;
+    borderWidth: number;
+    showLabels: boolean;
+    labelSize: number;
+    showImages: boolean;
+    caption: string[]; // 显示的属性
+  }>;
+  setNodeTypeStyle: (nodeType: string, style: {
+    color: string;
+    size: number;
+    borderWidth: number;
+    showLabels: boolean;
+    labelSize: number;
+    showImages: boolean;
+    caption: string[];
+  }) => void;
+  
+  // 节点分组功能
+  groupingState: GroupingState;
+  setAutoGroupByType: (enabled: boolean) => void;
+  
+  // 布局偏好
+  preferredLayout: string;
+  setPreferredLayout: (layout: string) => void;
+  setShowGroupLabels: (show: boolean) => void;
+  createGroup: (name: string, nodeIds: string[], color?: string) => void;
+  updateGroup: (groupId: string, updates: Partial<NodeGroup>) => void;
+  deleteGroup: (groupId: string) => void;
+  addNodesToGroup: (groupId: string, nodeIds: string[]) => void;
+  removeNodesFromGroup: (groupId: string, nodeIds: string[]) => void;
+  toggleGroupCollapse: (groupId: string) => void;
+  clearAllGroups: () => void;
+}
+
+export const useGraphStore = create<GraphStore>()(
+  persist(
+    (set) => ({
+      // 初始状态
+      graphData: null,
+      selectedNodeId: null,
+      queryHistory: [],
+      activeFilters: {
+        nodeTypes: [],
+        relationshipTypes: [],
+      },
+      isDarkMode: false,
+      lastQueryStats: null,
+      nodeTypeStyles: {},
+      groupingState: {
+        groups: [],
+        autoGroupByType: false,
+        showGroupLabels: true,
+      },
+      preferredLayout: 'cose',
+
+      // Actions
+      setGraphData: (data) => set({ graphData: data }),
+      
+      setSelectedNodeId: (id) => set({ selectedNodeId: id }),
+      
+      addQueryToHistory: (cypher, resultCount) =>
+        set((state) => {
+          const newItem: QueryHistoryItem = {
+            id: Date.now().toString(),
+            cypher,
+            timestamp: Date.now(),
+            resultCount,
+          };
+          // 保持最多 20 条历史记录
+          const newHistory = [newItem, ...state.queryHistory].slice(0, 20);
+          return { queryHistory: newHistory };
+        }),
+      
+      clearQueryHistory: () => set({ queryHistory: [] }),
+      
+      setNodeTypeFilter: (types) =>
+        set((state) => ({
+          activeFilters: { ...state.activeFilters, nodeTypes: types },
+        })),
+      
+      setRelationshipTypeFilter: (types) =>
+        set((state) => ({
+          activeFilters: { ...state.activeFilters, relationshipTypes: types },
+        })),
+      
+      clearFilters: () =>
+        set({
+          activeFilters: {
+            nodeTypes: [],
+            relationshipTypes: [],
+          },
+        }),
+      
+      toggleTheme: () => set((state) => ({ isDarkMode: !state.isDarkMode })),
+      
+      setLastQueryStats: (stats) => set({ lastQueryStats: stats }),
+      
+      setNodeTypeStyle: (nodeType, style) => 
+        set((state) => {
+          console.log('🎨 GraphStore - Setting node type style:', nodeType, style);
+          const newStyles = {
+            ...state.nodeTypeStyles,
+            [nodeType]: style,
+          };
+          console.log('🎨 GraphStore - Updated nodeTypeStyles:', newStyles);
+          return {
+            nodeTypeStyles: newStyles,
+          };
+        }),
+      
+      // 节点分组功能
+      setAutoGroupByType: (enabled) =>
+        set((state) => ({
+          groupingState: {
+            ...state.groupingState,
+            autoGroupByType: enabled,
+          },
+        })),
+      
+      setShowGroupLabels: (show) =>
+        set((state) => ({
+          groupingState: {
+            ...state.groupingState,
+            showGroupLabels: show,
+          },
+        })),
+      
+      createGroup: (name, nodeIds, color = '#1976d2') =>
+        set((state) => {
+          const newGroup: NodeGroup = {
+            id: `group_${Date.now()}`,
+            name,
+            nodeIds: [...nodeIds],
+            color,
+            collapsed: false,
+            style: {
+              backgroundColor: color + '20',
+              borderColor: color,
+              borderWidth: 2,
+              opacity: 0.8,
+            },
+          };
+          return {
+            groupingState: {
+              ...state.groupingState,
+              groups: [...state.groupingState.groups, newGroup],
+            },
+          };
+        }),
+      
+      updateGroup: (groupId, updates) =>
+        set((state) => ({
+          groupingState: {
+            ...state.groupingState,
+            groups: state.groupingState.groups.map((group) =>
+              group.id === groupId ? { ...group, ...updates } : group
+            ),
+          },
+        })),
+      
+      deleteGroup: (groupId) =>
+        set((state) => ({
+          groupingState: {
+            ...state.groupingState,
+            groups: state.groupingState.groups.filter((group) => group.id !== groupId),
+          },
+        })),
+      
+      addNodesToGroup: (groupId, nodeIds) =>
+        set((state) => ({
+          groupingState: {
+            ...state.groupingState,
+            groups: state.groupingState.groups.map((group) =>
+              group.id === groupId
+                ? {
+                    ...group,
+                    nodeIds: [...new Set([...group.nodeIds, ...nodeIds])],
+                  }
+                : group
+            ),
+          },
+        })),
+      
+      removeNodesFromGroup: (groupId, nodeIds) =>
+        set((state) => ({
+          groupingState: {
+            ...state.groupingState,
+            groups: state.groupingState.groups.map((group) =>
+              group.id === groupId
+                ? {
+                    ...group,
+                    nodeIds: group.nodeIds.filter((id) => !nodeIds.includes(id)),
+                  }
+                : group
+            ),
+          },
+        })),
+      
+      toggleGroupCollapse: (groupId) =>
+        set((state) => ({
+          groupingState: {
+            ...state.groupingState,
+            groups: state.groupingState.groups.map((group) =>
+              group.id === groupId ? { ...group, collapsed: !group.collapsed } : group
+            ),
+          },
+        })),
+      
+      clearAllGroups: () =>
+        set((state) => ({
+          groupingState: {
+            ...state.groupingState,
+            groups: [],
+          },
+        })),
+      
+      setPreferredLayout: (layout) => set({ preferredLayout: layout }),
+    }),
+    {
+      name: 'graph-insight-storage', // localStorage key
+      partialize: (state) => ({
+        // 只持久化主题偏好、查询历史、标签配置、样式配置和分组配置
+        isDarkMode: state.isDarkMode,
+        queryHistory: state.queryHistory,
+        nodeTypeStyles: state.nodeTypeStyles,
+        groupingState: state.groupingState,
+        preferredLayout: state.preferredLayout,
+      }),
+    }
+  )
+);

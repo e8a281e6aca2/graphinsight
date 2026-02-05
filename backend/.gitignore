@@ -1,0 +1,61 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Environment
+.env
+.env.local
+science/.env
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+admin/admin.db
+
+# Logs
+logs/
+*.log
+app.log*
+
+# IDE
+.vscode/
+.kiro/
+.idea/
+*.swp
+*.swo
+*~
+
+# Media files (user uploaded content)
+media/*
+!media/README.md
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.cache
