@@ -6,7 +6,7 @@ import {
 } from '@mui/icons-material';
 import { NodeImportancePanel } from './NodeImportancePanel';
 import { PathAnalysisPanel } from './PathAnalysisPanel';
-import type { Core } from 'cytoscape';
+import type { RendererAPI } from '../../renderers/core/types';
 
 interface TabPanelProps {
   children?: React.ReactNode;
@@ -32,10 +32,10 @@ function TabPanel(props: TabPanelProps) {
 }
 
 interface AnalysisPanelProps {
-  cyRef: React.RefObject<Core | null>;
+  rendererRef: React.RefObject<RendererAPI | null>;
 }
 
-export function AnalysisPanel({ cyRef }: AnalysisPanelProps) {
+export function AnalysisPanel({ rendererRef }: AnalysisPanelProps) {
   const [tabValue, setTabValue] = useState(0);
 
   const handleTabChange = (_event: React.SyntheticEvent, newValue: number) => {
@@ -44,7 +44,6 @@ export function AnalysisPanel({ cyRef }: AnalysisPanelProps) {
 
   return (
     <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
-      {/* 子标签页 */}
       <Tabs
         value={tabValue}
         onChange={handleTabChange}
@@ -71,13 +70,12 @@ export function AnalysisPanel({ cyRef }: AnalysisPanelProps) {
         />
       </Tabs>
 
-      {/* 标签页内容 */}
       <Box sx={{ flex: 1, overflow: 'hidden' }}>
         <TabPanel value={tabValue} index={0}>
-          <NodeImportancePanel cyRef={cyRef} />
+          <NodeImportancePanel rendererRef={rendererRef} />
         </TabPanel>
         <TabPanel value={tabValue} index={1}>
-          <PathAnalysisPanel cyRef={cyRef} />
+          <PathAnalysisPanel rendererRef={rendererRef} />
         </TabPanel>
       </Box>
     </Box>

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import {
   Box,
   Typography,
@@ -21,10 +21,11 @@ import {
   Visibility as VisibilityIcon,
   VisibilityOff as VisibilityOffIcon,
 } from '@mui/icons-material';
-import type { Core } from 'cytoscape';
+import type { RendererAPI, RendererEdge } from '../../renderers/core/types';
+import { useGraphStore } from '../../store/graphStore';
 
 interface PathAnalysisPanelProps {
-  cyRef: React.RefObject<Core | null>;
+  rendererRef: React.RefObject<RendererAPI | null>;
 }
 
 interface PathInfo {
@@ -35,261 +36,210 @@ interface PathInfo {
   weight: number;
 }
 
-export function PathAnalysisPanel({ cyRef }: PathAnalysisPanelProps) {
+interface NeighborLink {
+  id: string;
+  edgeId: string;
+}
+
+function buildAdjacency(edges: RendererEdge[]) {
+  const adjacency = new Map<string, NeighborLink[]>();
+  edges.forEach((edge) => {
+    if (!adjacency.has(edge.source)) adjacency.set(edge.source, []);
+    if (!adjacency.has(edge.target)) adjacency.set(edge.target, []);
+    adjacency.get(edge.source)!.push({ id: edge.target, edgeId: edge.id });
+    adjacency.get(edge.target)!.push({ id: edge.source, edgeId: edge.id });
+  });
+  return adjacency;
+}
+
+function normalizeEdges(edges: RendererEdge[]) {
+  return edges;
+}
+
+function findShortestPath(adjacency: Map<string, NeighborLink[]>, sourceId: string, targetId: string) {
+  const queue: string[] = [sourceId];
+  const visited = new Set<string>([sourceId]);
+  const prevNode = new Map<string, string>();
+  const prevEdge = new Map<string, string>();
+
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    if (current === targetId) break;
+
+    const neighbors = adjacency.get(current) || [];
+    neighbors.forEach((neighbor) => {
+      if (visited.has(neighbor.id)) return;
+      visited.add(neighbor.id);
+      prevNode.set(neighbor.id, current);
+      prevEdge.set(neighbor.id, neighbor.edgeId);
+      queue.push(neighbor.id);
+    });
+  }
+
+  if (!visited.has(targetId)) return null;
+
+  const nodes: string[] = [];
+  const edges: string[] = [];
+  let cursor = targetId;
+  while (cursor !== sourceId) {
+    nodes.push(cursor);
+    const edgeId = prevEdge.get(cursor);
+    if (edgeId) edges.push(edgeId);
+    cursor = prevNode.get(cursor)!;
+  }
+  nodes.push(sourceId);
+
+  return {
+    nodes: nodes.reverse(),
+    edges: edges.reverse(),
+  };
+}
+
+function findAllSimplePaths(
+  adjacency: Map<string, NeighborLink[]>,
+  sourceId: string,
+  targetId: string,
+  maxLength: number
+) {
+  const paths: Array<{ nodes: string[]; edges: string[] }> = [];
+  const queue: Array<{ current: string; path: string[]; edges: string[]; visited: Set<string> }> = [];
+
+  queue.push({
+    current: sourceId,
+    path: [sourceId],
+    edges: [],
+    visited: new Set([sourceId]),
+  });
+
+  while (queue.length > 0 && paths.length < 100) {
+    const { current, path, edges, visited } = queue.shift()!;
+
+    if (path.length > maxLength) continue;
+
+    if (current === targetId) {
+      paths.push({ nodes: path, edges });
+      continue;
+    }
+
+    const neighbors = adjacency.get(current) || [];
+    neighbors.forEach((neighbor) => {
+      if (visited.has(neighbor.id)) return;
+      const nextVisited = new Set(visited);
+      nextVisited.add(neighbor.id);
+      queue.push({
+        current: neighbor.id,
+        path: [...path, neighbor.id],
+        edges: [...edges, neighbor.edgeId],
+        visited: nextVisited,
+      });
+    });
+  }
+
+  return paths;
+}
+
+export function PathAnalysisPanel({ rendererRef }: PathAnalysisPanelProps) {
+  const graphData = useGraphStore((state) => state.graphData);
   const [sourceNode, setSourceNode] = useState<string>('');
   const [targetNode, setTargetNode] = useState<string>('');
   const [paths, setPaths] = useState<PathInfo[]>([]);
   const [highlightedPathId, setHighlightedPathId] = useState<string | null>(null);
   const [error, setError] = useState<string>('');
 
-  // 获取所有节点选项
-  const getNodeOptions = () => {
-    if (!cyRef.current) return [];
-    
-    return cyRef.current.nodes().map(node => ({
-      id: node.id(),
-      label: node.data('label') || node.id(),
-    }));
-  };
+  const snapshot = useMemo(() => {
+    if (!rendererRef.current) return null;
+    const nodes = rendererRef.current.getAllNodes();
+    const edges = normalizeEdges(rendererRef.current.getAllEdges());
+    const labels = new Map(nodes.map((node) => [node.id, node.label || node.id] as const));
+    return { nodes, edges, labels };
+  }, [rendererRef, graphData?.stats?.executionTime]);
 
-  // 查找最短路径
-  const findShortestPath = () => {
-    if (!cyRef.current || !sourceNode || !targetNode) {
-      setError('请选择起点和终点节点');
-      return;
-    }
+  const nodeOptions = useMemo(() => {
+    if (!snapshot) return [];
+    return snapshot.nodes.map((node) => ({ id: node.id, label: node.label || node.id }));
+  }, [snapshot]);
 
-    if (sourceNode === targetNode) {
-      setError('起点和终点不能相同');
-      return;
-    }
-
-    setError('');
-    const cy = cyRef.current;
-    
-    const source = cy.getElementById(sourceNode);
-    const target = cy.getElementById(targetNode);
-
-    if (source.length === 0 || target.length === 0) {
-      setError('节点不存在');
-      return;
-    }
-
-    try {
-      // 使用 Dijkstra 算法
-      const dijkstra = cy.elements().dijkstra({
-        root: source,
-        weight: () => 1,
-        directed: false,
-      });
-
-      const pathElements = dijkstra.pathTo(target);
-      const distance = dijkstra.distanceTo(target);
-
-      if (distance === Infinity) {
-        setError('两个节点之间不存在路径');
-        setPaths([]);
-        return;
-      }
-
-      const pathNodes = pathElements.nodes().map(n => n.id());
-      const pathEdges = pathElements.edges().map(e => e.id());
-
-      const pathInfo: PathInfo = {
-        id: `path_${Date.now()}`,
-        nodes: pathNodes,
-        edges: pathEdges,
-        length: pathNodes.length,
-        weight: distance,
-      };
-
-      setPaths([pathInfo]);
-      highlightPath(pathInfo);
-    } catch (err) {
-      console.error('Path finding error:', err);
-      setError('路径查找失败');
-    }
-  };
-
-  // 查找所有简单路径（限制长度避免性能问题）
-  const findAllPaths = () => {
-    if (!cyRef.current || !sourceNode || !targetNode) {
-      setError('请选择起点和终点节点');
-      return;
-    }
-
-    if (sourceNode === targetNode) {
-      setError('起点和终点不能相同');
-      return;
-    }
-
-    setError('');
-    const cy = cyRef.current;
-    
-    const source = cy.getElementById(sourceNode);
-    const target = cy.getElementById(targetNode);
-
-    if (source.length === 0 || target.length === 0) {
-      setError('节点不存在');
-      return;
-    }
-
-    try {
-      // 使用 BFS 查找多条路径（限制最大长度为 6）
-      const allPaths = findAllSimplePaths(cy, sourceNode, targetNode, 6);
-      
-      if (allPaths.length === 0) {
-        setError('两个节点之间不存在路径');
-        setPaths([]);
-        return;
-      }
-
-      const pathInfos: PathInfo[] = allPaths.map((path, index) => ({
-        id: `path_${Date.now()}_${index}`,
-        nodes: path.nodes,
-        edges: path.edges,
-        length: path.nodes.length,
-        weight: path.edges.length,
-      }));
-
-      setPaths(pathInfos.slice(0, 10)); // 最多显示 10 条路径
-      
-      if (pathInfos.length > 0) {
-        highlightPath(pathInfos[0]);
-      }
-    } catch (err) {
-      console.error('Path finding error:', err);
-      setError('路径查找失败');
-    }
-  };
-
-  // BFS 查找所有简单路径
-  const findAllSimplePaths = (
-    cy: Core,
-    sourceId: string,
-    targetId: string,
-    maxLength: number
-  ): Array<{ nodes: string[]; edges: string[] }> => {
-    const paths: Array<{ nodes: string[]; edges: string[] }> = [];
-    const queue: Array<{ current: string; path: string[]; edges: string[]; visited: Set<string> }> = [];
-    
-    queue.push({
-      current: sourceId,
-      path: [sourceId],
-      edges: [],
-      visited: new Set([sourceId]),
-    });
-
-    while (queue.length > 0 && paths.length < 100) {
-      const { current, path, edges, visited } = queue.shift()!;
-
-      if (path.length > maxLength) continue;
-
-      if (current === targetId) {
-        paths.push({ nodes: path, edges });
-        continue;
-      }
-
-      const currentNode = cy.getElementById(current);
-      const neighbors = currentNode.neighborhood('node');
-
-      neighbors.forEach(neighbor => {
-        const neighborId = neighbor.id();
-        
-        if (!visited.has(neighborId)) {
-          const edge = currentNode.edgesWith(neighbor);
-          const edgeId = edge.length > 0 ? edge[0].id() : '';
-          const newVisited = new Set(visited);
-          newVisited.add(neighborId);
-
-          queue.push({
-            current: neighborId,
-            path: [...path, neighborId],
-            edges: edgeId ? [...edges, edgeId] : edges,
-            visited: newVisited,
-          });
-        }
-      });
-    }
-
-    return paths;
-  };
-
-  // 高亮路径
   const highlightPath = (path: PathInfo) => {
-    if (!cyRef.current) {
-      console.error('cyRef.current is null');
-      return;
-    }
-
-    const cy = cyRef.current;
-    console.log('🎨 Highlighting path:', path);
-    
-    // 清除之前的高亮
-    cy.elements().removeClass('path-highlight');
-    cy.elements().removeClass('path-node');
-    cy.elements().removeClass('path-edge');
-
-    // 高亮新路径
-    let highlightedNodes = 0;
-    let highlightedEdges = 0;
-
-    path.nodes.forEach(nodeId => {
-      const node = cy.getElementById(nodeId);
-      if (node.length > 0) {
-        node.addClass('path-node');
-        highlightedNodes++;
-        console.log('Highlighted node:', nodeId);
-      } else {
-        console.warn('Node not found:', nodeId);
-      }
-    });
-
-    path.edges.forEach(edgeId => {
-      const edge = cy.getElementById(edgeId);
-      if (edge.length > 0) {
-        edge.addClass('path-edge');
-        highlightedEdges++;
-        console.log('Highlighted edge:', edgeId);
-      } else {
-        console.warn('Edge not found:', edgeId);
-      }
-    });
-
-    console.log(`🎨 Highlighted ${highlightedNodes} nodes and ${highlightedEdges} edges`);
+    if (!rendererRef.current) return;
+    rendererRef.current.setPathHighlight({ nodeIds: path.nodes, edgeIds: path.edges });
+    rendererRef.current.fitTo(path.nodes, 80);
     setHighlightedPathId(path.id);
-
-    // 居中显示路径
-    const pathElements = cy.collection();
-    path.nodes.forEach(id => {
-      const node = cy.getElementById(id);
-      if (node.length > 0) pathElements.merge(node);
-    });
-    path.edges.forEach(id => {
-      const edge = cy.getElementById(id);
-      if (edge.length > 0) pathElements.merge(edge);
-    });
-
-    if (pathElements.length > 0) {
-      cy.animate({
-        fit: { eles: pathElements, padding: 50 },
-      }, {
-        duration: 500,
-      });
-    }
   };
 
-  // 清除高亮
   const clearHighlight = () => {
-    if (!cyRef.current) return;
-
-    cyRef.current.elements().removeClass('path-highlight');
-    cyRef.current.elements().removeClass('path-node');
-    cyRef.current.elements().removeClass('path-edge');
+    rendererRef.current?.clearPathHighlight();
     setHighlightedPathId(null);
   };
 
-  // 清除所有
+  const findShortestPathHandler = () => {
+    if (!rendererRef.current || !snapshot || !sourceNode || !targetNode) {
+      setError('请选择起点和终点节点');
+      return;
+    }
+
+    if (sourceNode === targetNode) {
+      setError('起点和终点不能相同');
+      return;
+    }
+
+    setError('');
+    const adjacency = buildAdjacency(snapshot.edges);
+    const pathResult = findShortestPath(adjacency, sourceNode, targetNode);
+
+    if (!pathResult) {
+      setError('两个节点之间不存在路径');
+      setPaths([]);
+      return;
+    }
+
+    const pathInfo: PathInfo = {
+      id: `path_${Date.now()}`,
+      nodes: pathResult.nodes,
+      edges: pathResult.edges,
+      length: pathResult.nodes.length,
+      weight: pathResult.edges.length,
+    };
+
+    setPaths([pathInfo]);
+    highlightPath(pathInfo);
+  };
+
+  const findAllPathsHandler = () => {
+    if (!rendererRef.current || !snapshot || !sourceNode || !targetNode) {
+      setError('请选择起点和终点节点');
+      return;
+    }
+
+    if (sourceNode === targetNode) {
+      setError('起点和终点不能相同');
+      return;
+    }
+
+    setError('');
+    const adjacency = buildAdjacency(snapshot.edges);
+    const allPaths = findAllSimplePaths(adjacency, sourceNode, targetNode, 6);
+
+    if (allPaths.length === 0) {
+      setError('两个节点之间不存在路径');
+      setPaths([]);
+      return;
+    }
+
+    const pathInfos: PathInfo[] = allPaths.map((path, index) => ({
+      id: `path_${Date.now()}_${index}`,
+      nodes: path.nodes,
+      edges: path.edges,
+      length: path.nodes.length,
+      weight: path.edges.length,
+    }));
+
+    setPaths(pathInfos.slice(0, 10));
+
+    if (pathInfos.length > 0) {
+      highlightPath(pathInfos[0]);
+    }
+  };
+
   const clearAll = () => {
     setSourceNode('');
     setTargetNode('');
@@ -298,46 +248,37 @@ export function PathAnalysisPanel({ cyRef }: PathAnalysisPanelProps) {
     clearHighlight();
   };
 
-  const nodeOptions = getNodeOptions();
-
   return (
     <Box sx={{ p: 2 }}>
-      {/* 标题 */}
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
         <RouteIcon color="primary" />
         <Typography variant="h6">路径分析</Typography>
       </Box>
 
-      {/* 节点选择 */}
       <Box sx={{ mb: 2 }}>
         <Autocomplete
           options={nodeOptions}
           getOptionLabel={(option) => option.label}
-          value={nodeOptions.find(n => n.id === sourceNode) || null}
+          value={nodeOptions.find((n) => n.id === sourceNode) || null}
           onChange={(_, value) => setSourceNode(value?.id || '')}
-          renderInput={(params) => (
-            <TextField {...params} label="起点节点" size="small" />
-          )}
+          renderInput={(params) => <TextField {...params} label="起点节点" size="small" />}
           sx={{ mb: 1 }}
         />
 
         <Autocomplete
           options={nodeOptions}
           getOptionLabel={(option) => option.label}
-          value={nodeOptions.find(n => n.id === targetNode) || null}
+          value={nodeOptions.find((n) => n.id === targetNode) || null}
           onChange={(_, value) => setTargetNode(value?.id || '')}
-          renderInput={(params) => (
-            <TextField {...params} label="终点节点" size="small" />
-          )}
+          renderInput={(params) => <TextField {...params} label="终点节点" size="small" />}
         />
       </Box>
 
-      {/* 操作按钮 */}
       <Box sx={{ display: 'flex', gap: 1, mb: 2 }}>
         <Button
           variant="contained"
           size="small"
-          onClick={findShortestPath}
+          onClick={findShortestPathHandler}
           disabled={!sourceNode || !targetNode}
           fullWidth
         >
@@ -346,7 +287,7 @@ export function PathAnalysisPanel({ cyRef }: PathAnalysisPanelProps) {
         <Button
           variant="outlined"
           size="small"
-          onClick={findAllPaths}
+          onClick={findAllPathsHandler}
           disabled={!sourceNode || !targetNode}
           fullWidth
         >
@@ -359,14 +300,12 @@ export function PathAnalysisPanel({ cyRef }: PathAnalysisPanelProps) {
         </Tooltip>
       </Box>
 
-      {/* 错误提示 */}
       {error && (
         <Alert severity="error" sx={{ mb: 2 }}>
           {error}
         </Alert>
       )}
 
-      {/* 路径列表 */}
       {paths.length > 0 && (
         <>
           <Typography variant="subtitle2" gutterBottom>
@@ -412,16 +351,12 @@ export function PathAnalysisPanel({ cyRef }: PathAnalysisPanelProps) {
                       }
                       secondary={
                         <Typography variant="caption" sx={{ display: 'block', mt: 0.5 }}>
-                          {path.nodes.map((nodeId, i) => {
-                            const node = cyRef.current?.getElementById(nodeId);
-                            const label = node?.data('label') || nodeId;
-                            return (
-                              <span key={nodeId}>
-                                {label}
-                                {i < path.nodes.length - 1 && ' → '}
-                              </span>
-                            );
-                          })}
+                          {path.nodes.map((nodeId, i) => (
+                            <span key={nodeId}>
+                              {snapshot?.labels.get(nodeId) || nodeId}
+                              {i < path.nodes.length - 1 && ' → '}
+                            </span>
+                          ))}
                         </Typography>
                       }
                     />
@@ -432,7 +367,6 @@ export function PathAnalysisPanel({ cyRef }: PathAnalysisPanelProps) {
             </List>
           </Paper>
 
-          {/* 说明 */}
           <Box sx={{ mt: 2, p: 1.5, backgroundColor: 'background.default', borderRadius: 1 }}>
             <Typography variant="caption" color="text.secondary">
               提示: 点击眼睛图标可以在图谱中高亮显示对应的路径
@@ -441,7 +375,6 @@ export function PathAnalysisPanel({ cyRef }: PathAnalysisPanelProps) {
         </>
       )}
 
-      {/* 空状态 */}
       {paths.length === 0 && !error && (
         <Alert severity="info">
           选择起点和终点节点，然后点击"最短路径"或"所有路径"按钮进行分析

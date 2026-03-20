@@ -33,6 +33,13 @@ export interface QueryHistoryItem {
   resultCount: number;
 }
 
+export interface CitationRef {
+  id: string;
+  title: string;
+  snippet: string;
+  location?: string;
+}
+
 export interface FilterState {
   nodeTypes: string[];
   relationshipTypes: string[];
@@ -73,7 +80,7 @@ interface GraphStore {
   queryHistory: QueryHistoryItem[];
   addQueryToHistory: (cypher: string, resultCount: number) => void;
   clearQueryHistory: () => void;
-  
+
   // 过滤器
   activeFilters: FilterState;
   setNodeTypeFilter: (types: string[]) => void;
@@ -83,6 +90,12 @@ interface GraphStore {
   // 主题
   isDarkMode: boolean;
   toggleTheme: () => void;
+
+  // 工作区视图
+  activeWorkspaceTab: 'document' | 'graph';
+  setWorkspaceTab: (tab: 'document' | 'graph') => void;
+  selectedCitation: CitationRef | null;
+  setSelectedCitation: (citation: CitationRef | null) => void;
   
   // 查询统计
   lastQueryStats: {
@@ -143,6 +156,8 @@ export const useGraphStore = create<GraphStore>()(
         relationshipTypes: [],
       },
       isDarkMode: false,
+      activeWorkspaceTab: 'document',
+      selectedCitation: null,
       lastQueryStats: null,
       nodeTypeStyles: {},
       groupingState: {
@@ -171,7 +186,7 @@ export const useGraphStore = create<GraphStore>()(
         }),
       
       clearQueryHistory: () => set({ queryHistory: [] }),
-      
+
       setNodeTypeFilter: (types) =>
         set((state) => ({
           activeFilters: { ...state.activeFilters, nodeTypes: types },
@@ -191,6 +206,9 @@ export const useGraphStore = create<GraphStore>()(
         }),
       
       toggleTheme: () => set((state) => ({ isDarkMode: !state.isDarkMode })),
+
+      setWorkspaceTab: (tab) => set({ activeWorkspaceTab: tab }),
+      setSelectedCitation: (citation) => set({ selectedCitation: citation }),
       
       setLastQueryStats: (stats) => set({ lastQueryStats: stats }),
       

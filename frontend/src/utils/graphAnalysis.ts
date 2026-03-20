@@ -1,9 +1,9 @@
 /**
- * 图谱分析工具
+ * 图谱分析工具（Renderer 数据版本）
  * 提供节点重要性分析、中心性计算等功能
  */
 
-import type { Core, NodeSingular } from 'cytoscape';
+import type { RendererEdge, RendererNode } from '../renderers/core/types';
 
 export interface NodeImportance {
   id: string;
@@ -14,66 +14,94 @@ export interface NodeImportance {
   closenessCentrality: number;
 }
 
+interface GraphDataLike {
+  nodes: RendererNode[];
+  edges: RendererEdge[];
+}
+
+interface NeighborLink {
+  id: string;
+  edgeId: string;
+}
+
+function buildDirectedAdjacency(edges: RendererEdge[]) {
+  const outMap = new Map<string, string[]>();
+  const inMap = new Map<string, string[]>();
+
+  edges.forEach((edge) => {
+    if (!outMap.has(edge.source)) outMap.set(edge.source, []);
+    if (!inMap.has(edge.target)) inMap.set(edge.target, []);
+    outMap.get(edge.source)!.push(edge.target);
+    inMap.get(edge.target)!.push(edge.source);
+  });
+
+  return { outMap, inMap };
+}
+
+function buildUndirectedAdjacency(edges: RendererEdge[]) {
+  const adjacency = new Map<string, NeighborLink[]>();
+
+  edges.forEach((edge) => {
+    if (!adjacency.has(edge.source)) adjacency.set(edge.source, []);
+    if (!adjacency.has(edge.target)) adjacency.set(edge.target, []);
+
+    adjacency.get(edge.source)!.push({ id: edge.target, edgeId: edge.id });
+    adjacency.get(edge.target)!.push({ id: edge.source, edgeId: edge.id });
+  });
+
+  return adjacency;
+}
+
 /**
  * PageRank 算法
- * 计算节点的 PageRank 值
  */
 export function calculatePageRank(
-  cy: Core,
+  data: GraphDataLike,
   dampingFactor: number = 0.85,
   maxIterations: number = 100,
   tolerance: number = 0.0001
 ): Map<string, number> {
-  const nodes = cy.nodes();
+  const nodes = data.nodes;
   const nodeCount = nodes.length;
-  
+
   if (nodeCount === 0) {
     return new Map();
   }
 
-  // 初始化 PageRank 值
+  const { outMap, inMap } = buildDirectedAdjacency(data.edges);
+
   const pageRank = new Map<string, number>();
   const newPageRank = new Map<string, number>();
-  
-  nodes.forEach(node => {
-    pageRank.set(node.id(), 1 / nodeCount);
+
+  nodes.forEach((node) => {
+    pageRank.set(node.id, 1 / nodeCount);
   });
 
-  // 迭代计算
-  for (let iter = 0; iter < maxIterations; iter++) {
+  for (let iter = 0; iter < maxIterations; iter += 1) {
     let diff = 0;
 
-    nodes.forEach(node => {
-      const nodeId = node.id();
-      
-      // 计算来自其他节点的 PageRank 贡献
+    nodes.forEach((node) => {
+      const nodeId = node.id;
+      const incomers = inMap.get(nodeId) || [];
+
       let sum = 0;
-      const incomers = node.incomers('node');
-      
-      incomers.forEach(incomer => {
-        const incomerId = incomer.id();
-        const outDegree = incomer.outdegree();
-        
+      incomers.forEach((incomerId) => {
+        const outDegree = (outMap.get(incomerId) || []).length;
         if (outDegree > 0) {
           sum += (pageRank.get(incomerId) || 0) / outDegree;
         }
       });
 
-      // PageRank 公式: (1-d)/N + d * sum
       const newValue = (1 - dampingFactor) / nodeCount + dampingFactor * sum;
       newPageRank.set(nodeId, newValue);
-      
       diff += Math.abs(newValue - (pageRank.get(nodeId) || 0));
     });
 
-    // 更新 PageRank 值
     newPageRank.forEach((value, key) => {
       pageRank.set(key, value);
     });
 
-    // 检查收敛
     if (diff < tolerance) {
-      console.log(`PageRank converged after ${iter + 1} iterations`);
       break;
     }
   }
@@ -83,64 +111,88 @@ export function calculatePageRank(
 
 /**
  * 度中心性
- * 计算节点的度中心性（连接数）
  */
-export function calculateDegreeCentrality(cy: Core): Map<string, number> {
+export function calculateDegreeCentrality(data: GraphDataLike): Map<string, number> {
   const centrality = new Map<string, number>();
-  const nodes = cy.nodes();
+  const nodes = data.nodes;
   const nodeCount = nodes.length;
 
   if (nodeCount <= 1) {
-    nodes.forEach(node => centrality.set(node.id(), 0));
+    nodes.forEach((node) => centrality.set(node.id, 0));
     return centrality;
   }
 
-  nodes.forEach(node => {
-    const degree = node.degree();
-    // 归一化: degree / (n - 1)
+  const adjacency = buildUndirectedAdjacency(data.edges);
+
+  nodes.forEach((node) => {
+    const degree = adjacency.get(node.id)?.length || node.degree || 0;
     const normalizedDegree = degree / (nodeCount - 1);
-    centrality.set(node.id(), normalizedDegree);
+    centrality.set(node.id, normalizedDegree);
   });
 
   return centrality;
 }
 
 /**
- * 介数中心性（简化版）
- * 计算节点在最短路径中出现的频率
+ * 介数中心性（Brandes，未加权）
  */
-export function calculateBetweennessCentrality(cy: Core): Map<string, number> {
+export function calculateBetweennessCentrality(data: GraphDataLike): Map<string, number> {
+  const nodes = data.nodes.map((node) => node.id);
+  const adjacency = buildUndirectedAdjacency(data.edges);
   const centrality = new Map<string, number>();
-  const nodes = cy.nodes();
 
-  // 初始化
-  nodes.forEach(node => centrality.set(node.id(), 0));
+  nodes.forEach((id) => centrality.set(id, 0));
 
-  // 对每对节点计算最短路径
-  nodes.forEach(source => {
-    nodes.forEach(target => {
-      if (source.id() === target.id()) return;
+  nodes.forEach((sourceId) => {
+    const stack: string[] = [];
+    const predecessors = new Map<string, string[]>();
+    const sigma = new Map<string, number>();
+    const distance = new Map<string, number>();
 
-      // 使用 Dijkstra 算法找最短路径
-      const dijkstra = cy.elements().dijkstra({
-        root: source,
-        weight: () => 1,
-        directed: false,
-      });
+    nodes.forEach((id) => {
+      predecessors.set(id, []);
+      sigma.set(id, 0);
+      distance.set(id, -1);
+    });
 
-      const path = dijkstra.pathTo(target);
-      
-      // 统计路径中的节点
-      path.nodes().forEach(node => {
-        if (node.id() !== source.id() && node.id() !== target.id()) {
-          const current = centrality.get(node.id()) || 0;
-          centrality.set(node.id(), current + 1);
+    sigma.set(sourceId, 1);
+    distance.set(sourceId, 0);
+
+    const queue: string[] = [sourceId];
+
+    while (queue.length > 0) {
+      const v = queue.shift()!;
+      stack.push(v);
+      const neighbors = adjacency.get(v) || [];
+      neighbors.forEach((neighbor) => {
+        const w = neighbor.id;
+        if ((distance.get(w) ?? -1) < 0) {
+          queue.push(w);
+          distance.set(w, (distance.get(v) || 0) + 1);
+        }
+        if (distance.get(w) === (distance.get(v) || 0) + 1) {
+          sigma.set(w, (sigma.get(w) || 0) + (sigma.get(v) || 0));
+          predecessors.get(w)!.push(v);
         }
       });
-    });
+    }
+
+    const delta = new Map<string, number>();
+    nodes.forEach((id) => delta.set(id, 0));
+
+    while (stack.length > 0) {
+      const w = stack.pop()!;
+      const coeff = 1 / (sigma.get(w) || 1);
+      predecessors.get(w)!.forEach((v) => {
+        const value = (sigma.get(v) || 0) * coeff * (1 + (delta.get(w) || 0));
+        delta.set(v, (delta.get(v) || 0) + value);
+      });
+      if (w !== sourceId) {
+        centrality.set(w, (centrality.get(w) || 0) + (delta.get(w) || 0));
+      }
+    }
   });
 
-  // 归一化
   const nodeCount = nodes.length;
   if (nodeCount > 2) {
     const normFactor = (nodeCount - 1) * (nodeCount - 2) / 2;
@@ -154,45 +206,45 @@ export function calculateBetweennessCentrality(cy: Core): Map<string, number> {
 
 /**
  * 接近中心性
- * 计算节点到其他所有节点的平均最短路径长度的倒数
  */
-export function calculateClosenessCentrality(cy: Core): Map<string, number> {
+export function calculateClosenessCentrality(data: GraphDataLike): Map<string, number> {
+  const nodes = data.nodes.map((node) => node.id);
+  const adjacency = buildUndirectedAdjacency(data.edges);
   const centrality = new Map<string, number>();
-  const nodes = cy.nodes();
-  const nodeCount = nodes.length;
 
-  if (nodeCount <= 1) {
-    nodes.forEach(node => centrality.set(node.id(), 0));
-    return centrality;
-  }
+  nodes.forEach((sourceId) => {
+    const distance = new Map<string, number>();
+    nodes.forEach((id) => distance.set(id, Infinity));
+    distance.set(sourceId, 0);
 
-  nodes.forEach(node => {
-    const dijkstra = cy.elements().dijkstra({
-      root: node,
-      weight: () => 1,
-      directed: false,
-    });
+    const queue: string[] = [sourceId];
+    while (queue.length > 0) {
+      const v = queue.shift()!;
+      const neighbors = adjacency.get(v) || [];
+      neighbors.forEach((neighbor) => {
+        if (distance.get(neighbor.id) === Infinity) {
+          distance.set(neighbor.id, (distance.get(v) || 0) + 1);
+          queue.push(neighbor.id);
+        }
+      });
+    }
 
     let totalDistance = 0;
     let reachableCount = 0;
 
-    nodes.forEach(target => {
-      if (node.id() === target.id()) return;
-
-      const distance = dijkstra.distanceTo(target);
-      
-      if (distance !== Infinity && distance > 0) {
-        totalDistance += distance;
-        reachableCount++;
+    nodes.forEach((targetId) => {
+      if (targetId === sourceId) return;
+      const dist = distance.get(targetId) ?? Infinity;
+      if (dist !== Infinity && dist > 0) {
+        totalDistance += dist;
+        reachableCount += 1;
       }
     });
 
-    // 接近中心性 = (可达节点数 - 1) / 总距离
     if (totalDistance > 0 && reachableCount > 0) {
-      const closeness = reachableCount / totalDistance;
-      centrality.set(node.id(), closeness);
+      centrality.set(sourceId, reachableCount / totalDistance);
     } else {
-      centrality.set(node.id(), 0);
+      centrality.set(sourceId, 0);
     }
   });
 
@@ -202,50 +254,41 @@ export function calculateClosenessCentrality(cy: Core): Map<string, number> {
 /**
  * 综合节点重要性分析
  */
-export function analyzeNodeImportance(cy: Core): NodeImportance[] {
-  console.log('Starting node importance analysis...');
+export function analyzeNodeImportance(data: GraphDataLike): NodeImportance[] {
+  const pageRankMap = calculatePageRank(data);
+  const degreeMap = calculateDegreeCentrality(data);
+  const betweennessMap = calculateBetweennessCentrality(data);
+  const closenessMap = calculateClosenessCentrality(data);
 
-  const pageRankMap = calculatePageRank(cy);
-  const degreeMap = calculateDegreeCentrality(cy);
-  const betweennessMap = calculateBetweennessCentrality(cy);
-  const closenessMap = calculateClosenessCentrality(cy);
-
-  const results: NodeImportance[] = [];
-
-  cy.nodes().forEach(node => {
-    const id = node.id();
-    results.push({
-      id,
-      label: node.data('label') || id,
-      pageRank: pageRankMap.get(id) || 0,
-      degreeCentrality: degreeMap.get(id) || 0,
-      betweennessCentrality: betweennessMap.get(id) || 0,
-      closenessCentrality: closenessMap.get(id) || 0,
-    });
-  });
-
-  console.log('Node importance analysis completed');
-  return results;
+  return data.nodes.map((node) => ({
+    id: node.id,
+    label: node.label || node.id,
+    pageRank: pageRankMap.get(node.id) || 0,
+    degreeCentrality: degreeMap.get(node.id) || 0,
+    betweennessCentrality: betweennessMap.get(node.id) || 0,
+    closenessCentrality: closenessMap.get(node.id) || 0,
+  }));
 }
 
 /**
- * 根据重要性调整节点大小
+ * 根据重要性计算节点大小
  */
-export function applyImportanceToNodeSize(
-  cy: Core,
+export function getNodeSizeOverrides(
+  importance: NodeImportance[],
   importanceType: 'pageRank' | 'degree' | 'betweenness' | 'closeness',
   minSize: number = 30,
   maxSize: number = 100
-): void {
-  const importance = analyzeNodeImportance(cy);
-  
-  // 获取对应的重要性值
-  const values = importance.map(item => {
+): Record<string, number> {
+  const values = importance.map((item) => {
     switch (importanceType) {
-      case 'pageRank': return item.pageRank;
-      case 'degree': return item.degreeCentrality;
-      case 'betweenness': return item.betweennessCentrality;
-      case 'closeness': return item.closenessCentrality;
+      case 'pageRank':
+        return item.pageRank;
+      case 'degree':
+        return item.degreeCentrality;
+      case 'betweenness':
+        return item.betweennessCentrality;
+      case 'closeness':
+        return item.closenessCentrality;
     }
   });
 
@@ -253,28 +296,12 @@ export function applyImportanceToNodeSize(
   const maxValue = Math.max(...values);
   const range = maxValue - minValue;
 
-  // 应用大小
-  importance.forEach(item => {
-    const node = cy.getElementById(item.id);
-    if (node.length === 0) return;
-
-    let value: number;
-    switch (importanceType) {
-      case 'pageRank': value = item.pageRank; break;
-      case 'degree': value = item.degreeCentrality; break;
-      case 'betweenness': value = item.betweennessCentrality; break;
-      case 'closeness': value = item.closenessCentrality; break;
-    }
-
-    // 归一化到 [minSize, maxSize]
-    const normalizedValue = range > 0 ? (value - minValue) / range : 0.5;
-    const size = minSize + normalizedValue * (maxSize - minSize);
-
-    node.style({
-      width: size,
-      height: size,
-    });
+  const result: Record<string, number> = {};
+  importance.forEach((item, index) => {
+    const value = values[index] ?? 0;
+    const normalized = range === 0 ? 0.5 : (value - minValue) / range;
+    result[item.id] = minSize + normalized * (maxSize - minSize);
   });
 
-  console.log(`Applied ${importanceType} to node sizes`);
+  return result;
 }

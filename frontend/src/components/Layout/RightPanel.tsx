@@ -1,13 +1,16 @@
 import React, { useState } from 'react';
 import { Box, Tabs, Tab, Paper, Typography } from '@mui/material';
-import { 
+import {
   Info as InfoIcon,
   Analytics as AnalyticsIcon,
-  Science as ScienceIcon
+  Science as ScienceIcon,
+  Tune as TuneIcon,
 } from '@mui/icons-material';
 import { DetailPanel } from '../DetailPanel/DetailPanel';
 import { GraphStatsPanel } from '../StatsPanel/GraphStatsPanel';
 import { AnalysisPanel } from '../AnalysisPanel/AnalysisPanel';
+import { QueryPanel } from '../QueryPanel/QueryPanel';
+import type { RendererAPI } from '../../renderers/core/types';
 
 interface TabPanelProps {
   children?: React.ReactNode;
@@ -28,9 +31,7 @@ function TabPanel(props: TabPanelProps) {
       {...other}
     >
       {value === index && (
-        <Box sx={{ height: '100%', overflow: 'hidden' }}>
-          {children}
-        </Box>
+        <Box sx={{ height: '100%', overflow: 'hidden' }}>{children}</Box>
       )}
     </div>
   );
@@ -44,10 +45,12 @@ function a11yProps(index: number) {
 }
 
 interface RightPanelProps {
-  cyRef?: React.RefObject<any>;
+  rendererRef?: React.RefObject<RendererAPI | null>;
+  onLayoutChange?: (layout: string, config?: any) => void;
+  onGroupingChange?: () => void;
 }
 
-export const RightPanel: React.FC<RightPanelProps> = ({ cyRef }) => {
+export const RightPanel: React.FC<RightPanelProps> = ({ rendererRef, onLayoutChange, onGroupingChange }) => {
   const [tabValue, setTabValue] = useState(0);
 
   const handleTabChange = (_event: React.SyntheticEvent, newValue: number) => {
@@ -55,20 +58,21 @@ export const RightPanel: React.FC<RightPanelProps> = ({ cyRef }) => {
   };
 
   return (
-    <Box sx={{ 
-      height: '100%', 
-      display: 'flex', 
-      flexDirection: 'column',
-      overflow: 'hidden'
-    }}>
-      {/* 标签页头部 */}
-      <Paper 
-        square 
+    <Box
+      sx={{
+        height: '100%',
+        display: 'flex',
+        flexDirection: 'column',
+        overflow: 'hidden',
+      }}
+    >
+      <Paper
+        square
         elevation={0}
-        sx={{ 
-          borderBottom: 1, 
+        sx={{
+          borderBottom: 1,
           borderColor: 'divider',
-          flexShrink: 0
+          flexShrink: 0,
         }}
       >
         <Tabs
@@ -81,7 +85,7 @@ export const RightPanel: React.FC<RightPanelProps> = ({ cyRef }) => {
               minHeight: 48,
               fontSize: '0.75rem',
               fontWeight: 500,
-            }
+            },
           }}
         >
           <Tab
@@ -102,10 +106,15 @@ export const RightPanel: React.FC<RightPanelProps> = ({ cyRef }) => {
             iconPosition="start"
             {...a11yProps(2)}
           />
+          <Tab
+            icon={<TuneIcon sx={{ fontSize: 18 }} />}
+            label="控制"
+            iconPosition="start"
+            {...a11yProps(3)}
+          />
         </Tabs>
       </Paper>
 
-      {/* 标签页内容 */}
       <Box sx={{ flex: 1, overflow: 'hidden' }}>
         <TabPanel value={tabValue} index={0}>
           <DetailPanel />
@@ -114,8 +123,8 @@ export const RightPanel: React.FC<RightPanelProps> = ({ cyRef }) => {
           <GraphStatsPanel />
         </TabPanel>
         <TabPanel value={tabValue} index={2}>
-          {cyRef ? (
-            <AnalysisPanel cyRef={cyRef} />
+          {rendererRef ? (
+            <AnalysisPanel rendererRef={rendererRef} />
           ) : (
             <Box sx={{ p: 2 }}>
               <Typography variant="body2" color="text.secondary">
@@ -123,6 +132,14 @@ export const RightPanel: React.FC<RightPanelProps> = ({ cyRef }) => {
               </Typography>
             </Box>
           )}
+        </TabPanel>
+        <TabPanel value={tabValue} index={3}>
+          <QueryPanel
+            onLayoutChange={onLayoutChange}
+            onGroupingChange={onGroupingChange}
+            rendererRef={rendererRef}
+            defaultTab={1}
+          />
         </TabPanel>
       </Box>
     </Box>

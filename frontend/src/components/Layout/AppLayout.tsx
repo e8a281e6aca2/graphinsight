@@ -30,7 +30,7 @@ export function AppLayout({ queryPanel, graphCanvas, detailPanel, onExportClick 
 
       {/* 主内容区域 */}
       <Box sx={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
-        {/* 左侧面板 - 查询面板 */}
+        {/* 左侧面板 - 问答面板 */}
         <Box
           sx={{
             width: isLeftCollapsed ? 0 : leftPanelWidth,
@@ -84,7 +84,7 @@ export function AppLayout({ queryPanel, graphCanvas, detailPanel, onExportClick 
         )}
 
         <Box sx={{ position: 'relative' }}>
-          <Tooltip title={isLeftCollapsed ? '展开查询面板' : '折叠查询面板'}>
+          <Tooltip title={isLeftCollapsed ? '展开问答面板' : '折叠问答面板'}>
             <IconButton
               size="small"
               onClick={() => setIsLeftCollapsed(!isLeftCollapsed)}

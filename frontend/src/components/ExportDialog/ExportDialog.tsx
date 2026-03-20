@@ -22,27 +22,19 @@ import {
   DataObject as JsonIcon,
   Code as SvgIcon,
 } from '@mui/icons-material';
-import type { Core } from 'cytoscape';
-// @ts-ignore - cytoscape-svg 没有类型定义
-import svg from 'cytoscape-svg';
-import cytoscape from 'cytoscape';
 import { useGraphStore } from '../../store/graphStore';
-
-// 注册 SVG 扩展
-if (typeof cytoscape !== 'undefined') {
-  cytoscape.use(svg);
-}
+import type { RendererAPI } from '../../renderers/core/types';
 
 interface ExportDialogProps {
   open: boolean;
   onClose: () => void;
-  cyRef: React.RefObject<Core | null>;
+  rendererRef: React.RefObject<RendererAPI | null>;
 }
 
 type ExportFormat = 'png' | 'svg' | 'json';
 type PngResolution = 1 | 2 | 4;
 
-export function ExportDialog({ open, onClose, cyRef }: ExportDialogProps) {
+export function ExportDialog({ open, onClose, rendererRef }: ExportDialogProps) {
   const [format, setFormat] = useState<ExportFormat>('png');
   const [resolution, setResolution] = useState<PngResolution>(2);
   const [isExporting, setIsExporting] = useState(false);
@@ -72,22 +64,12 @@ export function ExportDialog({ open, onClose, cyRef }: ExportDialogProps) {
   };
 
   const exportPNG = async () => {
-    if (!cyRef.current) {
+    if (!rendererRef.current) {
       throw new Error('图谱未初始化');
     }
 
-    const cy = cyRef.current;
-    
-    // 生成 PNG
-    const png = cy.png({
-      output: 'blob',
-      bg: '#ffffff',
-      full: true,
-      scale: resolution,
-    });
-
-    // 下载
-    const url = URL.createObjectURL(png as Blob);
+    const png = await rendererRef.current.exportPNG({ background: '#ffffff', scale: resolution });
+    const url = URL.createObjectURL(png);
     const link = document.createElement('a');
     link.href = url;
     link.download = `graph-${Date.now()}.png`;
@@ -96,19 +78,11 @@ export function ExportDialog({ open, onClose, cyRef }: ExportDialogProps) {
   };
 
   const exportSVG = async () => {
-    if (!cyRef.current) {
+    if (!rendererRef.current) {
       throw new Error('图谱未初始化');
     }
 
-    const cy = cyRef.current;
-    
-    // 生成 SVG
-    const svgContent = (cy as any).svg({
-      full: true,
-      scale: 1,
-    });
-
-    // 创建 Blob 并下载
+    const svgContent = await rendererRef.current.exportSVG({ background: '#ffffff' });
     const blob = new Blob([svgContent], { type: 'image/svg+xml' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
@@ -123,7 +97,6 @@ export function ExportDialog({ open, onClose, cyRef }: ExportDialogProps) {
       throw new Error('无图数据可导出');
     }
 
-    // 序列化图数据
     const data = {
       metadata: {
         exportDate: new Date().toISOString(),
@@ -150,7 +123,6 @@ export function ExportDialog({ open, onClose, cyRef }: ExportDialogProps) {
       <DialogTitle>导出图谱</DialogTitle>
 
       <DialogContent>
-        {/* 格式选择 */}
         <FormControl component="fieldset" fullWidth sx={{ mb: 3 }}>
           <FormLabel component="legend">导出格式</FormLabel>
           <RadioGroup
@@ -207,7 +179,6 @@ export function ExportDialog({ open, onClose, cyRef }: ExportDialogProps) {
 
         <Divider sx={{ my: 2 }} />
 
-        {/* PNG 选项 */}
         {format === 'png' && (
           <FormControl fullWidth>
             <FormLabel>分辨率</FormLabel>
@@ -219,29 +190,11 @@ export function ExportDialog({ open, onClose, cyRef }: ExportDialogProps) {
             >
               <MenuItem value={1}>1x (标准)</MenuItem>
               <MenuItem value={2}>2x (高清)</MenuItem>
-              <MenuItem value={4}>4x (超高清)</MenuItem>
+              <MenuItem value={4}>4x (超清)</MenuItem>
             </Select>
-            <Typography variant="caption" color="text.secondary" sx={{ mt: 1 }}>
-              更高的分辨率会生成更大的文件
-            </Typography>
           </FormControl>
         )}
 
-        {/* SVG 选项 */}
-        {format === 'svg' && (
-          <Alert severity="info">
-            SVG 是可缩放的矢量图形格式，可以在不失真的情况下放大，并且可以在矢量图形编辑器中进一步编辑。
-          </Alert>
-        )}
-
-        {/* JSON 选项 */}
-        {format === 'json' && (
-          <Alert severity="info">
-            JSON 文件将包含所有节点、边和属性数据，可用于数据分析或重新导入。
-          </Alert>
-        )}
-
-        {/* 错误提示 */}
         {error && (
           <Alert severity="error" sx={{ mt: 2 }}>
             {error}
@@ -253,11 +206,7 @@ export function ExportDialog({ open, onClose, cyRef }: ExportDialogProps) {
         <Button onClick={onClose} disabled={isExporting}>
           取消
         </Button>
-        <Button
-          onClick={handleExport}
-          variant="contained"
-          disabled={isExporting || !graphData}
-        >
+        <Button variant="contained" onClick={handleExport} disabled={isExporting}>
           {isExporting ? '导出中...' : '导出'}
         </Button>
       </DialogActions>

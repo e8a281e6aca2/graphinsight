@@ -23,28 +23,36 @@ import {
   Refresh as RefreshIcon,
   ZoomIn as ZoomInIcon,
 } from '@mui/icons-material';
-import type { Core } from 'cytoscape';
-import { analyzeNodeImportance, applyImportanceToNodeSize, type NodeImportance } from '../../utils/graphAnalysis';
+import type { RendererAPI } from '../../renderers/core/types';
+import { analyzeNodeImportance, getNodeSizeOverrides, type NodeImportance } from '../../utils/graphAnalysis';
+import { useGraphStore } from '../../store/graphStore';
 
 interface NodeImportancePanelProps {
-  cyRef: React.RefObject<Core | null>;
+  rendererRef: React.RefObject<RendererAPI | null>;
 }
 
 type ImportanceMetric = 'pageRank' | 'degree' | 'betweenness' | 'closeness';
 
-export function NodeImportancePanel({ cyRef }: NodeImportancePanelProps) {
+function getGraphSnapshot(renderer: RendererAPI) {
+  const nodes = renderer.getAllNodes();
+  const edges = renderer.getAllEdges();
+  return { nodes, edges };
+}
+
+export function NodeImportancePanel({ rendererRef }: NodeImportancePanelProps) {
+  const graphData = useGraphStore((state) => state.graphData);
   const [importance, setImportance] = useState<NodeImportance[]>([]);
   const [loading, setLoading] = useState(false);
   const [selectedMetric, setSelectedMetric] = useState<ImportanceMetric>('pageRank');
   const [appliedToSize, setAppliedToSize] = useState(false);
 
-  // 执行分析
   const runAnalysis = () => {
-    if (!cyRef.current) return;
+    if (!rendererRef.current) return;
 
     setLoading(true);
     try {
-      const results = analyzeNodeImportance(cyRef.current);
+      const snapshot = getGraphSnapshot(rendererRef.current);
+      const results = analyzeNodeImportance(snapshot);
       setImportance(results);
     } catch (error) {
       console.error('Analysis failed:', error);
@@ -53,72 +61,61 @@ export function NodeImportancePanel({ cyRef }: NodeImportancePanelProps) {
     }
   };
 
-  // 初始加载
   useEffect(() => {
-    if (cyRef.current && cyRef.current.nodes().length > 0) {
+    if (!rendererRef.current) return;
+    if (rendererRef.current.getAllNodes().length > 0) {
       runAnalysis();
     }
-  }, [cyRef]);
+  }, [rendererRef, graphData?.stats?.executionTime]);
 
-  // 应用到节点大小
   const handleApplyToSize = () => {
-    if (!cyRef.current) return;
-
-    applyImportanceToNodeSize(cyRef.current, selectedMetric);
+    if (!rendererRef.current || importance.length === 0) return;
+    const overrides = getNodeSizeOverrides(importance, selectedMetric);
+    rendererRef.current.setNodeSizeOverrides(overrides);
     setAppliedToSize(true);
   };
 
-  // 重置节点大小
   const handleResetSize = () => {
-    if (!cyRef.current) return;
-
-    cyRef.current.nodes().style({
-      width: 60,
-      height: 60,
-    });
+    if (!rendererRef.current) return;
+    rendererRef.current.setNodeSizeOverrides(null);
     setAppliedToSize(false);
   };
 
-  // 定位到节点
   const handleLocateNode = (nodeId: string) => {
-    if (!cyRef.current) return;
-
-    const node = cyRef.current.getElementById(nodeId);
-    if (node.length > 0) {
-      cyRef.current.animate({
-        center: { eles: node },
-        zoom: Math.max(cyRef.current.zoom(), 1.5),
-      }, {
-        duration: 500,
-      });
-      node.select();
-    }
+    if (!rendererRef.current) return;
+    rendererRef.current.setActiveElement({ type: 'node', id: nodeId });
+    rendererRef.current.fitTo([nodeId], 120);
   };
 
-  // 获取排序后的节点列表
   const getSortedNodes = () => {
     return [...importance].sort((a, b) => {
       switch (selectedMetric) {
-        case 'pageRank': return b.pageRank - a.pageRank;
-        case 'degree': return b.degreeCentrality - a.degreeCentrality;
-        case 'betweenness': return b.betweennessCentrality - a.betweennessCentrality;
-        case 'closeness': return b.closenessCentrality - a.closenessCentrality;
+        case 'pageRank':
+          return b.pageRank - a.pageRank;
+        case 'degree':
+          return b.degreeCentrality - a.degreeCentrality;
+        case 'betweenness':
+          return b.betweennessCentrality - a.betweennessCentrality;
+        case 'closeness':
+          return b.closenessCentrality - a.closenessCentrality;
       }
     });
   };
 
-  // 格式化数值
   const formatValue = (value: number) => {
     return value.toFixed(4);
   };
 
-  // 获取指标值
   const getMetricValue = (node: NodeImportance) => {
     switch (selectedMetric) {
-      case 'pageRank': return node.pageRank;
-      case 'degree': return node.degreeCentrality;
-      case 'betweenness': return node.betweennessCentrality;
-      case 'closeness': return node.closenessCentrality;
+      case 'pageRank':
+        return node.pageRank;
+      case 'degree':
+        return node.degreeCentrality;
+      case 'betweenness':
+        return node.betweennessCentrality;
+      case 'closeness':
+        return node.closenessCentrality;
     }
   };
 
@@ -127,13 +124,12 @@ export function NodeImportancePanel({ cyRef }: NodeImportancePanelProps) {
 
   return (
     <Box sx={{ p: 2 }}>
-      {/* 标题和操作 */}
       <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 2 }}>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
           <TrendingUpIcon color="primary" />
           <Typography variant="h6">节点重要性分析</Typography>
         </Box>
-        
+
         <Tooltip title="刷新分析">
           <IconButton size="small" onClick={runAnalysis} disabled={loading}>
             <RefreshIcon />
@@ -141,7 +137,6 @@ export function NodeImportancePanel({ cyRef }: NodeImportancePanelProps) {
         </Tooltip>
       </Box>
 
-      {/* 指标选择 */}
       <Box sx={{ mb: 2 }}>
         <Typography variant="subtitle2" gutterBottom>
           选择指标
@@ -176,7 +171,6 @@ export function NodeImportancePanel({ cyRef }: NodeImportancePanelProps) {
         </ToggleButtonGroup>
       </Box>
 
-      {/* 应用到节点大小 */}
       <Box sx={{ mb: 2, display: 'flex', gap: 1 }}>
         <Button
           variant={appliedToSize ? 'outlined' : 'contained'}
@@ -188,25 +182,18 @@ export function NodeImportancePanel({ cyRef }: NodeImportancePanelProps) {
           应用到节点大小
         </Button>
         {appliedToSize && (
-          <Button
-            variant="outlined"
-            size="small"
-            onClick={handleResetSize}
-            fullWidth
-          >
+          <Button variant="outlined" size="small" onClick={handleResetSize} fullWidth>
             重置大小
           </Button>
         )}
       </Box>
 
-      {/* 加载状态 */}
       {loading && (
         <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
           <CircularProgress />
         </Box>
       )}
 
-      {/* 结果表格 */}
       {!loading && importance.length > 0 && (
         <>
           <Alert severity="info" sx={{ mb: 2 }}>
@@ -219,22 +206,13 @@ export function NodeImportancePanel({ cyRef }: NodeImportancePanelProps) {
                 <TableRow>
                   <TableCell>排名</TableCell>
                   <TableCell>节点</TableCell>
-                  <TableCell align="right">
-                    {selectedMetric === 'pageRank' && 'PageRank'}
-                    {selectedMetric === 'degree' && '度中心性'}
-                    {selectedMetric === 'betweenness' && '介数中心性'}
-                    {selectedMetric === 'closeness' && '接近中心性'}
-                  </TableCell>
+                  <TableCell align="right">指标值</TableCell>
                   <TableCell align="center">操作</TableCell>
                 </TableRow>
               </TableHead>
               <TableBody>
                 {topNodes.map((node, index) => (
-                  <TableRow
-                    key={node.id}
-                    hover
-                    sx={{ '&:hover': { backgroundColor: 'action.hover' } }}
-                  >
+                  <TableRow key={node.id}>
                     <TableCell>
                       <Chip
                         label={index + 1}
@@ -243,24 +221,21 @@ export function NodeImportancePanel({ cyRef }: NodeImportancePanelProps) {
                       />
                     </TableCell>
                     <TableCell>
-                      <Typography variant="body2" noWrap sx={{ maxWidth: 150 }}>
+                      <Typography variant="body2" fontWeight={500}>
                         {node.label}
                       </Typography>
-                      <Typography variant="caption" color="text.secondary" noWrap>
+                      <Typography variant="caption" color="text.secondary">
                         {node.id}
                       </Typography>
                     </TableCell>
                     <TableCell align="right">
-                      <Typography variant="body2" fontWeight="bold">
+                      <Typography variant="body2">
                         {formatValue(getMetricValue(node))}
                       </Typography>
                     </TableCell>
                     <TableCell align="center">
                       <Tooltip title="定位节点">
-                        <IconButton
-                          size="small"
-                          onClick={() => handleLocateNode(node.id)}
-                        >
+                        <IconButton size="small" onClick={() => handleLocateNode(node.id)}>
                           <ZoomInIcon fontSize="small" />
                         </IconButton>
                       </Tooltip>
@@ -270,24 +245,7 @@ export function NodeImportancePanel({ cyRef }: NodeImportancePanelProps) {
               </TableBody>
             </Table>
           </TableContainer>
-
-          {/* 指标说明 */}
-          <Box sx={{ mt: 2, p: 1.5, backgroundColor: 'background.default', borderRadius: 1 }}>
-            <Typography variant="caption" color="text.secondary">
-              {selectedMetric === 'pageRank' && '提示: PageRank: 基于链接结构计算节点重要性，值越大表示节点越重要'}
-              {selectedMetric === 'degree' && '提示: 度中心性: 节点的连接数量，值越大表示连接越多'}
-              {selectedMetric === 'betweenness' && '提示: 介数中心性: 节点在最短路径中的出现频率，值越大表示桥接作用越强'}
-              {selectedMetric === 'closeness' && '提示: 接近中心性: 节点到其他节点的平均距离的倒数，值越大表示越接近图谱中心'}
-            </Typography>
-          </Box>
         </>
-      )}
-
-      {/* 空状态 */}
-      {!loading && importance.length === 0 && (
-        <Alert severity="info">
-          暂无数据，请先执行查询加载图谱数据
-        </Alert>
       )}
     </Box>
   );
