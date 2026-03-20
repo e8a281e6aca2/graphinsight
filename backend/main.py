@@ -166,12 +166,16 @@ async def health_check():
 
 
 # 导入并注册业务 API 路由
-from api.routes import query, node, expand, media, nl2cypher
+from api.routes import query, node, expand, media, nl2cypher, client_logs, graph_build, doc_qa, documents
 app.include_router(query.router, prefix="/api", tags=["图谱查询"])
 app.include_router(node.router, prefix="/api", tags=["节点操作"])
 app.include_router(expand.router, prefix="/api", tags=["图谱扩展"])
 app.include_router(media.router, prefix="/api", tags=["媒体文件"])
 app.include_router(nl2cypher.router, prefix="/api", tags=["AI 查询"])
+app.include_router(client_logs.router, prefix="/api", tags=["客户端日志"])
+app.include_router(graph_build.router, prefix="/api", tags=["图谱构建"])
+app.include_router(doc_qa.router, prefix="/api", tags=["文档问答"])
+app.include_router(documents.router, prefix="/api", tags=["文档管理"])
 
 # 导入并注册新的标准化管理 API
 from admin.api.endpoints import auth as new_auth, config as new_config, monitor as new_monitor, logs as new_logs, profile

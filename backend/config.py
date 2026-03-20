@@ -29,12 +29,29 @@ class Settings:
         
         # 媒体存储路径
         self.media_storage_path = os.getenv("MEDIA_STORAGE_PATH", "./media")
+
+        # 文档存储路径（用于建图与问答）
+        self.document_storage_path = os.getenv("DOCUMENT_STORAGE_PATH", "./documents")
         
         # OpenAI 配置
         self.openai_api_key = os.getenv("OPENAI_API_KEY", "")
         self.openai_model = os.getenv("OPENAI_MODEL", "gpt-3.5-turbo")
         self.openai_max_tokens = int(os.getenv("OPENAI_MAX_TOKENS", "500"))
         self.openai_temperature = float(os.getenv("OPENAI_TEMPERATURE", "0.1"))
+
+        # LLM 实体抽取配置（OpenAI 兼容）
+        self.llm_enabled = os.getenv("LLM_ENABLED", "true").lower() == "true"
+        self.llm_api_key = os.getenv("LLM_API_KEY") or self.openai_api_key
+        self.llm_base_url = os.getenv("LLM_BASE_URL") or os.getenv("OPENAI_BASE_URL", "")
+        self.llm_model = os.getenv("LLM_MODEL") or self.openai_model
+        self.llm_max_entities = int(os.getenv("LLM_MAX_ENTITIES", "12"))
+        self.llm_temperature = float(os.getenv("LLM_TEMPERATURE", "0.1"))
+
+        # LLM 问答配置（默认复用 LLM_MODEL）
+        self.llm_qa_model = os.getenv("LLM_QA_MODEL") or self.llm_model
+        self.llm_qa_temperature = float(os.getenv("LLM_QA_TEMPERATURE", "0.2"))
+        self.llm_qa_max_tokens = int(os.getenv("LLM_QA_MAX_TOKENS", "600"))
+        self.llm_qa_max_context = int(os.getenv("LLM_QA_MAX_CONTEXT", "4"))
         
         # NL2Cypher 配置
         self.nl2cypher_enabled = os.getenv("NL2CYPHER_ENABLED", "true").lower() == "true"
