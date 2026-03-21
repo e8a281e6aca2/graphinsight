@@ -1,6 +1,7 @@
 import type { GraphData } from '../../store/graphStore';
 import { getNodeColor, getEdgeColor } from '../../utils/colorMapping';
 import { generateNodeLabel } from '../../utils/graphDataConverter';
+import { buildProxyMediaUrl } from '../../utils/apiBase';
 import type { RendererCluster, RendererData, RendererEdge, RendererNode } from './types';
 
 const DEFAULT_RADIUS = 24;
@@ -125,7 +126,7 @@ function extractMedia(properties: Record<string, any>) {
 
   const proxiedImage = imageUrl
     ? (imageUrl.startsWith('http://') || imageUrl.startsWith('https://'))
-      ? `http://localhost:8000/api/proxy-media?url=${encodeURIComponent(imageUrl)}`
+      ? buildProxyMediaUrl(imageUrl)
       : imageUrl
     : undefined;
 
@@ -156,7 +157,7 @@ function extractMedia(properties: Record<string, any>) {
 
   const proxiedVideo = videoUrl
     ? (videoUrl.startsWith('http://') || videoUrl.startsWith('https://'))
-      ? `http://localhost:8000/api/proxy-media?url=${encodeURIComponent(videoUrl)}`
+      ? buildProxyMediaUrl(videoUrl)
       : videoUrl
     : undefined;
 
@@ -176,7 +177,7 @@ function extractMedia(properties: Record<string, any>) {
 
   const proxiedAudio = audioUrl
     ? (audioUrl.startsWith('http://') || audioUrl.startsWith('https://'))
-      ? `http://localhost:8000/api/proxy-media?url=${encodeURIComponent(audioUrl)}`
+      ? buildProxyMediaUrl(audioUrl)
       : audioUrl
     : undefined;
 

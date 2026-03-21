@@ -1,8 +1,9 @@
 import { api } from './api';
+import { API_BASE_URL } from '../utils/apiBase';
 
 // 获取媒体文件 URL
 export function getMediaUrl(filename: string): string {
-  const baseUrl = api.defaults.baseURL || 'http://localhost:8000';
+  const baseUrl = api.defaults.baseURL || API_BASE_URL;
   return `${baseUrl}/api/media/${filename}`;
 }
 

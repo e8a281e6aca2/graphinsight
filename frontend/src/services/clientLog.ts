@@ -1,5 +1,6 @@
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
-const CLIENT_LOG_ENDPOINT = `${API_BASE_URL}/api/client-logs`;
+import { buildApiUrl } from '../utils/apiBase';
+
+const CLIENT_LOG_ENDPOINT = buildApiUrl('/client-logs');
 
 export type ClientLogLevel = 'info' | 'warn' | 'error';
 

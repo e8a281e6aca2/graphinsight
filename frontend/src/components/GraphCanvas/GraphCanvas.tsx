@@ -1,28 +1,35 @@
-import { useEffect, useRef, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { Box, Typography, Dialog, DialogTitle, DialogContent, IconButton } from '@mui/material';
 import { Close as CloseIcon } from '@mui/icons-material';
-import cytoscape from 'cytoscape';
-import type { Core } from 'cytoscape';
 import { useGraphStore } from '../../store/graphStore';
-import { LAYOUT_CONFIGS } from '../../utils/cytoscapeConfig';
-import { generateDynamicStylesByNodeType, applyNodeTypeStylesToCytoscape } from '../../utils/dynamicStyleGenerator';
-import { convertToCytoscapeFormat } from '../../utils/graphDataConverter';
-import { generateVideoThumbnail } from '../../utils/videoThumbnail';
+import { adaptGraphData } from '../../renderers/core/adapter';
+import { createRenderer } from '../../renderers/canvas2d/renderer';
+import { createRenderer3D } from '../../renderers/force3d/renderer';
+import type { RendererAPI, RendererActiveElement } from '../../renderers/core/types';
 import { GraphControls } from './GraphControls';
 import { NodeTooltip } from './NodeTooltip';
 import { Minimap } from './Minimap';
-import { ContextMenu } from './ContextMenu';
+import { ContextMenu, type ContextMenuTarget } from './ContextMenu';
 import { PerformanceWarningDialog } from './PerformanceWarningDialog';
+import { NavigationPanel } from './NavigationPanel';
+import { reportClientLog } from '../../services/clientLog';
+import { buildApiUrl } from '../../utils/apiBase';
 
 interface GraphCanvasProps {
-  cyRef?: React.RefObject<Core | null>;
+  rendererRef?: React.RefObject<RendererAPI | null>;
   onGroupingUpdate?: () => void;
 }
 
-export function GraphCanvas({ cyRef: externalCyRef, onGroupingUpdate }: GraphCanvasProps) {
+export function GraphCanvas({ rendererRef: externalRendererRef, onGroupingUpdate }: GraphCanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const internalCyRef = useRef<Core | null>(null);
-  const cyRef = externalCyRef || internalCyRef;
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const threeContainerRef = useRef<HTMLDivElement>(null);
+  const internalRendererRef = useRef<RendererAPI | null>(null);
+  const rendererRef = externalRendererRef || internalRendererRef;
+  const activeElementRef = useRef<RendererActiveElement | null>(null);
+  const rendererDataRef = useRef<any>(null);
+
+  const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
 
   // 提示框状态
   const [tooltipVisible, setTooltipVisible] = useState(false);
@@ -35,7 +42,16 @@ export function GraphCanvas({ cyRef: externalCyRef, onGroupingUpdate }: GraphCan
 
   // 右键菜单状态
   const [contextMenuPosition, setContextMenuPosition] = useState<{ top: number; left: number } | null>(null);
-  const [contextMenuTarget, setContextMenuTarget] = useState<any>(null);
+  const [contextMenuTarget, setContextMenuTarget] = useState<ContextMenuTarget>(null);
+  const [navigationOpen, setNavigationOpen] = useState(false);
+  const [viewMode, setViewMode] = useState<'2d' | '3d'>('2d');
+  const [rendererError, setRendererError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (viewMode === '3d' && navigationOpen) {
+      setNavigationOpen(false);
+    }
+  }, [navigationOpen, viewMode]);
 
   // 性能警告状态
   const [showPerformanceWarning, setShowPerformanceWarning] = useState(false);
@@ -44,464 +60,537 @@ export function GraphCanvas({ cyRef: externalCyRef, onGroupingUpdate }: GraphCan
   const PERFORMANCE_THRESHOLD = 500;
 
   const graphData = useGraphStore((state) => state.graphData);
-  const isDarkMode = useGraphStore((state) => state.isDarkMode);
+  const setGraphData = useGraphStore((state) => state.setGraphData);
+  const selectedNodeId = useGraphStore((state) => state.selectedNodeId);
   const setSelectedNodeId = useGraphStore((state) => state.setSelectedNodeId);
   const activeFilters = useGraphStore((state) => state.activeFilters);
   const nodeTypeStyles = useGraphStore((state) => state.nodeTypeStyles);
   const groupingState = useGraphStore((state) => state.groupingState);
   const toggleGroupCollapse = useGraphStore((state) => state.toggleGroupCollapse);
+  const isDarkMode = useGraphStore((state) => state.isDarkMode);
+  const selectedCitation = useGraphStore((state) => state.selectedCitation);
+  const activeWorkspaceTab = useGraphStore((state) => state.activeWorkspaceTab);
+  const rendererKey = useMemo(
+    () => (viewMode === '3d' ? (isDarkMode ? '3d-dark' : '3d-light') : '2d'),
+    [viewMode, isDarkMode]
+  );
+
+  const groupingStateRef = useRef(groupingState);
+  const graphDataRef = useRef(graphData);
+  const onGroupingUpdateRef = useRef(onGroupingUpdate);
+  const isExpandingRef = useRef(false);
+
+  useEffect(() => {
+    groupingStateRef.current = groupingState;
+  }, [groupingState]);
+
+  useEffect(() => {
+    graphDataRef.current = graphData;
+  }, [graphData]);
+
+  useEffect(() => {
+    onGroupingUpdateRef.current = onGroupingUpdate;
+  }, [onGroupingUpdate]);
 
   // 展开节点状态
   const [isExpanding, setIsExpanding] = useState(false);
 
-  // 视频播放处理函数
-  const handleVideoPlay = (videoUrl: string, title: string) => {
-    console.log('🎬 handleVideoPlay called with:', { videoUrl, title });
+  useEffect(() => {
+    isExpandingRef.current = isExpanding;
+  }, [isExpanding]);
+
+  // 过滤隐藏状态
+  const [hiddenNodeIds, setHiddenNodeIds] = useState<Set<string>>(new Set());
+  const [hiddenEdgeIds, setHiddenEdgeIds] = useState<Set<string>>(new Set());
+
+  const handleVideoPlay = useCallback((videoUrl: string, title: string) => {
     setCurrentVideo({ url: videoUrl, title });
     setVideoDialogOpen(true);
-    console.log('📺 Video dialog should open now');
-  };
+  }, []);
 
-  // 展开节点处理函数
-  const handleExpandNode = async (nodeId: string) => {
-    if (isExpanding) return;
-    
+  const handleExpandNode = useCallback(async (nodeId: string) => {
+    if (isExpandingRef.current) return;
+
     setIsExpanding(true);
-    console.log('Expanding node:', nodeId);
-    
+
     try {
-      const response = await fetch('http://localhost:8000/api/expand', {
+      const response = await fetch(buildApiUrl('/expand'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           nodeId: nodeId,
           direction: 'both',
-          limit: 20
+          limit: 20,
         }),
       });
-      
+
       const data = await response.json();
-      console.log('Expand result:', data);
-      
+
       if (data.nodes && data.nodes.length > 0) {
-        // 合并新节点和边到现有图数据
-        const currentData = graphData || { nodes: [], edges: [], stats: { nodeCount: 0, edgeCount: 0, executionTime: 0 } };
-        
-        // 去重合并节点
-        const existingNodeIds = new Set(currentData.nodes.map(n => n.id));
+        const currentData = graphDataRef.current || {
+          nodes: [],
+          edges: [],
+          stats: { nodeCount: 0, edgeCount: 0, executionTime: 0 },
+        };
+
+        const existingNodeIds = new Set(currentData.nodes.map((n: any) => n.id));
         const newNodes = data.nodes.filter((n: any) => !existingNodeIds.has(n.id));
-        
-        // 去重合并边
-        const existingEdgeIds = new Set(currentData.edges.map(e => e.id));
+
+        const existingEdgeIds = new Set(currentData.edges.map((e: any) => e.id));
         const newEdges = data.edges.filter((e: any) => !existingEdgeIds.has(e.id));
-        
+
         const mergedData = {
           nodes: [...currentData.nodes, ...newNodes],
           edges: [...currentData.edges, ...newEdges],
           stats: {
             nodeCount: currentData.nodes.length + newNodes.length,
             edgeCount: currentData.edges.length + newEdges.length,
-            executionTime: data.stats?.executionTime || 0
-          }
+            executionTime: data.stats?.executionTime || 0,
+          },
         };
-        
-        console.log('📈 Merged data:', mergedData.stats);
+
         setGraphData(mergedData);
-      } else {
-        console.log('No new neighbors found for node:', nodeId);
       }
     } catch (error) {
       console.error('Failed to expand node:', error);
     } finally {
       setIsExpanding(false);
     }
-  };
+  }, [setGraphData]);
 
   const handleVideoClose = () => {
     setVideoDialogOpen(false);
     setCurrentVideo(null);
   };
 
-  // 性能警告处理函数
   const handlePerformanceContinue = () => {
-    console.log('User chose to continue loading large graph');
     setShowPerformanceWarning(false);
     setPendingGraphData(null);
-    setUserConfirmedLargeGraph(true); // 标记用户已确认
-    // 数据已经在 graphData 中，关闭警告后会触发重新渲染
+    setUserConfirmedLargeGraph(true);
   };
 
   const handlePerformanceCancel = () => {
-    console.log('User cancelled loading large graph');
     setShowPerformanceWarning(false);
     setPendingGraphData(null);
     setUserConfirmedLargeGraph(false);
-    // 清空图数据
     const emptyData = { nodes: [], edges: [], stats: { nodeCount: 0, edgeCount: 0, executionTime: 0 } };
     setGraphData(emptyData);
   };
 
-  const setGraphData = useGraphStore((state) => state.setGraphData);
-
-  // 当 graphData 变化时，重置用户确认状态（新查询时）
   useEffect(() => {
-    // 如果是新的查询数据（不同的数据），重置确认状态
     if (graphData && graphData.nodes.length > 0) {
       setUserConfirmedLargeGraph(false);
     }
-  }, [graphData?.stats?.executionTime]); // 使用 executionTime 作为新查询的标识
+  }, [graphData?.stats?.executionTime]);
 
-  // 转换图数据为 Cytoscape 格式
-  const cytoscapeElements = useMemo(() => {
-    console.log('GraphCanvas - graphData:', graphData);
-    console.log('GraphCanvas - groupingState:', groupingState);
-    
-    // 检查性能警告（只在用户未确认且没有待处理数据时触发）
+  const rendererData = useMemo(() => {
     if (graphData && graphData.nodes.length > PERFORMANCE_THRESHOLD && !userConfirmedLargeGraph && !pendingGraphData) {
-      console.log('Performance warning triggered:', graphData.nodes.length, 'nodes');
       setPendingGraphData(graphData);
       setShowPerformanceWarning(true);
-      return []; // 暂时不渲染，等待用户确认
+      return null;
     }
-    
-    const elements = convertToCytoscapeFormat(
-      graphData, 
-      groupingState.groups, 
-      groupingState.showGroupLabels,
-      nodeTypeStyles
-    );
-    console.log('GraphCanvas - cytoscapeElements:', elements);
-    
-    // 异步生成视频缩略图
-    elements.forEach((element) => {
-      // 只处理节点元素
-      if ('source' in element.data) return; // 跳过边元素
-      
-      const nodeData = element.data as any;
-      if (nodeData.isVideo && nodeData.video) {
-        generateVideoThumbnail(nodeData.video).then((thumbnailUrl) => {
-          // 更新节点图片
-          if (cyRef.current) {
-            const node = cyRef.current.getElementById(nodeData.id);
-            if (node.length > 0) {
-              node.data('image', thumbnailUrl);
-              console.log('🎬 Updated video thumbnail for node:', nodeData.id);
-            }
-          }
-        }).catch((error) => {
-          console.warn('Failed to generate video thumbnail for node:', nodeData.id, error);
-        });
-      }
-    });
-    
-    return elements;
-  }, [graphData, groupingState, nodeTypeStyles, pendingGraphData, userConfirmedLargeGraph]);
 
-  // 初始化 Cytoscape 实例
+    return adaptGraphData(graphData, nodeTypeStyles);
+  }, [graphData, nodeTypeStyles, pendingGraphData, userConfirmedLargeGraph]);
+
   useEffect(() => {
-    if (!containerRef.current) return;
+    rendererDataRef.current = rendererData;
+  }, [rendererData]);
 
-    // 创建 Cytoscape 实例
-    const cy = cytoscape({
-      container: containerRef.current,
-      elements: [],
-      style: [
-        ...generateDynamicStylesByNodeType(nodeTypeStyles, isDarkMode),
-        // 搜索高亮样式
-        {
-          selector: '.search-highlight',
-          style: {
-            'border-width': 3,
-            'border-color': '#ffd700',
-            'border-opacity': 1,
-            'background-color': '#ffd700',
-            'background-opacity': 0.3,
-            'z-index': 999,
-          },
-        },
-      ],
-      layout: LAYOUT_CONFIGS.cose,
-      minZoom: 0.1,
-      maxZoom: 3,
-      wheelSensitivity: 0.2,
-      selectionType: 'single',
-    });
-
-    console.log('Cytoscape instance created:', cy);
-    console.log('Container size:', containerRef.current?.offsetWidth, 'x', containerRef.current?.offsetHeight);
-
-    // 添加事件监听器
-
-    // 单击节点 - 选择节点
-    cy.on('tap', 'node', (event) => {
-      const node = event.target;
-      console.log('👆 Single click node:', node.id(), 'data:', node.data());
-      setSelectedNodeId(node.id());
-    });
-
-    // 双击节点 - 播放视频、展开节点或切换分组折叠
-    cy.on('dbltap', 'node', (event) => {
-      const node = event.target;
-      const nodeType = node.data('type');
-      
-      // 如果是分组节点，切换折叠状态
-      if (nodeType === 'group') {
-        const groupId = node.id();
-        console.log('🔄 Toggle group collapse:', groupId);
-        toggleGroupCollapse(groupId);
-        onGroupingUpdate?.();
-        return;
-      }
-      
-      // 普通节点的处理逻辑
-      const mediaType = node.data('mediaType');
-      const videoUrl = node.data('video');
-      const nodeData = node.data();
-      
-      console.log('Double click node:', node.id());
-      console.log('Node data:', nodeData);
-      console.log('Media type:', mediaType);
-      console.log('Video URL:', videoUrl);
-      
-      if (mediaType === 'video' && videoUrl) {
-        console.log('Playing video:', videoUrl);
-        handleVideoPlay(videoUrl, node.data('label'));
-      } else if (videoUrl) {
-        // 即使mediaType不是video，但有videoUrl也播放
-        console.log('Playing video (fallback):', videoUrl);
-        handleVideoPlay(videoUrl, node.data('label'));
-      } else {
-        // 展开节点 - 获取邻居节点
-        console.log('Expand node:', node.id());
-        handleExpandNode(node.id());
+  const collapsedNodeIds = useMemo(() => {
+    const ids = new Set<string>();
+    groupingState.groups.forEach((group) => {
+      if (group.collapsed) {
+        group.nodeIds.forEach((id) => ids.add(id));
       }
     });
+    return ids;
+  }, [groupingState.groups]);
 
-    // 点击背景取消选择和关闭菜单
-    cy.on('tap', (event) => {
-      if (event.target === cy) {
-        setSelectedNodeId(null);
-        setContextMenuPosition(null);
-        setContextMenuTarget(null);
-      }
+  const handleHideNode = useCallback((id: string) => {
+    setHiddenNodeIds((prev) => {
+      const next = new Set(prev);
+      next.add(id);
+      return next;
     });
+  }, []);
 
-    // 右键菜单 - 节点
-    cy.on('cxttap', 'node', (event) => {
-      event.preventDefault();
-      const node = event.target;
-      const renderedPosition = node.renderedPosition();
-      const containerRect = containerRef.current?.getBoundingClientRect();
-      
-      if (containerRect) {
-        setContextMenuPosition({
-          top: containerRect.top + renderedPosition.y,
-          left: containerRect.left + renderedPosition.x,
-        });
-        setContextMenuTarget(node);
-      }
+  const handleShowNode = useCallback((id: string) => {
+    setHiddenNodeIds((prev) => {
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
     });
+  }, []);
 
-    // 右键菜单 - 边
-    cy.on('cxttap', 'edge', (event) => {
-      event.preventDefault();
-      const edge = event.target;
-      const renderedMidpoint = edge.renderedMidpoint();
-      const containerRect = containerRef.current?.getBoundingClientRect();
-      
-      if (containerRect) {
-        setContextMenuPosition({
-          top: containerRect.top + renderedMidpoint.y,
-          left: containerRect.left + renderedMidpoint.x,
-        });
-        setContextMenuTarget(edge);
-      }
+  const handleHideEdge = useCallback((id: string) => {
+    setHiddenEdgeIds((prev) => {
+      const next = new Set(prev);
+      next.add(id);
+      return next;
     });
+  }, []);
 
-    // 鼠标悬停 - 显示提示框
-    cy.on('mouseover', 'node', (event) => {
-      const node = event.target;
-      const nodeType = node.data('type');
-      const renderedPosition = node.renderedPosition();
-
-      // 为分组节点显示特殊的提示信息
-      if (nodeType === 'group') {
-        const groupId = node.id();
-        const group = groupingState.groups.find(g => g.id === groupId);
-        setTooltipData({
-          id: node.id(),
-          label: node.data('label') || '分组',
-          type: '分组',
-          properties: {
-            节点数量: group?.nodeIds.length || 0,
-            状态: group?.collapsed ? '已折叠' : '已展开',
-          },
-        });
-      } else {
-        setTooltipData({
-          id: node.id(),
-          label: node.data('label'),
-          type: node.data('type'),
-          properties: node.data('properties'),
-        });
-      }
-      
-      setTooltipPosition({
-        x: renderedPosition.x,
-        y: renderedPosition.y,
-      });
-      setTooltipVisible(true);
+  const handleShowEdge = useCallback((id: string) => {
+    setHiddenEdgeIds((prev) => {
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
     });
+  }, []);
 
-    // 鼠标离开 - 隐藏提示框
-    cy.on('mouseout', 'node', () => {
+  const handleRendererClick = useCallback((payload: { type: 'node' | 'edge' | 'background'; id?: string; x: number; y: number }) => {
+    if (!rendererRef.current) return;
+
+    if (payload.type === 'node' && payload.id) {
+      setSelectedNodeId(payload.id);
+      activeElementRef.current = { type: 'node', id: payload.id };
+      rendererRef.current.setActiveElement(activeElementRef.current);
+      return;
+    }
+
+    if (payload.type === 'edge' && payload.id) {
+      setSelectedNodeId(null);
+      activeElementRef.current = { type: 'edge', id: payload.id };
+      rendererRef.current.setActiveElement(activeElementRef.current);
+      return;
+    }
+
+    setSelectedNodeId(null);
+    activeElementRef.current = null;
+    rendererRef.current.setActiveElement(null);
+    setContextMenuPosition(null);
+    setContextMenuTarget(null);
+  }, [rendererRef, setSelectedNodeId]);
+
+  const handleRendererDoubleClick = useCallback((payload: { type: 'node' | 'background'; id?: string }) => {
+    if (payload.type !== 'node' || !payload.id || !rendererRef.current) return;
+
+    const node = rendererRef.current.getNodeById(payload.id);
+    if (!node) return;
+
+    if (node.type === 'group') {
+      toggleGroupCollapse(node.id);
+      onGroupingUpdateRef.current?.();
+      return;
+    }
+
+    const videoUrl = node.video || node.originalVideoUrl;
+
+    if ((node.mediaType === 'video' || node.isVideo) && videoUrl) {
+      handleVideoPlay(videoUrl, node.label);
+      return;
+    }
+
+    if (videoUrl) {
+      handleVideoPlay(videoUrl, node.label);
+      return;
+    }
+
+    handleExpandNode(node.id);
+  }, [handleExpandNode, handleVideoPlay, toggleGroupCollapse, rendererRef]);
+
+  const handleRendererContextMenu = useCallback((payload: { type: 'node' | 'edge' | 'background'; id?: string; x: number; y: number }) => {
+    if (payload.type === 'background') {
+      setContextMenuPosition(null);
+      setContextMenuTarget(null);
+      return;
+    }
+
+    if (payload.id) {
+      setContextMenuPosition({ top: payload.y, left: payload.x });
+      setContextMenuTarget({ type: payload.type, id: payload.id });
+    }
+  }, []);
+
+  const handleRendererHover = useCallback((payload: { type: 'node' | 'edge' | 'background'; id?: string; x: number; y: number }) => {
+    if (!rendererRef.current) return;
+
+    if (payload.type !== 'node' || !payload.id) {
       setTooltipVisible(false);
       setTooltipData(null);
-    });
+      return;
+    }
 
-    cyRef.current = cy;
+    const node = rendererRef.current.getNodeById(payload.id);
+    if (!node) return;
 
-    // 清理函数
-    return () => {
-      if (cyRef.current) {
-        cyRef.current.destroy();
-        cyRef.current = null;
+    if (node.type === 'group') {
+      const group = groupingStateRef.current.groups.find((g) => g.id === node.id);
+      setTooltipData({
+        id: node.id,
+        label: node.label || '分组',
+        type: '分组',
+        properties: {
+          节点数量: group?.nodeIds.length || 0,
+          状态: group?.collapsed ? '已折叠' : '已展开',
+        },
+      });
+    } else {
+      setTooltipData({
+        id: node.id,
+        label: node.label,
+        type: node.type,
+        properties: node.properties,
+      });
+    }
+
+    setTooltipPosition({ x: payload.x, y: payload.y });
+    setTooltipVisible(true);
+  }, [rendererRef]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    const container3d = threeContainerRef.current;
+    const is3D = rendererKey !== '2d';
+    if (!is3D && !canvas) return;
+    if (is3D && !container3d) return;
+
+    setRendererError(null);
+    const styleName = rendererKey === '3d-dark' ? 'kgCosmic' : 'kgVivid';
+    const maxAttempts = is3D ? 3 : 1;
+    const retryDelayMs = 400;
+    let renderer: RendererAPI | null = null;
+    let disposed = false;
+    let retryTimer: number | null = null;
+    let attempt = 0;
+
+    const clearRetryTimer = () => {
+      if (retryTimer !== null) {
+        window.clearTimeout(retryTimer);
+        retryTimer = null;
       }
     };
-  }, [isDarkMode, setSelectedNodeId]);
 
-  // 更新图数据
+    const logInitFailure = (error: unknown, attemptNo: number) => {
+      const errText = error instanceof Error ? error.message : String(error);
+      if (is3D) {
+        const isFinal = attemptNo >= maxAttempts;
+        reportClientLog({
+          level: isFinal ? 'error' : 'warn',
+          message: isFinal
+            ? `3D 渲染器初始化失败（已重试 ${Math.max(0, maxAttempts - 1)} 次）`
+            : `3D 渲染器初始化失败，准备重试（${attemptNo}/${maxAttempts}）`,
+          source: 'renderer3d',
+          event: 'init',
+          context: {
+            error: errText,
+            attempt: attemptNo,
+            maxAttempts,
+            styleName,
+          },
+        });
+      } else {
+        reportClientLog({
+          level: 'error',
+          message: '2D 渲染器初始化失败',
+          source: 'renderer2d',
+          event: 'init',
+          context: {
+            error: errText,
+          },
+        });
+      }
+    };
+
+    const initRenderer = () => {
+      if (disposed) return;
+      attempt += 1;
+      try {
+        renderer = !is3D
+          ? createRenderer(
+              canvas!,
+              {
+                onClick: handleRendererClick,
+                onDoubleClick: handleRendererDoubleClick,
+                onContextMenu: handleRendererContextMenu,
+                onHover: handleRendererHover,
+              },
+              { minZoom: 0.25, maxZoom: 3, initialZoom: 0.5 }
+            )
+          : createRenderer3D(
+              container3d!,
+              {
+                onClick: handleRendererClick,
+                onDoubleClick: handleRendererDoubleClick,
+                onContextMenu: handleRendererContextMenu,
+                onHover: handleRendererHover,
+              },
+              {
+                minZoom: 0.25,
+                maxZoom: 3,
+                initialZoom: 0.5,
+                styleName,
+              }
+            );
+      } catch (error) {
+        console.error('Failed to initialize renderer:', error);
+        logInitFailure(error, attempt);
+        if (is3D && attempt < maxAttempts) {
+          retryTimer = window.setTimeout(initRenderer, retryDelayMs);
+          return;
+        }
+        if (!disposed) {
+          setRendererError(
+            is3D
+              ? '3D 渲染器初始化失败，已自动重试，请查看日志面板。'
+              : '渲染器初始化失败。'
+          );
+        }
+        return;
+      }
+
+      if (disposed) {
+        renderer?.destroy();
+        return;
+      }
+
+      rendererRef.current = renderer;
+      if (rendererDataRef.current) {
+        renderer.updateData(rendererDataRef.current);
+      }
+      if (is3D && attempt > 1) {
+        reportClientLog({
+          level: 'info',
+          message: `3D 渲染器初始化成功（重试 ${attempt - 1} 次）`,
+          source: 'renderer3d',
+          event: 'init',
+          context: {
+            attempt,
+            styleName,
+          },
+        });
+      }
+    };
+
+    initRenderer();
+
+    return () => {
+      disposed = true;
+      clearRetryTimer();
+      renderer?.destroy();
+      if (rendererRef.current === renderer) {
+        rendererRef.current = null;
+      }
+    };
+  }, [
+    handleRendererClick,
+    handleRendererContextMenu,
+    handleRendererDoubleClick,
+    handleRendererHover,
+    rendererRef,
+    rendererKey,
+  ]);
+
   useEffect(() => {
-    if (!cyRef.current) {
-      console.log('GraphCanvas - cyRef.current is null');
-      return;
-    }
+    if (!rendererRef.current || !rendererData) return;
+    rendererRef.current.updateData(rendererData);
+  }, [rendererData, rendererRef, viewMode, rendererKey]);
 
-    const cy = cyRef.current;
-    console.log('🔄 GraphCanvas - Updating graph data, elements count:', cytoscapeElements.length);
-
-    // 清空现有元素
-    cy.elements().remove();
-
-    // 添加新元素
-    if (cytoscapeElements.length > 0) {
-      console.log('Adding elements to cytoscape');
-      cy.add(cytoscapeElements);
-      console.log('Elements added, total nodes:', cy.nodes().length, 'edges:', cy.edges().length);
-
-      // 重新生成并应用样式（确保新元素有正确的样式）
-      const newStyles = generateDynamicStylesByNodeType(nodeTypeStyles, isDarkMode);
-      cy.style(newStyles);
-      console.log('🎨 GraphCanvas - Styles reapplied after adding elements');
-
-      // 运行布局
-      const layout = cy.layout(LAYOUT_CONFIGS.cose);
-      layout.run();
-
-      // 适应视口
-      setTimeout(() => {
-        cy.fit(undefined, 50);
-        console.log('📐 GraphCanvas - Fit viewport completed');
-      }, 100);
-    } else {
-      console.log('GraphCanvas - No elements to add');
-    }
-  }, [cytoscapeElements]);
-
-  // 更新样式（主题或样式配置变化时）
   useEffect(() => {
-    if (!cyRef.current) {
-      console.log('GraphCanvas - cyRef.current is null in style update');
-      return;
-    }
-    
-    console.log('🎨 GraphCanvas - Style update triggered');
-    console.log('🎨 GraphCanvas - Elements before style update:', cyRef.current.elements().length);
-    console.log('🎨 GraphCanvas - nodeTypeStyles:', nodeTypeStyles);
-    
-    // 调试：打印所有节点的类型
-    cyRef.current.nodes().forEach((node) => {
-      console.log('Node:', node.id(), 'type:', node.data('type'), 'label:', node.data('label'));
+    if (!rendererRef.current) return;
+
+    const combinedHiddenNodes = new Set<string>([...hiddenNodeIds, ...collapsedNodeIds]);
+    rendererRef.current.setFilter({
+      nodeTypes: activeFilters.nodeTypes,
+      edgeTypes: activeFilters.relationshipTypes,
+      hiddenNodeIds: combinedHiddenNodes,
+      hiddenEdgeIds,
     });
-    
-    applyNodeTypeStylesToCytoscape(cyRef.current, nodeTypeStyles);
-    
-    console.log('🎨 GraphCanvas - Elements after style update:', cyRef.current.elements().length);
-  }, [isDarkMode, nodeTypeStyles]);
+  }, [activeFilters, collapsedNodeIds, hiddenEdgeIds, hiddenNodeIds, rendererRef, viewMode, rendererKey]);
 
-  // 应用过滤器
   useEffect(() => {
-    if (!cyRef.current) return;
+    if (!rendererRef.current) return;
 
-    const cy = cyRef.current;
-    const hasNodeFilter = activeFilters.nodeTypes.length > 0;
-    const hasEdgeFilter = activeFilters.relationshipTypes.length > 0;
-
-    // 如果没有过滤器，显示所有元素
-    if (!hasNodeFilter && !hasEdgeFilter) {
-      cy.elements().removeClass('hidden');
+    if (selectedNodeId) {
+      activeElementRef.current = { type: 'node', id: selectedNodeId };
+      rendererRef.current.setActiveElement(activeElementRef.current);
       return;
     }
 
-    // 应用节点过滤器
-    if (hasNodeFilter) {
-      cy.nodes().forEach((node) => {
-        const nodeType = node.data('type');
-        if (activeFilters.nodeTypes.includes(nodeType)) {
-          node.removeClass('hidden');
-        } else {
-          node.addClass('hidden');
-        }
+    if (activeElementRef.current?.type === 'node') {
+      activeElementRef.current = null;
+      rendererRef.current.setActiveElement(null);
+    }
+  }, [rendererRef, selectedNodeId, viewMode, rendererKey]);
+
+  useEffect(() => {
+    if (!rendererRef.current || !rendererData || rendererData.nodes.length === 0) return;
+
+    const timer = window.setTimeout(() => {
+      rendererRef.current?.fitTo(undefined, 50);
+    }, 200);
+
+    return () => window.clearTimeout(timer);
+  }, [graphData?.stats?.executionTime, rendererData, rendererRef, viewMode, rendererKey]);
+
+  useEffect(() => {
+    if (!rendererRef.current) return;
+    if (!selectedCitation || !rendererDataRef.current) {
+      rendererRef.current.clearSearchHighlight();
+      return;
+    }
+
+    const docId = selectedCitation.id.split('-')[0];
+    const matches = rendererDataRef.current.nodes
+      .filter((node: any) => {
+        const props = node.properties || {};
+        if (props.chunk_id && props.chunk_id === selectedCitation.id) return true;
+        if (props.doc_id && props.doc_id === docId) return true;
+        if (props.name && selectedCitation.title && props.name === selectedCitation.title) return true;
+        return false;
+      })
+      .map((node: any) => node.id);
+
+    const entityMatches = new Set<string>();
+    if (rendererRef.current && matches.length > 0) {
+      matches.forEach((id) => {
+        const neighbors = rendererRef.current?.getNeighbors(id) || [];
+        neighbors.forEach((neighborId) => {
+          const node = rendererRef.current?.getNodeById(neighborId);
+          if (node?.type === 'Entity') {
+            entityMatches.add(neighborId);
+          }
+        });
       });
+    }
+
+    const highlightIds = Array.from(new Set([...matches, ...entityMatches]));
+    if (highlightIds.length > 0) {
+      rendererRef.current.setSearchHighlight({ nodeIds: highlightIds });
+      if (activeWorkspaceTab === 'graph') {
+        rendererRef.current.fitTo(highlightIds, 80);
+      }
     } else {
-      cy.nodes().removeClass('hidden');
+      rendererRef.current.clearSearchHighlight();
     }
+  }, [selectedCitation, activeWorkspaceTab, rendererRef, viewMode, rendererKey]);
 
-    // 应用边过滤器
-    if (hasEdgeFilter) {
-      cy.edges().forEach((edge) => {
-        const edgeType = edge.data('type');
-        const sourceVisible = !edge.source().hasClass('hidden');
-        const targetVisible = !edge.target().hasClass('hidden');
+  useEffect(() => {
+    const element = containerRef.current;
+    if (!element) return;
 
-        if (
-          activeFilters.relationshipTypes.includes(edgeType) &&
-          sourceVisible &&
-          targetVisible
-        ) {
-          edge.removeClass('hidden');
-        } else {
-          edge.addClass('hidden');
-        }
-      });
-    } else {
-      // 只隐藏连接到隐藏节点的边
-      cy.edges().forEach((edge) => {
-        const sourceVisible = !edge.source().hasClass('hidden');
-        const targetVisible = !edge.target().hasClass('hidden');
-        if (sourceVisible && targetVisible) {
-          edge.removeClass('hidden');
-        } else {
-          edge.addClass('hidden');
-        }
-      });
-    }
+    const updateSize = () => {
+      const rect = element.getBoundingClientRect();
+      setCanvasSize({ width: rect.width, height: rect.height });
+    };
 
-    // 重新运行布局（只对可见元素）
-    const visibleElements = cy.elements().not('.hidden');
-    if (visibleElements.length > 0) {
-      const layout = visibleElements.layout(LAYOUT_CONFIGS.cose);
-      layout.run();
-    }
-  }, [activeFilters]);
+    updateSize();
+
+    const observer = new ResizeObserver(updateSize);
+    observer.observe(element);
+
+    return () => observer.disconnect();
+  }, []);
+
 
   const hasData = graphData && (graphData.nodes.length > 0 || graphData.edges.length > 0);
   const hasQueryResult = graphData !== null;
   const isEmptyResult = hasQueryResult && !hasData;
-  console.log('🎨 GraphCanvas - Rendering, hasData:', hasData, 'elements:', cytoscapeElements.length);
 
   return (
     <Box
+      ref={containerRef}
       sx={{
         position: 'relative',
         width: '100%',
@@ -509,17 +598,26 @@ export function GraphCanvas({ cyRef: externalCyRef, onGroupingUpdate }: GraphCan
         bgcolor: 'background.default',
       }}
     >
-      {/* Cytoscape 容器 - 始终渲染 */}
-      <Box
-        ref={containerRef}
-        sx={{
+      <canvas
+        ref={canvasRef}
+        style={{
           width: '100%',
           height: '100%',
-          display: hasData ? 'block' : 'none',
+          display: hasData && viewMode === '2d' ? 'block' : 'none',
+        }}
+      />
+      <Box
+        ref={threeContainerRef}
+        sx={{
+          position: 'absolute',
+          inset: 0,
+          width: '100%',
+          height: '100%',
+          overflow: 'hidden',
+          display: hasData && viewMode === '3d' ? 'block' : 'none',
         }}
       />
 
-      {/* 空状态提示 - 只在没有数据时显示 */}
       {!hasData && (
         <Box
           sx={{
@@ -551,8 +649,50 @@ export function GraphCanvas({ cyRef: externalCyRef, onGroupingUpdate }: GraphCan
         </Box>
       )}
 
-      <GraphControls cyRef={cyRef} />
-      <Minimap cyRef={cyRef} />
+      {rendererError && (
+        <Box
+          sx={{
+            position: 'absolute',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            color: 'error.main',
+            bgcolor: 'rgba(0, 0, 0, 0.04)',
+            backdropFilter: 'blur(2px)',
+            zIndex: 10,
+            textAlign: 'center',
+            px: 2,
+          }}
+        >
+          <Typography variant="h6" sx={{ mb: 1 }}>
+            渲染失败
+          </Typography>
+          <Typography variant="body2">
+            {rendererError}
+          </Typography>
+        </Box>
+      )}
+
+      <GraphControls
+        rendererRef={rendererRef}
+        onToggleNavigation={viewMode === '2d' ? () => setNavigationOpen((prev) => !prev) : undefined}
+        navigationOpen={navigationOpen}
+        viewMode={viewMode}
+        onToggleViewMode={() => setViewMode((prev) => (prev === '2d' ? '3d' : '2d'))}
+      />
+      {viewMode === '2d' && <Minimap rendererRef={rendererRef} viewportSize={canvasSize} />}
+      {viewMode === '2d' && (
+        <NavigationPanel
+          rendererRef={rendererRef}
+          isOpen={navigationOpen}
+          onClose={() => setNavigationOpen(false)}
+        />
+      )}
       <NodeTooltip
         visible={tooltipVisible}
         x={tooltipPosition.x}
@@ -560,18 +700,24 @@ export function GraphCanvas({ cyRef: externalCyRef, onGroupingUpdate }: GraphCan
         nodeData={tooltipData}
       />
 
-      {/* 右键上下文菜单 */}
       <ContextMenu
-        cyRef={cyRef}
+        rendererRef={rendererRef}
         anchorPosition={contextMenuPosition}
         onClose={() => {
           setContextMenuPosition(null);
           setContextMenuTarget(null);
         }}
-        targetElement={contextMenuTarget}
+        target={contextMenuTarget}
+        hiddenNodeIds={hiddenNodeIds}
+        hiddenEdgeIds={hiddenEdgeIds}
+        onHideNode={handleHideNode}
+        onShowNode={handleShowNode}
+        onHideEdge={handleHideEdge}
+        onShowEdge={handleShowEdge}
+        viewportSize={canvasSize}
       />
 
-      {/* 视频播放对话框 */}
+
       <Dialog
         open={videoDialogOpen}
         onClose={handleVideoClose}
@@ -618,7 +764,6 @@ export function GraphCanvas({ cyRef: externalCyRef, onGroupingUpdate }: GraphCan
         </DialogContent>
       </Dialog>
 
-      {/* 性能警告对话框 */}
       <PerformanceWarningDialog
         open={showPerformanceWarning}
         nodeCount={pendingGraphData?.nodes.length || 0}
@@ -626,7 +771,6 @@ export function GraphCanvas({ cyRef: externalCyRef, onGroupingUpdate }: GraphCan
         onCancel={handlePerformanceCancel}
       />
 
-      {/* 展开节点加载指示器 */}
       {isExpanding && (
         <Box
           sx={{

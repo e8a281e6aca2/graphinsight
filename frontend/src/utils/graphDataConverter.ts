@@ -1,6 +1,7 @@
 import type { GraphData, NodeGroup } from '../store/graphStore';
 import { getNodeColor, getEdgeColor } from './colorMapping';
 import { generateVideoThumbnail } from './videoThumbnail';
+import { buildProxyMediaUrl } from './apiBase';
 
 // Cytoscape 元素类型
 export interface CytoscapeNode {
@@ -95,7 +96,7 @@ export function convertToCytoscapeFormat(
       hasImage = true;
       // 如果是外部URL，使用代理
       if (imageUrl.startsWith('http://') || imageUrl.startsWith('https://')) {
-        nodeData.image = `http://localhost:8000/api/proxy-media?url=${encodeURIComponent(imageUrl)}`;
+        nodeData.image = buildProxyMediaUrl(imageUrl);
       } else {
         // 本地图片直接使用
         nodeData.image = imageUrl;
@@ -135,7 +136,7 @@ export function convertToCytoscapeFormat(
     if (videoUrl) {
       hasVideo = true;
       if (videoUrl.startsWith('http://') || videoUrl.startsWith('https://')) {
-        nodeData.video = `http://localhost:8000/api/proxy-media?url=${encodeURIComponent(videoUrl)}`;
+        nodeData.video = buildProxyMediaUrl(videoUrl);
       } else {
         nodeData.video = videoUrl;
       }
@@ -182,7 +183,7 @@ export function convertToCytoscapeFormat(
         if (audioUrl) {
           hasAudio = true;
           if (audioUrl.startsWith('http://') || audioUrl.startsWith('https://')) {
-            nodeData.audio = `http://localhost:8000/api/proxy-media?url=${encodeURIComponent(audioUrl)}`;
+            nodeData.audio = buildProxyMediaUrl(audioUrl);
           } else {
             nodeData.audio = audioUrl;
           }

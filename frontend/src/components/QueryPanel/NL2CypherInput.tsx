@@ -18,6 +18,7 @@ import {
   ExpandMore as ExpandIcon,
   ExpandLess as CollapseIcon,
 } from '@mui/icons-material';
+import { buildApiUrl } from '../../utils/apiBase';
 
 interface NL2CypherInputProps {
   onCypherGenerated: (cypher: string) => void;
@@ -46,7 +47,7 @@ export function NL2CypherInput({ onCypherGenerated, onExecute }: NL2CypherInputP
     setResult(null);
 
     try {
-      const response = await fetch('http://localhost:8000/api/nl2cypher', {
+      const response = await fetch(buildApiUrl('/nl2cypher'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ natural_language: input }),

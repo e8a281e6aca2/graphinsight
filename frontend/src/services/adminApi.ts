@@ -2,12 +2,11 @@
  * 管理系统 API
  */
 import axios from 'axios';
-
-const API_BASE_URL = 'http://localhost:8000/api';
+import { API_ROOT_URL } from '../utils/apiBase';
 
 // 创建 axios 实例
 const adminApi = axios.create({
-  baseURL: API_BASE_URL,
+  baseURL: API_ROOT_URL,
   headers: {
     'Content-Type': 'application/json',
   },
