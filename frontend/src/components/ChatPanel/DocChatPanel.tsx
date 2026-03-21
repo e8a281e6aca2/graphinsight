@@ -18,6 +18,7 @@ import { triggerGraphBuild } from '../../services/graphBuild';
 import { reportClientLog } from '../../services/clientLog';
 import { useGraphStore } from '../../store/graphStore';
 import { askDocQa } from '../../services/docQa';
+import { executeQuery } from '../../services/graphService';
 
 interface Citation {
   id: string;
@@ -63,6 +64,11 @@ const baseCitations: Citation[] = [
   },
 ];
 
+const DOC_GRAPH_QUERY = `MATCH (n)-[r]->(m)
+WHERE n.source = 'document_ingest' OR m.source = 'document_ingest'
+RETURN n, r, m
+LIMIT 300`;
+
 function buildCitations(question: string) {
   const topic = question.trim().slice(0, 12) || '文档内容';
   return baseCitations.slice(0, CITATION_COUNT).map((item) => ({
@@ -74,6 +80,9 @@ function buildCitations(question: string) {
 export function DocChatPanel() {
   const setSelectedCitation = useGraphStore((state) => state.setSelectedCitation);
   const setWorkspaceTab = useGraphStore((state) => state.setWorkspaceTab);
+  const setGraphData = useGraphStore((state) => state.setGraphData);
+  const setLastQueryStats = useGraphStore((state) => state.setLastQueryStats);
+  const addQueryToHistory = useGraphStore((state) => state.addQueryToHistory);
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       id: 'welcome',
@@ -144,6 +153,26 @@ export function DocChatPanel() {
     setWorkspaceTab('document');
   };
 
+  const runDocGraphQuery = async () => {
+    try {
+      const result = await executeQuery(DOC_GRAPH_QUERY);
+      setGraphData(result);
+      if (result.stats) {
+        setLastQueryStats(result.stats);
+      }
+      addQueryToHistory(DOC_GRAPH_QUERY, result.nodes.length + result.edges.length);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      reportClientLog({
+        level: 'warn',
+        message: '文档图谱查询失败',
+        source: 'doc_chat',
+        event: 'doc_graph_query',
+        context: { error: message },
+      });
+    }
+  };
+
   const handleBuildGraph = () => {
     if (buildStatus === 'running') return;
     setBuildStatus('running');
@@ -151,15 +180,29 @@ export function DocChatPanel() {
     setBuildSummary(null);
     triggerGraphBuild({ source: 'documents' })
       .then((result) => {
+        const failures = result?.failures || [];
         if (result?.status === 'completed') {
           setBuildStatus('done');
           if (result?.stats) {
             const { documents, chunks, entities } = result.stats as any;
             setBuildSummary(`文档 ${documents} · 片段 ${chunks} · 实体 ${entities}`);
           }
+          runDocGraphQuery();
+          if (failures.length > 0) {
+            const sample = failures.slice(0, 2).map((item: any) => item.file).join('、');
+            setBuildError(`解析失败 ${failures.length} 个文件${sample ? `：${sample}` : ''}`);
+          }
         } else if (result?.status === 'empty') {
           setBuildStatus('done');
-          setBuildError('未发现可解析文档');
+          if (result?.message?.includes('文档未变更')) {
+            runDocGraphQuery();
+          }
+          if (failures.length > 0) {
+            const sample = failures.slice(0, 2).map((item: any) => item.file).join('、');
+            setBuildError(`解析失败 ${failures.length} 个文件${sample ? `：${sample}` : ''}`);
+          } else {
+            setBuildError('未发现可解析文档');
+          }
           if (result?.stats) {
             const { documents, chunks, entities } = result.stats as any;
             setBuildSummary(`文档 ${documents} · 片段 ${chunks} · 实体 ${entities}`);

@@ -21,6 +21,7 @@ export async function uploadDocuments(files: File[]) {
     headers: {
       'Content-Type': 'multipart/form-data',
     },
+    timeout: 180000,
   });
   return response.data?.data;
 }

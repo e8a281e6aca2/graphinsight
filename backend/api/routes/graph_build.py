@@ -8,7 +8,8 @@ from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
 from core import success_response, error_response, get_logger
-from services.document_graph_service import document_graph_service
+from services.document_graph_service import DocumentGraphService
+from neo4j.exceptions import ServiceUnavailable
 
 router = APIRouter()
 logger = get_logger()
@@ -28,7 +29,9 @@ class GraphBuildRequest(BaseModel):
 async def build_graph(payload: GraphBuildRequest):
     try:
         job_id = f"build-{int(time.time() * 1000)}"
-        stats = document_graph_service.build_graph(force=payload.force)
+        service = DocumentGraphService()
+        stats = service.build_graph(force=payload.force)
+        failures = stats.get("failures", [])
         logger.info(
             "触发一键建图",
             context={
@@ -39,17 +42,33 @@ async def build_graph(payload: GraphBuildRequest):
                 "stats": stats,
             },
         )
-        status = "completed" if stats.get("documents", 0) > 0 else "empty"
-        message = "构建完成" if status == "completed" else "未发现可解析文档"
+        processed = stats.get("documents", 0)
+        total = stats.get("total_documents", 0)
+        skipped = stats.get("skipped_documents", 0)
+
+        status = "completed" if processed > 0 else "empty"
+        if processed > 0:
+            message = "构建完成"
+        elif total > 0 and skipped == total:
+            status = "completed"
+            message = "文档未变更，已跳过"
+        elif failures:
+            message = "解析失败，未产出图谱"
+        else:
+            message = "未发现可解析文档"
         return success_response(
             data={
                 "job_id": job_id,
                 "status": status,
                 "message": message,
                 "stats": stats,
+                "failures": failures,
             },
             message="已触发建图",
         )
+    except ServiceUnavailable as exc:
+        logger.error("Neo4j 不可用，建图失败", context={"error": str(exc)})
+        return error_response(message="Neo4j 不可用，请稍后重试", code=503)
     except Exception as exc:  # noqa: BLE001
         logger.error("建图触发失败", context={"error": str(exc)})
         return error_response(message="建图触发失败", code=500)

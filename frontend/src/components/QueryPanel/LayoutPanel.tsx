@@ -39,6 +39,14 @@ export function LayoutPanel({ onLayoutChange }: LayoutPanelProps) {
     setPreferredLayout(layout); // 保存用户偏好
   };
 
+  const handleApplyRecommended = () => {
+    const nextConfig = LAYOUT_CONFIGS[recommendedLayout] || {};
+    setSelectedLayout(recommendedLayout);
+    setLayoutConfig(nextConfig);
+    setPreferredLayout(recommendedLayout);
+    onLayoutChange(recommendedLayout, nextConfig);
+  };
+
   const handleConfigChange = (key: string, value: any) => {
     setLayoutConfig((prev: any) => ({
       ...prev,
@@ -293,7 +301,7 @@ export function LayoutPanel({ onLayoutChange }: LayoutPanelProps) {
             <Button
               size="small"
               variant="outlined"
-              onClick={() => handleLayoutSelect(recommendedLayout)}
+              onClick={handleApplyRecommended}
               sx={{ fontSize: '0.7rem', py: 0.5, px: 1 }}
             >
               应用推荐

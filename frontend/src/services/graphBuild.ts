@@ -9,13 +9,21 @@ export interface GraphBuildResponse {
     chunks: number;
     entities: number;
   };
+  failures?: Array<{
+    file: string;
+    reason: string;
+  }>;
 }
 
 export async function triggerGraphBuild(payload?: { source?: string; force?: boolean; note?: string }) {
-  const response = await api.post('/api/graph/build', {
-    source: payload?.source ?? 'documents',
-    force: payload?.force ?? false,
-    note: payload?.note ?? null,
-  });
+  const response = await api.post(
+    '/api/graph/build',
+    {
+      source: payload?.source ?? 'documents',
+      force: payload?.force ?? false,
+      note: payload?.note ?? null,
+    },
+    { timeout: 180000 }
+  );
   return response.data?.data as GraphBuildResponse;
 }

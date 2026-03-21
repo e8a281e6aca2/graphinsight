@@ -83,12 +83,14 @@ class Neo4jService:
                 
                 # 处理关系
                 elif hasattr(value, 'type'):  # Relationship
+                    props = dict(value)
+                    edge_type = props.get("label") or value.type
                     edge = {
                         "id": str(value.id),
                         "source": str(value.start_node.id),
                         "target": str(value.end_node.id),
-                        "type": value.type,
-                        "properties": dict(value)
+                        "type": edge_type,
+                        "properties": props
                     }
                     edges.append(edge)
                     

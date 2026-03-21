@@ -220,7 +220,7 @@ export function convertToCytoscapeFormat(
 
   // 转换边
   graphData.edges.forEach((edge) => {
-    const label = edge.type || '';
+    const label = getEdgeLabel(edge);
     const color = getEdgeColor(edge.type);
 
     elements.push({
@@ -284,8 +284,44 @@ export function convertToCytoscapeFormat(
   return elements;
 }
 
+function getEdgeLabel(edge: any): string {
+  const props = edge?.properties || {};
+  const candidates = [
+    'label',
+    'name',
+    'relation',
+    'rel',
+    'predicate',
+    'title',
+    '关系',
+    '关系名',
+    '名称',
+    '标题',
+  ];
+  for (const key of candidates) {
+    const raw = props[key];
+    if (raw === null || raw === undefined) continue;
+    const text = String(raw).trim();
+    if (text) return text;
+  }
+  return edge?.type || '';
+}
+
 // 简单的节点标签生成 - 使用合理的默认逻辑
 export function generateNodeLabel(node: any, nodeTypeStyle?: any): string {
+  const labels = Array.isArray(node.labels) ? node.labels : [];
+  if (labels.includes('Chunk')) {
+    const idx = node.properties?.index;
+    if (Number.isFinite(idx)) {
+      return `片段 ${Number(idx) + 1}`;
+    }
+    const text = node.properties?.text;
+    if (text) {
+      const trimmed = String(text).trim().replace(/\s+/g, ' ');
+      return trimmed.length > 24 ? `${trimmed.substring(0, 24)}...` : trimmed;
+    }
+  }
+
   // 如果有样式配置且配置了caption属性，使用caption
   if (nodeTypeStyle?.caption && Array.isArray(nodeTypeStyle.caption) && nodeTypeStyle.caption.length > 0) {
     const captionParts: string[] = [];

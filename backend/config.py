@@ -14,6 +14,18 @@ else:
     load_dotenv(override=True)
 
 
+_BASE_DIR = Path(__file__).resolve().parent
+
+
+def _resolve_path(value: str, base_dir: Path) -> str:
+    if not value:
+        return str(base_dir)
+    path = Path(value)
+    if not path.is_absolute():
+        path = (base_dir / path).resolve()
+    return str(path)
+
+
 class Settings:
     """应用配置"""
     
@@ -27,11 +39,11 @@ class Settings:
         self.api_host = os.getenv("API_HOST", "0.0.0.0")
         self.api_port = int(os.getenv("API_PORT", "8000"))
         
-        # 媒体存储路径
-        self.media_storage_path = os.getenv("MEDIA_STORAGE_PATH", "./media")
+        # 媒体存储路径（统一解析为绝对路径）
+        self.media_storage_path = _resolve_path(os.getenv("MEDIA_STORAGE_PATH", "./media"), _BASE_DIR)
 
-        # 文档存储路径（用于建图与问答）
-        self.document_storage_path = os.getenv("DOCUMENT_STORAGE_PATH", "./documents")
+        # 文档存储路径（用于建图与问答，统一解析为绝对路径）
+        self.document_storage_path = _resolve_path(os.getenv("DOCUMENT_STORAGE_PATH", "./documents"), _BASE_DIR)
         
         # OpenAI 配置
         self.openai_api_key = os.getenv("OPENAI_API_KEY", "")
@@ -46,6 +58,13 @@ class Settings:
         self.llm_model = os.getenv("LLM_MODEL") or self.openai_model
         self.llm_max_entities = int(os.getenv("LLM_MAX_ENTITIES", "12"))
         self.llm_temperature = float(os.getenv("LLM_TEMPERATURE", "0.1"))
+
+        # LLM 关系抽取配置（OpenAI 兼容）
+        self.llm_relation_enabled = os.getenv("LLM_RELATION_ENABLED", "true").lower() == "true"
+        self.llm_relation_model = os.getenv("LLM_RELATION_MODEL") or self.llm_model
+        self.llm_relation_temperature = float(os.getenv("LLM_RELATION_TEMPERATURE", "0.1"))
+        self.llm_max_relations = int(os.getenv("LLM_MAX_RELATIONS", "8"))
+        self.llm_relation_dynamic_type = os.getenv("LLM_RELATION_DYNAMIC_TYPE", "true").lower() == "true"
 
         # LLM 问答配置（默认复用 LLM_MODEL）
         self.llm_qa_model = os.getenv("LLM_QA_MODEL") or self.llm_model

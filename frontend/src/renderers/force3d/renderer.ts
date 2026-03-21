@@ -135,6 +135,29 @@ function withAlpha(color: string, alpha: number) {
   return color;
 }
 
+function getEdgeLabelText(edge: { type?: string; predicate?: string; properties?: Record<string, any> }) {
+  const props = edge.properties || {};
+  const candidates = [
+    'label',
+    'name',
+    'relation',
+    'rel',
+    'predicate',
+    'title',
+    '关系',
+    '关系名',
+    '名称',
+    '标题',
+  ];
+  for (const key of candidates) {
+    const raw = props[key];
+    if (raw === null || raw === undefined) continue;
+    const text = String(raw).trim();
+    if (text) return text;
+  }
+  return edge.type || edge.predicate || '';
+}
+
 export function createRenderer3D(
   container: HTMLDivElement,
   handlers: RendererEventHandlers = {},
@@ -254,6 +277,7 @@ export function createRenderer3D(
   let nodeSizeOverrides: Map<string, number> | null = null;
   const baseRadiusById = new Map<string, number>();
   const nodeObjectCache = new Map<string, NodeObject>();
+  const edgeLabelCache = new Map<string, SpriteText>();
   const textureCache = new Map<string, Texture>();
   const texturePending = new Set<string>();
   const textureLoader = new TextureLoader();
@@ -290,6 +314,12 @@ export function createRenderer3D(
       const isTiny = baseScale < 1.4;
       entry.label.visible = isHovered || isEmphasized || (distance < labelDistance && !isTiny);
     });
+    const edgeLabelDistance = (style.labelMaxDistance ?? style.maxDistance * 0.35) * 0.7;
+    edgeLabelCache.forEach((label, id) => {
+      const isHovered = hoveredType === 'edge' && hoveredId === id;
+      const isEmphasized = highlightedEdgeIds.has(id);
+      label.visible = isHovered || isEmphasized || distance < edgeLabelDistance;
+    });
   };
 
   graph
@@ -308,7 +338,53 @@ export function createRenderer3D(
     .linkDirectionalArrowLength(style.arrowLength)
     .linkDirectionalArrowRelPos(style.arrowRelPos)
     .linkDirectionalArrowResolution?.(style.arrowResolution)
-    .linkResolution?.(style.linkResolution);
+    .linkResolution?.(style.linkResolution)
+    .linkThreeObject((edge: GraphLink) => {
+      const labelText = getEdgeLabelText(edge);
+      const text = typeof labelText === 'string' ? labelText.trim() : String(labelText || '');
+      if (!text) {
+        return new Group();
+      }
+      let label = edgeLabelCache.get(edge.id);
+      if (!label) {
+        label = new SpriteText(text);
+        label.material.depthWrite = false;
+        label.material.depthTest = false;
+        label.color = style.labelColor;
+        label.fontFace = 'Inter, "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif';
+        label.fontWeight = '600';
+        label.fontSize = Math.round((style.labelFontSize ?? 130) * 0.65);
+        label.strokeWidth = Math.max(0.05, (style.labelStrokeWidth ?? 0) * 0.6);
+        label.strokeColor = style.labelStrokeColor ?? 'rgba(15, 23, 42, 0.4)';
+        label.textHeight = Math.max(4, style.labelSize * 0.65);
+        label.backgroundColor = withAlpha(style.labelBackground, 0.75);
+        label.borderColor = 'rgba(15, 23, 42, 0.12)';
+        label.borderWidth = 1;
+        label.padding = 4;
+        label.borderRadius = 3;
+        label.visible = false;
+        edgeLabelCache.set(edge.id, label);
+      } else if (label.text !== text) {
+        label.text = text;
+      }
+      return label;
+    })
+    .linkThreeObjectExtend(true)
+    .linkPositionUpdate((obj: any, { start, end }, link: GraphLink) => {
+      if (!obj || !start || !end) return;
+      const midX = (start.x + end.x) / 2;
+      const midY = (start.y + end.y) / 2;
+      const midZ = (start.z + end.z) / 2;
+      obj.position.set(midX, midY + 4, midZ);
+      const label = obj as SpriteText;
+      if (label?.material?.map) {
+        label.material.map.anisotropy = maxAnisotropy;
+        label.material.map.minFilter = LinearFilter;
+        label.material.map.magFilter = LinearFilter;
+        label.material.map.needsUpdate = true;
+      }
+      return false;
+    });
 
   graph.forceEngine?.('d3');
   graph.numDimensions?.(3);
@@ -918,6 +994,40 @@ export function createRenderer3D(
       return withAlpha(baseColor, 0.3);
     });
 
+    const edgeLabelDistance = (style.labelMaxDistance ?? style.maxDistance * 0.35) * 0.7;
+    edgeLabelCache.forEach((label, id) => {
+      const edge = edgeById.get(id);
+      if (!edge) return;
+      const isActiveEdge = activeElement?.type === 'edge' && activeElement.id === edge.id;
+      const isPathHighlighted = pathHighlightEdgeIds.has(edge.id);
+      const isSearchHighlighted = searchHighlightEdgeIds.has(edge.id);
+      const isActiveRelated = activeHighlightEdgeIds.has(edge.id);
+      const isEmphasized = isActiveEdge || isPathHighlighted || isSearchHighlighted || isActiveRelated;
+      const color = isActiveEdge
+        ? ACTIVE_COLOR
+        : isPathHighlighted
+          ? PATH_COLOR
+          : isSearchHighlighted
+            ? HIGHLIGHT_COLOR
+            : isActiveRelated
+              ? HIGHLIGHT_COLOR
+              : style.labelColor;
+      label.color = color;
+      label.backgroundColor = withAlpha(style.labelBackground, isEmphasized ? 0.88 : 0.55);
+      const distanceScale = Math.min(1, Math.max(0.55, edgeLabelDistance / Math.max(lastCameraDistance, 1)));
+      const baseTextHeight = Math.max(4, style.labelSize * 0.65);
+      const nextTextHeight = baseTextHeight * distanceScale;
+      if (label.textHeight !== nextTextHeight) {
+        label.textHeight = nextTextHeight;
+      }
+      const baseFontSize = Math.round((style.labelFontSize ?? 130) * 0.65);
+      const maxFontSize = Math.round((style.labelFontSizeMax ?? baseFontSize * 1.8) * 0.65);
+      const nextFontSize = Math.min(maxFontSize, Math.round(baseFontSize * distanceScale));
+      if (label.fontSize !== nextFontSize) {
+        label.fontSize = nextFontSize;
+      }
+    });
+
     graph.nodeRelSize(style.nodeRelSize);
     graph.nodeVal((node: GraphNode) => {
       const baseRadius = baseRadiusById.get(node.id) ?? node.radius ?? 24;
@@ -1141,6 +1251,13 @@ export function createRenderer3D(
       entry.material.dispose();
     });
     nodeObjectCache.clear();
+    edgeLabelCache.forEach((label) => {
+      if (label.material?.map) {
+        label.material.map.dispose?.();
+      }
+      label.material?.dispose?.();
+    });
+    edgeLabelCache.clear();
     nodes = data.nodes.map((node) => {
       baseRadiusById.set(node.id, node.radius ?? 24);
       return { ...node };
@@ -1473,6 +1590,11 @@ export function createRenderer3D(
 
   return {
     updateData,
+    applyLayout: () => {
+      // 3D 布局暂不支持，保持接口一致
+      scheduleAutoFit(160);
+      graph.d3ReheatSimulation?.();
+    },
     setActiveElement,
     setSearchHighlight,
     clearSearchHighlight,

@@ -73,6 +73,7 @@ export type RendererEventHandlers = {
 
 export type RendererAPI = {
   updateData: (data: RendererData) => void;
+  applyLayout: (layout: string, config?: any) => void;
   setActiveElement: (active: RendererActiveElement | null) => void;
   setSearchHighlight: (payload: { nodeIds?: string[]; edgeIds?: string[] }) => void;
   clearSearchHighlight: () => void;

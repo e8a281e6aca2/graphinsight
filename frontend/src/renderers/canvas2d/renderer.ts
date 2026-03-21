@@ -308,6 +308,204 @@ export function createRenderer(
     simulation.alpha(1).restart();
   }
 
+  function applyLayout(layout: string, config: any = {}) {
+    const layoutNodes = nodes.filter((node) => visibleNodeIds.has(node.id));
+    if (layoutNodes.length === 0) return;
+
+    const padding = 60;
+    const centerX = width / 2;
+    const centerY = height / 2;
+    const count = layoutNodes.length;
+
+    const resetFixed = () => {
+      layoutNodes.forEach((node) => {
+        node.fx = null;
+        node.fy = null;
+      });
+    };
+
+    const stopSimulation = () => {
+      simulation?.stop();
+      scheduleRender();
+    };
+
+    const applyPositions = (positions: Map<string, { x: number; y: number }>) => {
+      layoutNodes.forEach((node) => {
+        const pos = positions.get(node.id);
+        if (!pos) return;
+        node.x = pos.x;
+        node.y = pos.y;
+      });
+      resetFixed();
+      stopSimulation();
+    };
+
+    const forceLayouts = new Set(['cose', 'fcose', 'cose-compact', 'cose-loose']);
+
+    if (forceLayouts.has(layout)) {
+      const repulsion = Math.max(1000, Number(config.nodeRepulsion ?? 8000));
+      const idealEdgeLength = Math.max(20, Number(config.idealEdgeLength ?? 120));
+      const chargeStrength = -Math.min(2000, Math.max(80, repulsion / 40));
+      const chargeForce = forceManyBody().strength(chargeStrength);
+      simulation?.force('charge', chargeForce);
+      linkForce.distance(idealEdgeLength);
+      updateSimulation();
+      return;
+    }
+
+    if (layout === 'null' || layout === 'preset') {
+      stopSimulation();
+      return;
+    }
+
+    if (layout === 'random') {
+      const positions = new Map<string, { x: number; y: number }>();
+      layoutNodes.forEach((node) => {
+        positions.set(node.id, {
+          x: padding + Math.random() * Math.max(10, width - padding * 2),
+          y: padding + Math.random() * Math.max(10, height - padding * 2),
+        });
+      });
+      applyPositions(positions);
+      return;
+    }
+
+    if (layout === 'circle' || layout === 'circle-large' || layout === 'circle-spiral') {
+      const radius =
+        Number(config.radius ?? Math.min(width, height) / 2 - padding) || (Math.min(width, height) / 2 - padding);
+      const sweep = Number(config.sweep ?? Math.PI * 2);
+      const startAngle = Number(config.startAngle ?? 0);
+      const clockwise = config.clockwise !== false;
+      const positions = new Map<string, { x: number; y: number }>();
+      layoutNodes.forEach((node, index) => {
+        const t = count <= 1 ? 0 : index / count;
+        const angle = startAngle + (clockwise ? 1 : -1) * sweep * t;
+        const ringRadius =
+          layout === 'circle-spiral' ? radius * (0.3 + 0.7 * t) : radius;
+        positions.set(node.id, {
+          x: centerX + Math.cos(angle) * ringRadius,
+          y: centerY + Math.sin(angle) * ringRadius,
+        });
+      });
+      applyPositions(positions);
+      return;
+    }
+
+    if (layout === 'grid') {
+      const cols = Number(config.cols || 0) || Math.ceil(Math.sqrt(count));
+      const rows = Number(config.rows || 0) || Math.ceil(count / cols);
+      const spacingX = Math.max(20, (width - padding * 2) / Math.max(1, cols - 1));
+      const spacingY = Math.max(20, (height - padding * 2) / Math.max(1, rows - 1));
+      const positions = new Map<string, { x: number; y: number }>();
+      layoutNodes.forEach((node, index) => {
+        const row = Math.floor(index / cols);
+        const col = index % cols;
+        positions.set(node.id, {
+          x: padding + col * spacingX,
+          y: padding + row * spacingY,
+        });
+      });
+      applyPositions(positions);
+      return;
+    }
+
+    if (layout === 'concentric') {
+      const minSpacing = Number(config.minNodeSpacing ?? 50);
+      const sorted = [...layoutNodes].sort((a, b) => (b.degree ?? 0) - (a.degree ?? 0));
+      const perRing = Math.max(6, Math.round(Math.sqrt(count)));
+      const positions = new Map<string, { x: number; y: number }>();
+      let idx = 0;
+      let ring = 0;
+      while (idx < sorted.length) {
+        const ringNodes = sorted.slice(idx, idx + perRing);
+        const ringRadius = minSpacing * (ring + 1);
+        const angleStep = (Math.PI * 2) / Math.max(1, ringNodes.length);
+        ringNodes.forEach((node, i) => {
+          const angle = i * angleStep;
+          positions.set(node.id, {
+            x: centerX + Math.cos(angle) * ringRadius,
+            y: centerY + Math.sin(angle) * ringRadius,
+          });
+        });
+        idx += perRing;
+        ring += 1;
+      }
+      applyPositions(positions);
+      return;
+    }
+
+    if (layout === 'breadthfirst' || layout === 'breadthfirst-vertical' || layout === 'breadthfirst-horizontal') {
+      const spacingFactor = Number(config.spacingFactor ?? 1.5);
+      const spacingX = 120 * spacingFactor;
+      const spacingY = 100 * spacingFactor;
+      const nodeSet = new Set(layoutNodes.map((n) => n.id));
+      const adjacency = new Map<string, string[]>();
+      edges.forEach((edge) => {
+        const sourceId = typeof edge.source === 'string' ? edge.source : edge.source.id;
+        const targetId = typeof edge.target === 'string' ? edge.target : edge.target.id;
+        if (!nodeSet.has(sourceId) || !nodeSet.has(targetId)) return;
+        if (!adjacency.has(sourceId)) adjacency.set(sourceId, []);
+        if (!adjacency.has(targetId)) adjacency.set(targetId, []);
+        adjacency.get(sourceId)?.push(targetId);
+        adjacency.get(targetId)?.push(sourceId);
+      });
+
+      const visited = new Set<string>();
+      const levels = new Map<number, string[]>();
+      const nodesById = new Map(layoutNodes.map((n) => [n.id, n]));
+      const roots = [...layoutNodes].sort((a, b) => (b.degree ?? 0) - (a.degree ?? 0));
+      let level = 0;
+      const queue: Array<{ id: string; level: number }> = [];
+      if (roots[0]) {
+        queue.push({ id: roots[0].id, level: 0 });
+        visited.add(roots[0].id);
+      }
+
+      while (queue.length > 0) {
+        const { id, level: currentLevel } = queue.shift()!;
+        if (!levels.has(currentLevel)) levels.set(currentLevel, []);
+        levels.get(currentLevel)!.push(id);
+        const neighbors = adjacency.get(id) || [];
+        neighbors.forEach((neighbor) => {
+          if (visited.has(neighbor)) return;
+          visited.add(neighbor);
+          queue.push({ id: neighbor, level: currentLevel + 1 });
+        });
+        level = Math.max(level, currentLevel);
+      }
+
+      // place disconnected nodes
+      layoutNodes.forEach((node) => {
+        if (!visited.has(node.id)) {
+          const targetLevel = level + 1;
+          if (!levels.has(targetLevel)) levels.set(targetLevel, []);
+          levels.get(targetLevel)!.push(node.id);
+          level = targetLevel;
+        }
+      });
+
+      const positions = new Map<string, { x: number; y: number }>();
+      const levelEntries = [...levels.entries()].sort((a, b) => a[0] - b[0]);
+      levelEntries.forEach(([lvl, ids]) => {
+        const total = ids.length;
+        ids.forEach((id, index) => {
+          const x = centerX + (index - (total - 1) / 2) * spacingX;
+          const y = centerY + (lvl - level / 2) * spacingY;
+          positions.set(id, { x, y });
+        });
+      });
+
+      if (layout === 'breadthfirst-horizontal') {
+        positions.forEach((pos, id) => {
+          positions.set(id, { x: pos.y, y: pos.x });
+        });
+      }
+
+      applyPositions(positions);
+      return;
+    }
+  }
+
   function getEdgeNodes(edge: LinkDatum) {
     const source = typeof edge.source === 'string' ? nodeById.get(edge.source) : edge.source;
     const target = typeof edge.target === 'string' ? nodeById.get(edge.target) : edge.target;
@@ -1175,6 +1373,7 @@ export function createRenderer(
 
   return {
     updateData,
+    applyLayout,
     setActiveElement,
     setSearchHighlight,
     clearSearchHighlight,

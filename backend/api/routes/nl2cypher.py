@@ -5,10 +5,10 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from typing import Optional, Dict, List
 from services.nl2cypher_service import NL2CypherService
+from neo4j.exceptions import ServiceUnavailable
 from utils.logger import log_action
 
 router = APIRouter()
-nl2cypher_service = NL2CypherService()
 
 
 class NL2CypherRequest(BaseModel):
@@ -45,10 +45,14 @@ async def convert_nl_to_cypher(
     if not nl_request.natural_language or not nl_request.natural_language.strip():
         raise HTTPException(status_code=400, detail="自然语言查询不能为空")
     
-    result = await nl2cypher_service.convert(
-        nl_request.natural_language,
-        nl_request.context
-    )
+    try:
+        nl2cypher_service = NL2CypherService()
+        result = await nl2cypher_service.convert(
+            nl_request.natural_language,
+            nl_request.context
+        )
+    except ServiceUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
     
     # 记录日志
     if result.get("success"):

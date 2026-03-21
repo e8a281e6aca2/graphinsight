@@ -22,8 +22,11 @@ function MainApp() {
   const [exportDialogOpen, setExportDialogOpen] = useState(false);
   const rendererRef = useRef<RendererAPI | null>(null);
 
-  const handleLayoutChange = () => {
-    rendererRef.current?.fitTo(undefined, 50);
+  const handleLayoutChange = (layout: string, config?: any) => {
+    rendererRef.current?.applyLayout(layout, config);
+    setTimeout(() => {
+      rendererRef.current?.fitTo(undefined, 50);
+    }, 120);
   };
 
   const handleGroupingChange = () => {
