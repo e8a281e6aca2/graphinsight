@@ -15,100 +15,56 @@ import {
   ArrowBack as ArrowBackIcon,
   ArrowForward as ArrowForwardIcon,
 } from '@mui/icons-material';
-import type { Core } from 'cytoscape';
 import { NodeSearch } from './NodeSearch';
+import type { RendererAPI } from '../../renderers/core/types';
+import { useGraphStore } from '../../store/graphStore';
 
 interface NavigationControlsProps {
-  cyRef: React.RefObject<Core | null>;
+  rendererRef: React.RefObject<RendererAPI | null>;
 }
 
-export function NavigationControls({ cyRef }: NavigationControlsProps) {
+export function NavigationControls({ rendererRef }: NavigationControlsProps) {
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchAnchor, setSearchAnchor] = useState<HTMLElement | null>(null);
   const [history] = useState<any[]>([]);
   const [historyIndex] = useState(-1);
+  const { setSelectedNodeId } = useGraphStore();
 
-  // 处理节点选择
   const handleNodeSelect = (nodeId: string) => {
-    if (!cyRef.current) return;
-
-    const cy = cyRef.current;
-    const node = cy.getElementById(nodeId);
-
-    if (node.length > 0) {
-      // 清除之前的选择
-      cy.elements().removeClass('highlighted');
-      
-      // 高亮选中的节点
-      node.addClass('highlighted');
-      
-      // 居中显示节点
-      cy.animate({
-        center: { eles: node },
-        zoom: Math.max(cy.zoom(), 1.5),
-      }, {
-        duration: 500,
-        easing: 'ease-out',
-      });
-
-      // 选择节点
-      node.select();
-    }
+    if (!rendererRef.current) return;
+    rendererRef.current.setSearchHighlight({ nodeIds: [nodeId] });
+    rendererRef.current.fitTo([nodeId], 80);
+    setSelectedNodeId(nodeId);
   };
 
-  // 处理节点高亮
   const handleNodeHighlight = (nodeId: string | null) => {
-    if (!cyRef.current) return;
-
-    const cy = cyRef.current;
-    
-    // 清除之前的高亮
-    cy.elements().removeClass('search-highlight');
-
-    // 添加新的高亮
+    if (!rendererRef.current) return;
     if (nodeId) {
-      const node = cy.getElementById(nodeId);
-      if (node.length > 0) {
-        node.addClass('search-highlight');
-      }
+      rendererRef.current.setSearchHighlight({ nodeIds: [nodeId] });
+    } else {
+      rendererRef.current.clearSearchHighlight();
     }
   };
 
-  // 打开搜索面板
   const handleSearchOpen = (event: React.MouseEvent<HTMLElement>) => {
     setSearchAnchor(event.currentTarget);
     setSearchOpen(true);
   };
 
-  // 关闭搜索面板
   const handleSearchClose = () => {
     setSearchOpen(false);
     setSearchAnchor(null);
   };
 
-  // 回到首页视图
   const handleGoHome = () => {
-    if (!cyRef.current) return;
-
-    cyRef.current.animate({
-      fit: {
-        eles: cyRef.current.elements(),
-        padding: 50,
-      },
-    }, {
-      duration: 500,
-      easing: 'ease-out',
-    });
+    rendererRef.current?.fitTo(undefined, 50);
   };
 
-  // 历史记录导航
   const handleHistoryBack = () => {
-    // TODO: 实现历史记录后退
     console.log('History back');
   };
 
   const handleHistoryForward = () => {
-    // TODO: 实现历史记录前进
     console.log('History forward');
   };
 
@@ -119,7 +75,7 @@ export function NavigationControls({ cyRef }: NavigationControlsProps) {
         sx={{
           position: 'absolute',
           top: 16,
-          right: 72, // 与第一列保持间距
+          right: 72,
           display: 'flex',
           flexDirection: 'column',
           gap: 1,
@@ -127,10 +83,9 @@ export function NavigationControls({ cyRef }: NavigationControlsProps) {
           zIndex: 1000,
         }}
       >
-        {/* 搜索按钮 */}
         <Tooltip title="搜索节点" placement="left">
-          <IconButton 
-            size="small" 
+          <IconButton
+            size="small"
             onClick={handleSearchOpen}
             color={searchOpen ? 'primary' : 'default'}
           >
@@ -138,14 +93,9 @@ export function NavigationControls({ cyRef }: NavigationControlsProps) {
           </IconButton>
         </Tooltip>
 
-        {/* 历史记录控制 */}
         <Tooltip title="后退" placement="left">
           <span>
-            <IconButton
-              size="small"
-              onClick={handleHistoryBack}
-              disabled={historyIndex <= 0}
-            >
+            <IconButton size="small" onClick={handleHistoryBack} disabled={historyIndex <= 0}>
               <ArrowBackIcon />
             </IconButton>
           </span>
@@ -163,14 +113,12 @@ export function NavigationControls({ cyRef }: NavigationControlsProps) {
           </span>
         </Tooltip>
 
-        {/* 回到首页 */}
         <Tooltip title="适应全图" placement="left">
           <IconButton size="small" onClick={handleGoHome}>
             <HomeIcon />
           </IconButton>
         </Tooltip>
 
-        {/* 书签按钮 */}
         <Tooltip title="视图书签" placement="left">
           <IconButton size="small">
             <BookmarkIcon />
@@ -178,7 +126,6 @@ export function NavigationControls({ cyRef }: NavigationControlsProps) {
         </Tooltip>
       </Paper>
 
-      {/* 搜索面板 */}
       <Popover
         open={searchOpen}
         anchorEl={searchAnchor}
@@ -203,9 +150,9 @@ export function NavigationControls({ cyRef }: NavigationControlsProps) {
           <SearchIcon />
           节点搜索
         </Typography>
-        
+
         <Divider sx={{ mb: 2 }} />
-        
+
         <NodeSearch
           onNodeSelect={(nodeId) => {
             handleNodeSelect(nodeId);
@@ -213,7 +160,7 @@ export function NavigationControls({ cyRef }: NavigationControlsProps) {
           }}
           onNodeHighlight={handleNodeHighlight}
         />
-        
+
         <Box sx={{ mt: 2, textAlign: 'right' }}>
           <Typography variant="caption" color="text.secondary">
             点击搜索结果快速定位节点

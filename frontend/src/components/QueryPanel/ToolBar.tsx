@@ -23,12 +23,13 @@ import {
   ExpandLess,
   ExpandMore,
 } from '@mui/icons-material';
-import type { Core } from 'cytoscape';
 import { useGraphStore } from '../../store/graphStore';
 import { BookmarkManager } from '../GraphCanvas/BookmarkManager';
+import type { RendererAPI } from '../../renderers/core/types';
+import { loadNavigationHistory } from '../../utils/navigationStorage';
 
 interface ToolBarProps {
-  cyRef: React.RefObject<Core | null>;
+  rendererRef: React.RefObject<RendererAPI | null>;
 }
 
 interface SearchResult {
@@ -38,22 +39,18 @@ interface SearchResult {
   score: number;
 }
 
-export const ToolBar: React.FC<ToolBarProps> = ({ cyRef }) => {
+export const ToolBar: React.FC<ToolBarProps> = ({ rendererRef }) => {
   const { graphData, setSelectedNodeId } = useGraphStore();
-  
-  // 搜索相关状态
+
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
   const [showSearchResults, setShowSearchResults] = useState(false);
-  
-  // 书签管理状态
+
   const [bookmarkManagerOpen, setBookmarkManagerOpen] = useState(false);
-  
-  // 导航历史状态
+
   const [showHistory, setShowHistory] = useState(false);
   const [navigationHistory, setNavigationHistory] = useState<any[]>([]);
 
-  // 实时搜索
   useEffect(() => {
     if (!searchQuery.trim() || !graphData?.nodes) {
       setSearchResults([]);
@@ -64,21 +61,19 @@ export const ToolBar: React.FC<ToolBarProps> = ({ cyRef }) => {
     const query = searchQuery.toLowerCase();
     const results: SearchResult[] = [];
 
-    graphData.nodes.forEach(node => {
+    graphData.nodes.forEach((node) => {
       let score = 0;
       const label = (node.properties?.name || node.id || '').toLowerCase();
       const type = (node.labels?.[0] || '').toLowerCase();
-      
-      // 计算匹配分数
+
       if (label.includes(query)) {
         score += label.startsWith(query) ? 10 : 5;
       }
       if (type.includes(query)) {
         score += 3;
       }
-      
-      // 搜索其他属性
-      Object.values(node.properties || {}).forEach(value => {
+
+      Object.values(node.properties || {}).forEach((value) => {
         if (typeof value === 'string' && value.toLowerCase().includes(query)) {
           score += 2;
         }
@@ -89,73 +84,65 @@ export const ToolBar: React.FC<ToolBarProps> = ({ cyRef }) => {
           id: node.id,
           label: node.properties?.name || node.id,
           type: node.labels?.[0] || 'Unknown',
-          score
+          score,
         });
       }
     });
 
-    // 按分数排序，取前10个结果
     results.sort((a, b) => b.score - a.score);
     setSearchResults(results.slice(0, 10));
     setShowSearchResults(results.length > 0);
   }, [searchQuery, graphData]);
 
-  // 搜索节点并定位
   const handleSearchResultClick = (result: SearchResult) => {
-    if (cyRef.current) {
-      const node = cyRef.current.getElementById(result.id);
-      if (node.length > 0) {
-        // 清除之前的高亮
-        cyRef.current.elements().removeClass('search-highlight');
-        
-        // 高亮选中的节点
-        node.addClass('search-highlight');
-        
-        // 聚焦到节点
-        cyRef.current.animate({
-          center: { eles: node },
-          zoom: 2,
-        }, {
-          duration: 500,
-        });
-        
-        // 选中节点
+    const renderer = rendererRef.current;
+    if (renderer) {
+      const node = renderer.getNodeById(result.id);
+      if (node) {
+        renderer.setSearchHighlight({ nodeIds: [result.id] });
+        renderer.fitTo([result.id], 80);
         setSelectedNodeId(result.id);
-        
-        // 3秒后移除高亮
+
         setTimeout(() => {
-          if (cyRef.current) {
-            cyRef.current.elements().removeClass('search-highlight');
-          }
+          renderer.clearSearchHighlight();
         }, 3000);
       }
     }
-    
+
     setSearchQuery('');
     setShowSearchResults(false);
   };
 
-  // 清空搜索
   const handleClearSearch = () => {
     setSearchQuery('');
     setSearchResults([]);
     setShowSearchResults(false);
-    if (cyRef.current) {
-      cyRef.current.elements().removeClass('search-highlight');
-    }
+    rendererRef.current?.clearSearchHighlight();
   };
 
-  // 适应屏幕
   const handleFitScreen = () => {
-    if (cyRef.current) {
-      cyRef.current.fit(undefined, 50);
-    }
+    rendererRef.current?.fitTo(undefined, 50);
   };
 
-  // 加载导航历史
   useEffect(() => {
-    const history = JSON.parse(localStorage.getItem('navigationHistory') || '[]');
-    setNavigationHistory(history);
+    setNavigationHistory(loadNavigationHistory());
+  }, []);
+
+  useEffect(() => {
+    if (!showHistory) return;
+    setNavigationHistory(loadNavigationHistory());
+  }, [showHistory, bookmarkManagerOpen]);
+
+  useEffect(() => {
+    const handleHistoryUpdate = () => {
+      setNavigationHistory(loadNavigationHistory());
+    };
+
+    window.addEventListener('navigationHistoryUpdated', handleHistoryUpdate);
+
+    return () => {
+      window.removeEventListener('navigationHistoryUpdated', handleHistoryUpdate);
+    };
   }, []);
 
   return (
@@ -167,7 +154,6 @@ export const ToolBar: React.FC<ToolBarProps> = ({ cyRef }) => {
         p: 1.5,
       }}
     >
-      {/* 搜索区域 */}
       <Box sx={{ position: 'relative', mb: 1 }}>
         <TextField
           size="small"
@@ -195,8 +181,7 @@ export const ToolBar: React.FC<ToolBarProps> = ({ cyRef }) => {
             },
           }}
         />
-        
-        {/* 搜索结果下拉 */}
+
         <Collapse in={showSearchResults}>
           <Box
             sx={{
@@ -245,7 +230,6 @@ export const ToolBar: React.FC<ToolBarProps> = ({ cyRef }) => {
         </Collapse>
       </Box>
 
-      {/* 工具按钮区域 */}
       <Box
         sx={{
           display: 'flex',
@@ -287,7 +271,6 @@ export const ToolBar: React.FC<ToolBarProps> = ({ cyRef }) => {
           </IconButton>
         </Tooltip>
 
-        {/* 搜索结果计数 */}
         {searchResults.length > 0 && (
           <Chip
             label={`${searchResults.length} 个结果`}
@@ -299,7 +282,6 @@ export const ToolBar: React.FC<ToolBarProps> = ({ cyRef }) => {
         )}
       </Box>
 
-      {/* 导航历史展开区域 */}
       <Collapse in={showHistory}>
         <Box sx={{ mt: 1, pt: 1, borderTop: 1, borderColor: 'divider' }}>
           <Typography variant="caption" color="text.secondary" gutterBottom>
@@ -326,11 +308,10 @@ export const ToolBar: React.FC<ToolBarProps> = ({ cyRef }) => {
         </Box>
       </Collapse>
 
-      {/* 书签管理对话框 */}
       <BookmarkManager
         open={bookmarkManagerOpen}
         onClose={() => setBookmarkManagerOpen(false)}
-        cyRef={cyRef}
+        rendererRef={rendererRef}
       />
     </Box>
   );

@@ -15,25 +15,31 @@ export function generateDynamicStylesByNodeType(
 
   const styles: any[] = [];
 
-  // 默认节点样式 (Neo4j Browser 风格)
+  // 默认节点样式 (精致风格)
   const defaultNodeStyle = {
     selector: 'node',
     style: {
-      'background-color': '#68BDF6', // Neo4j 默认蓝色
+      'background-color': '#60A5FA',
       label: 'data(label)',
-      color: '#000000', // 黑色文字，符合 Neo4j Browser
+      color: '#0f172a',
       'text-valign': 'center',
       'text-halign': 'center',
-      'font-size': '11px',
-      'font-weight': 'normal',
+      'font-size': '12px',
+      'font-weight': '500',
       'font-family': '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-      width: 50,
-      height: 50,
-      'border-width': 0,
+      width: 52,
+      height: 52,
+      'border-width': 1,
+      'border-color': 'rgba(15, 23, 42, 0.12)',
       'text-outline-width': 0,
       'text-background-opacity': 0,
       shape: 'ellipse',
       'overlay-opacity': 0,
+      'shadow-blur': 6,
+      'shadow-color': 'rgba(15, 23, 42, 0.18)',
+      'shadow-opacity': 0.35,
+      'shadow-offset-x': 0,
+      'shadow-offset-y': 2,
     },
   };
   styles.push(defaultNodeStyle);
@@ -48,11 +54,17 @@ export function generateDynamicStylesByNodeType(
       'text-valign': 'center', // 图片节点标签也居中
       'text-halign': 'center',
       'text-margin-y': 0,
-      'border-width': 0, // Neo4j 风格无边框
-      'text-outline-width': 0, // Neo4j 风格无文字描边
-      'color': '#ffffff', // 白色文字在图片上更清晰
-      width: 80, // 有图片的节点稍大一些
-      height: 80,
+      'border-width': 1,
+      'border-color': 'rgba(15, 23, 42, 0.12)',
+      'text-outline-width': 0,
+      'color': '#ffffff',
+      width: 82,
+      height: 82,
+      'shadow-blur': 8,
+      'shadow-color': 'rgba(15, 23, 42, 0.2)',
+      'shadow-opacity': 0.35,
+      'shadow-offset-x': 0,
+      'shadow-offset-y': 2,
     },
   });
 
@@ -66,20 +78,26 @@ export function generateDynamicStylesByNodeType(
       style: {
         'background-color': config.color,
         label: config.showLabels ? 'data(label)' : '',
-        color: '#ffffff', // 白色文字，在彩色背景上更清晰
+        color: '#0f172a',
         'text-valign': 'center', // 始终居中
         'text-halign': 'center', // 始终居中
         'text-margin-y': 0,
         'font-size': `${config.labelSize}px`,
-        'font-weight': 'normal',
+        'font-weight': '500',
         'font-family': '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
         width: config.size,
         height: config.size,
-        'border-width': 0, // Neo4j 风格无边框
-        'text-outline-width': 0, // Neo4j 风格无文字描边
+        'border-width': 1,
+        'border-color': 'rgba(15, 23, 42, 0.12)',
+        'text-outline-width': 0,
         'text-background-opacity': 0,
         shape: 'ellipse',
         'overlay-opacity': 0,
+        'shadow-blur': 6,
+        'shadow-color': 'rgba(15, 23, 42, 0.18)',
+        'shadow-opacity': 0.35,
+        'shadow-offset-x': 0,
+        'shadow-offset-y': 2,
       },
     };
     
@@ -134,25 +152,34 @@ export function generateDynamicStylesByNodeType(
     },
   });
 
-  // 边样式 (Neo4j Browser 风格)
+  // 边样式 (精致风格)
   styles.push({
     selector: 'edge',
     style: {
-      width: 1.5,
-      'line-color': '#A5ABB6', // Neo4j 风格灰色
-      'target-arrow-color': '#A5ABB6',
-      'target-arrow-shape': 'triangle',
-      'target-arrow-size': 8,
+      width: 1.2,
+      'line-color': 'rgba(15, 23, 42, 0.28)',
+      'target-arrow-color': 'rgba(15, 23, 42, 0.28)',
+      'target-arrow-shape': 'triangle-backcurve',
+      'target-arrow-size': 7,
       'curve-style': 'bezier',
       label: 'data(label)',
-      'font-size': '9px',
+      'font-size': '10px',
       'font-family': '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-      color: '#666666',
+      color: '#475569',
       'text-rotation': 'autorotate',
       'text-background-color': backgroundColor,
-      'text-background-opacity': 0.8,
-      'text-background-padding': '1px',
+      'text-background-opacity': 0.7,
+      'text-background-padding': '2px',
       'text-outline-width': 0,
+    },
+  });
+
+  // 低缩放时隐藏边标签
+  styles.push({
+    selector: 'edge.zoom-label-hidden',
+    style: {
+      label: '',
+      'text-background-opacity': 0,
     },
   });
 

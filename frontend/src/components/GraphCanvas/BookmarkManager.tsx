@@ -19,7 +19,8 @@ import {
   Visibility as ViewIcon,
   Bookmark as BookmarkIcon,
 } from '@mui/icons-material';
-import type { Core } from 'cytoscape';
+import type { RendererAPI } from '../../renderers/core/types';
+import { addNavigationHistory, loadBookmarks, saveBookmarks } from '../../utils/navigationStorage';
 
 interface BookmarkItem {
   id: string;
@@ -32,62 +33,80 @@ interface BookmarkItem {
 interface BookmarkManagerProps {
   open: boolean;
   onClose: () => void;
-  cyRef: React.RefObject<Core | null>;
+  rendererRef: React.RefObject<RendererAPI | null>;
+}
+
+const easeOut = (t: number) => 1 - Math.pow(1 - t, 2);
+
+function animateToView(renderer: RendererAPI, target: { zoom: number; center: { x: number; y: number } }, duration = 500) {
+  const { width, height } = renderer.getViewportSize();
+  const startTransform = renderer.getTransform();
+  const startZoom = startTransform.k;
+  const startCenter = {
+    x: (width / 2 - startTransform.x) / startTransform.k,
+    y: (height / 2 - startTransform.y) / startTransform.k,
+  };
+
+  const startTime = performance.now();
+
+  const tick = (now: number) => {
+    const elapsed = now - startTime;
+    const t = Math.min(1, elapsed / duration);
+    const eased = easeOut(t);
+
+    const zoom = startZoom + (target.zoom - startZoom) * eased;
+    const centerX = startCenter.x + (target.center.x - startCenter.x) * eased;
+    const centerY = startCenter.y + (target.center.y - startCenter.y) * eased;
+
+    renderer.zoomTo(zoom);
+    renderer.panTo(centerX, centerY);
+
+    if (t < 1) {
+      requestAnimationFrame(tick);
+    }
+  };
+
+  requestAnimationFrame(tick);
 }
 
 export const BookmarkManager: React.FC<BookmarkManagerProps> = ({
   open,
   onClose,
-  cyRef,
+  rendererRef,
 }) => {
   const [bookmarks, setBookmarks] = useState<BookmarkItem[]>([]);
 
-  // 加载书签
   useEffect(() => {
     if (open) {
-      const savedBookmarks = JSON.parse(localStorage.getItem('graphBookmarks') || '[]');
-      setBookmarks(savedBookmarks);
+      setBookmarks(loadBookmarks());
     }
   }, [open]);
 
-  // 跳转到书签视图
   const handleGoToBookmark = (bookmark: BookmarkItem) => {
-    if (cyRef.current) {
-      cyRef.current.animate({
-        zoom: bookmark.zoom,
-        center: bookmark.center,
-      }, {
-        duration: 500,
-      });
-      
-      // 添加到导航历史
-      const historyItem = {
+    if (rendererRef.current) {
+      animateToView(rendererRef.current, { zoom: bookmark.zoom, center: bookmark.center });
+
+      addNavigationHistory({
         name: `跳转到: ${bookmark.name}`,
         timestamp: Date.now(),
         zoom: bookmark.zoom,
         center: bookmark.center,
-      };
-      const history = JSON.parse(localStorage.getItem('navigationHistory') || '[]');
-      history.unshift(historyItem);
-      localStorage.setItem('navigationHistory', JSON.stringify(history.slice(0, 20)));
+      });
     }
     onClose();
   };
 
-  // 删除书签
   const handleDeleteBookmark = (bookmarkId: string) => {
-    const updatedBookmarks = bookmarks.filter(b => b.id !== bookmarkId);
+    const updatedBookmarks = bookmarks.filter((b) => b.id !== bookmarkId);
     setBookmarks(updatedBookmarks);
-    localStorage.setItem('graphBookmarks', JSON.stringify(updatedBookmarks));
+    saveBookmarks(updatedBookmarks);
   };
 
-  // 清空所有书签
   const handleClearAll = () => {
     setBookmarks([]);
-    localStorage.removeItem('graphBookmarks');
+    saveBookmarks([]);
   };
 
-  // 格式化时间
   const formatTime = (timestamp: number) => {
     return new Date(timestamp).toLocaleString('zh-CN', {
       month: 'short',
@@ -104,20 +123,20 @@ export const BookmarkManager: React.FC<BookmarkManagerProps> = ({
       maxWidth="sm"
       fullWidth
       PaperProps={{
-        sx: { minHeight: '400px' }
+        sx: { minHeight: '400px' },
       }}
     >
       <DialogTitle sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
         <BookmarkIcon />
         视图书签管理
-        <Chip 
-          label={`${bookmarks.length} 个书签`} 
-          size="small" 
-          color="primary" 
+        <Chip
+          label={`${bookmarks.length} 个书签`}
+          size="small"
+          color="primary"
           variant="outlined"
         />
       </DialogTitle>
-      
+
       <DialogContent>
         {bookmarks.length === 0 ? (
           <Box
@@ -195,7 +214,7 @@ export const BookmarkManager: React.FC<BookmarkManagerProps> = ({
           </List>
         )}
       </DialogContent>
-      
+
       <DialogActions>
         {bookmarks.length > 0 && (
           <Button onClick={handleClearAll} color="error" variant="outlined">

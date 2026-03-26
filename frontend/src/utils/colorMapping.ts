@@ -8,6 +8,35 @@ export const NODE_COLORS: Record<string, string> = {
   default: '#757575', // 灰色 - 默认
 };
 
+const FALLBACK_NODE_PALETTE = [
+  '#4e79a7',
+  '#f28e2b',
+  '#e15759',
+  '#76b7b2',
+  '#59a14f',
+  '#edc949',
+  '#af7aa1',
+  '#ff9da7',
+  '#9c755f',
+  '#bab0ab',
+  '#86bc86',
+  '#f1ce63',
+];
+
+function hashString(input: string): number {
+  let hash = 0;
+  for (let i = 0; i < input.length; i += 1) {
+    hash = (hash * 31 + input.charCodeAt(i)) | 0;
+  }
+  return Math.abs(hash);
+}
+
+function getFallbackColor(key: string) {
+  if (!key) return NODE_COLORS.default;
+  const index = hashString(key) % FALLBACK_NODE_PALETTE.length;
+  return FALLBACK_NODE_PALETTE[index];
+}
+
 // 根据节点标签获取颜色
 export function getNodeColor(labels: string[]): string {
   if (!labels || labels.length === 0) {
@@ -21,7 +50,7 @@ export function getNodeColor(labels: string[]): string {
     }
   }
 
-  return NODE_COLORS.default;
+  return getFallbackColor(labels[0]);
 }
 
 // 关系类型颜色映射

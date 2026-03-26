@@ -136,6 +136,7 @@ export function QueryHistory() {
                     />
                   </Box>
                 }
+                secondaryTypographyProps={{ component: 'div' }}
               />
             </ListItemButton>
           </ListItem>

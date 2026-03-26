@@ -14,323 +14,169 @@ import {
   ZoomOut as ZoomOutIcon,
   Grain as DensityIcon,
 } from '@mui/icons-material';
-import type { Core } from 'cytoscape';
+import type { RendererAPI, RendererNode } from '../../renderers/core/types';
 
 interface MinimapProps {
-  cyRef: React.RefObject<Core | null>;
+  rendererRef: React.RefObject<RendererAPI | null>;
   width?: number;
   height?: number;
+  viewportSize: { width: number; height: number };
 }
 
-export function Minimap({ cyRef, width = 200, height = 150 }: MinimapProps) {
-  const minimapRef = useRef<HTMLDivElement>(null);
-  const minimapCyRef = useRef<Core | null>(null);
+export function Minimap({ rendererRef, width = 200, height = 150, viewportSize }: MinimapProps) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
   const [isVisible, setIsVisible] = useState(true);
   const [isExpanded, setIsExpanded] = useState(false);
   const [showDensity, setShowDensity] = useState(false);
-  const [viewportRect, setViewportRect] = useState<{
-    x: number;
-    y: number;
-    width: number;
-    height: number;
-  } | null>(null);
-
-  // 初始化小地图
-  useEffect(() => {
-    if (!minimapRef.current || !cyRef.current || !isVisible) return;
-
-    const mainCy = cyRef.current;
-    
-    // 创建小地图的Cytoscape实例
-    const minimapCy = (window as any).cytoscape({
-      container: minimapRef.current,
-      elements: mainCy.elements().jsons(),
-      style: [
-        {
-          selector: 'node',
-          style: {
-            'background-color': showDensity ? (node: any) => {
-              const degree = node.degree();
-              const maxDegree = 10; // 假设最大度数
-              const intensity = Math.min(degree / maxDegree, 1);
-              return `hsl(${240 - intensity * 120}, 70%, ${50 + intensity * 30}%)`;
-            } : 'data(color)',
-            width: showDensity ? (node: any) => Math.max(6, Math.min(16, 6 + node.degree() * 2)) : 8,
-            height: showDensity ? (node: any) => Math.max(6, Math.min(16, 6 + node.degree() * 2)) : 8,
-            'border-width': 0,
-            label: '',
-            'overlay-opacity': 0,
-          },
-        },
-        {
-          selector: 'edge',
-          style: {
-            width: showDensity ? 0.5 : 1,
-            'line-color': showDensity ? '#999' : '#ccc',
-            'target-arrow-shape': 'none',
-            'curve-style': 'straight',
-            label: '',
-            opacity: showDensity ? 0.6 : 0.8,
-          },
-        },
-        {
-          selector: '.highlighted',
-          style: {
-            'background-color': '#ff4081',
-            width: 12,
-            height: 12,
-            'border-width': 2,
-            'border-color': '#fff',
-            'z-index': 999,
-          },
-        },
-      ],
-      layout: { name: 'preset' },
-      zoomingEnabled: false,
-      panningEnabled: false,
-      boxSelectionEnabled: false,
-      selectionType: 'single',
-      autoungrabify: true,
-      userZoomingEnabled: false,
-      userPanningEnabled: false,
-    });
-
-    minimapCyRef.current = minimapCy;
-
-    // 适应视口
-    minimapCy.fit(undefined, 10);
-
-    // 更新视口矩形
-    updateViewportRect();
-
-    // 监听主图的视口变化
-    const handleViewportChange = () => {
-      updateViewportRect();
-    };
-
-    mainCy.on('viewport', handleViewportChange);
-    mainCy.on('zoom', handleViewportChange);
-    mainCy.on('pan', handleViewportChange);
-
-    // 监听小地图点击
-    minimapCy.on('tap', (event: any) => {
-      if (event.target === minimapCy) {
-        // 点击背景，移动主图视口
-        const position = event.position;
-        const mainExtent = mainCy.extent();
-        const minimapExtent = minimapCy.extent();
-        
-        // 计算比例
-        const scaleX = (mainExtent.x2 - mainExtent.x1) / (minimapExtent.x2 - minimapExtent.x1);
-        const scaleY = (mainExtent.y2 - mainExtent.y1) / (minimapExtent.y2 - minimapExtent.y1);
-        
-        // 转换坐标
-        const mainX = (position.x - minimapExtent.x1) * scaleX + mainExtent.x1;
-        const mainY = (position.y - minimapExtent.y1) * scaleY + mainExtent.y1;
-        
-        // 移动主图
-        mainCy.animate({
-          pan: { x: -mainX * mainCy.zoom() + mainCy.width() / 2, y: -mainY * mainCy.zoom() + mainCy.height() / 2 },
-        }, {
-          duration: 300,
-        });
-      }
-    });
-
-    // 清理函数
-    return () => {
-      mainCy.off('viewport', handleViewportChange);
-      mainCy.off('zoom', handleViewportChange);
-      mainCy.off('pan', handleViewportChange);
-      
-      if (minimapCyRef.current) {
-        minimapCyRef.current.destroy();
-        minimapCyRef.current = null;
-      }
-    };
-  }, [cyRef, isVisible]);
-
-  // 更新视口矩形
-  const updateViewportRect = () => {
-    if (!cyRef.current || !minimapCyRef.current) return;
-
-    const mainCy = cyRef.current;
-    const minimapCy = minimapCyRef.current;
-
-    // 获取主图的视口范围
-    const mainExtent = mainCy.extent();
-    const minimapExtent = minimapCy.extent();
-
-    // 计算视口在小地图中的位置和大小
-    const scaleX = (minimapExtent.x2 - minimapExtent.x1) / (mainExtent.x2 - mainExtent.x1);
-    const scaleY = (minimapExtent.y2 - minimapExtent.y1) / (mainExtent.y2 - mainExtent.y1);
-
-    const viewportWidth = (mainCy.width() / mainCy.zoom()) * scaleX;
-    const viewportHeight = (mainCy.height() / mainCy.zoom()) * scaleY;
-
-    const pan = mainCy.pan();
-    const zoom = mainCy.zoom();
-    
-    const viewportX = ((-pan.x / zoom - mainExtent.x1) * scaleX + minimapExtent.x1);
-    const viewportY = ((-pan.y / zoom - mainExtent.y1) * scaleY + minimapExtent.y1);
-
-    setViewportRect({
-      x: viewportX,
-      y: viewportY,
-      width: viewportWidth,
-      height: viewportHeight,
-    });
-  };
-
-  // 高亮节点（暂时未使用，但保留接口）
-  // const highlightNode = (nodeId: string | null) => {
-  //   if (!minimapCyRef.current) return;
-  //   const minimapCy = minimapCyRef.current;
-  //   minimapCy.elements().removeClass('highlighted');
-  //   if (nodeId) {
-  //     const node = minimapCy.getElementById(nodeId);
-  //     if (node.length > 0) {
-  //       node.addClass('highlighted');
-  //     }
-  //   }
-  // };
-
-  // 同步主图数据变化
-  useEffect(() => {
-    if (!cyRef.current || !minimapCyRef.current || !isVisible) return;
-
-    const mainCy = cyRef.current;
-    const minimapCy = minimapCyRef.current;
-
-    // 同步元素
-    try {
-      minimapCy.elements().remove();
-      const elements = mainCy.elements().jsons();
-      if (elements && elements.length > 0) {
-        // 确保元素格式正确
-        const validElements = elements.filter((el: any) => el && el.data);
-        if (validElements.length > 0) {
-          minimapCy.add(validElements as any);
-        }
-      }
-    } catch (error) {
-      console.warn('Failed to sync minimap elements:', error);
-    }
-    minimapCy.fit(undefined, 10);
-    
-    updateViewportRect();
-  }, [cyRef.current?.elements().length, isVisible]);
+  const animationRef = useRef<number | null>(null);
+  const mappingRef = useRef({ scale: 1, offsetX: 0, offsetY: 0 });
 
   const displayWidth = isExpanded ? width * 1.5 : width;
   const displayHeight = isExpanded ? height * 1.5 : height;
 
-  return (
-    <Fade in={isVisible}>
-      <Paper
-        elevation={4}
-        sx={{
-          position: 'absolute',
-          bottom: 16,
-          left: 16,
-          width: displayWidth,
-          height: displayHeight + 40, // 额外空间给控制按钮
-          zIndex: 1000,
-          overflow: 'hidden',
-          transition: 'all 0.3s ease',
-          // 确保不被其他元素遮挡
-          '@media (max-width: 600px)': {
-            bottom: 80, // 移动端避免被底部控件遮挡
-          },
-        }}
-      >
-        {/* 控制栏 */}
-        <Box
-          sx={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            p: 0.5,
-            backgroundColor: 'background.default',
-            borderBottom: 1,
-            borderColor: 'divider',
-          }}
-        >
-          <Typography variant="caption" color="text.secondary">
-            小地图
-          </Typography>
-          
-          <Box>
-            <Tooltip title={showDensity ? '普通视图' : '密度视图'}>
-              <IconButton
-                size="small"
-                onClick={() => setShowDensity(!showDensity)}
-                color={showDensity ? 'primary' : 'default'}
-              >
-                <DensityIcon fontSize="small" />
-              </IconButton>
-            </Tooltip>
-            
-            <Tooltip title={isExpanded ? '缩小' : '放大'}>
-              <IconButton
-                size="small"
-                onClick={() => setIsExpanded(!isExpanded)}
-              >
-                {isExpanded ? <ZoomOutIcon fontSize="small" /> : <ZoomInIcon fontSize="small" />}
-              </IconButton>
-            </Tooltip>
-            
-            <Tooltip title="隐藏小地图">
-              <IconButton
-                size="small"
-                onClick={() => setIsVisible(false)}
-              >
-                <VisibilityOffIcon fontSize="small" />
-              </IconButton>
-            </Tooltip>
-          </Box>
-        </Box>
+  const drawMinimap = () => {
+    const canvas = canvasRef.current;
+    const renderer = rendererRef.current;
+    if (!canvas || !renderer) return;
 
-        {/* 小地图容器 */}
-        <Box
-          sx={{
-            position: 'relative',
-            width: displayWidth,
-            height: displayHeight,
-            backgroundColor: 'background.paper',
-          }}
-        >
-          <div
-            ref={minimapRef}
-            style={{
-              width: '100%',
-              height: '100%',
-              cursor: 'pointer',
-            }}
-          />
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
 
-          {/* 视口矩形 */}
-          {viewportRect && (
-            <Box
-              sx={{
-                position: 'absolute',
-                left: `${(viewportRect.x / (minimapCyRef.current?.width() || 1)) * 100}%`,
-                top: `${(viewportRect.y / (minimapCyRef.current?.height() || 1)) * 100}%`,
-                width: `${(viewportRect.width / (minimapCyRef.current?.width() || 1)) * 100}%`,
-                height: `${(viewportRect.height / (minimapCyRef.current?.height() || 1)) * 100}%`,
-                border: 2,
-                borderColor: 'primary.main',
-                backgroundColor: 'primary.main',
-                opacity: 0.2,
-                pointerEvents: 'none',
-              }}
-            />
-          )}
-        </Box>
-      </Paper>
-    </Fade>
-  );
+    const dpr = window.devicePixelRatio || 1;
+    const nextWidth = Math.max(1, Math.round(displayWidth * dpr));
+    const nextHeight = Math.max(1, Math.round(displayHeight * dpr));
 
-  // 显示/隐藏切换按钮（当小地图隐藏时）
+    if (canvas.width !== nextWidth || canvas.height !== nextHeight) {
+      canvas.width = nextWidth;
+      canvas.height = nextHeight;
+      canvas.style.width = `${displayWidth}px`;
+      canvas.style.height = `${displayHeight}px`;
+    }
+
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, displayWidth, displayHeight);
+
+    const nodes = renderer.getAllNodes();
+    const edges = renderer.getAllEdges();
+
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+
+    nodes.forEach((node) => {
+      if (node.x === undefined || node.y === undefined) return;
+      const radius = node.radius ?? 0;
+      minX = Math.min(minX, node.x - radius);
+      minY = Math.min(minY, node.y - radius);
+      maxX = Math.max(maxX, node.x + radius);
+      maxY = Math.max(maxY, node.y + radius);
+    });
+
+    if (!Number.isFinite(minX) || !Number.isFinite(minY) || !Number.isFinite(maxX) || !Number.isFinite(maxY)) {
+      return;
+    }
+
+    const worldWidth = Math.max(1, maxX - minX);
+    const worldHeight = Math.max(1, maxY - minY);
+    const padding = 12;
+    const scale = Math.min(
+      (displayWidth - padding * 2) / worldWidth,
+      (displayHeight - padding * 2) / worldHeight
+    );
+
+    const offsetX = (displayWidth - worldWidth * scale) / 2 - minX * scale;
+    const offsetY = (displayHeight - worldHeight * scale) / 2 - minY * scale;
+    mappingRef.current = { scale, offsetX, offsetY };
+
+    ctx.strokeStyle = showDensity ? 'rgba(15, 23, 42, 0.15)' : 'rgba(15, 23, 42, 0.25)';
+    ctx.lineWidth = 1;
+
+    edges.forEach((edge) => {
+      const source = renderer.getNodeById(edge.source);
+      const target = renderer.getNodeById(edge.target);
+      if (!source || !target) return;
+      if (source.x === undefined || source.y === undefined || target.x === undefined || target.y === undefined) return;
+      const startX = source.x * scale + offsetX;
+      const startY = source.y * scale + offsetY;
+      const endX = target.x * scale + offsetX;
+      const endY = target.y * scale + offsetY;
+      ctx.beginPath();
+      ctx.moveTo(startX, startY);
+      ctx.lineTo(endX, endY);
+      ctx.stroke();
+    });
+
+    nodes.forEach((node: RendererNode) => {
+      if (node.x === undefined || node.y === undefined) return;
+      const x = node.x * scale + offsetX;
+      const y = node.y * scale + offsetY;
+      const baseSize = showDensity ? 2 + Math.min(node.degree, 10) * 0.3 : 3;
+      const radius = Math.max(2, Math.min(8, baseSize));
+
+      if (showDensity) {
+        const intensity = Math.min(node.degree / 10, 1);
+        ctx.fillStyle = `hsl(${220 - intensity * 120}, 70%, ${45 + intensity * 25}%)`;
+      } else {
+        ctx.fillStyle = node.color || '#90caf9';
+      }
+
+      ctx.beginPath();
+      ctx.arc(x, y, radius, 0, Math.PI * 2);
+      ctx.fill();
+    });
+
+    const transform = renderer.getTransform();
+    const viewLeft = -transform.x / transform.k;
+    const viewTop = -transform.y / transform.k;
+    const viewRight = (viewportSize.width - transform.x) / transform.k;
+    const viewBottom = (viewportSize.height - transform.y) / transform.k;
+
+    const rectX = viewLeft * scale + offsetX;
+    const rectY = viewTop * scale + offsetY;
+    const rectWidth = (viewRight - viewLeft) * scale;
+    const rectHeight = (viewBottom - viewTop) * scale;
+
+    ctx.strokeStyle = 'rgba(25, 118, 210, 0.9)';
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(rectX, rectY, rectWidth, rectHeight);
+    ctx.fillStyle = 'rgba(25, 118, 210, 0.15)';
+    ctx.fillRect(rectX, rectY, rectWidth, rectHeight);
+  };
+
+  useEffect(() => {
+    if (!isVisible) return;
+
+    const loop = () => {
+      drawMinimap();
+      animationRef.current = window.requestAnimationFrame(loop);
+    };
+
+    loop();
+
+    return () => {
+      if (animationRef.current !== null) {
+        cancelAnimationFrame(animationRef.current);
+      }
+    };
+  }, [isVisible, isExpanded, showDensity, width, height, viewportSize]);
+
+  const handleMinimapClick = (event: React.MouseEvent<HTMLCanvasElement>) => {
+    const renderer = rendererRef.current;
+    const canvas = canvasRef.current;
+    if (!renderer || !canvas) return;
+
+    const rect = canvas.getBoundingClientRect();
+    const clickX = event.clientX - rect.left;
+    const clickY = event.clientY - rect.top;
+    const { scale, offsetX, offsetY } = mappingRef.current;
+    if (scale === 0) return;
+
+    const worldX = (clickX - offsetX) / scale;
+    const worldY = (clickY - offsetY) / scale;
+    renderer.panTo(worldX, worldY);
+  };
+
   if (!isVisible) {
     return (
       <Tooltip title="显示小地图">
@@ -353,4 +199,85 @@ export function Minimap({ cyRef, width = 200, height = 150 }: MinimapProps) {
       </Tooltip>
     );
   }
+
+  return (
+    <Fade in={isVisible}>
+      <Paper
+        elevation={4}
+        sx={{
+          position: 'absolute',
+          bottom: 16,
+          left: 16,
+          width: displayWidth,
+          height: displayHeight + 40,
+          zIndex: 1000,
+          overflow: 'hidden',
+          transition: 'all 0.3s ease',
+          '@media (max-width: 600px)': {
+            bottom: 80,
+          },
+        }}
+      >
+        <Box
+          sx={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            p: 0.5,
+            backgroundColor: 'background.default',
+            borderBottom: 1,
+            borderColor: 'divider',
+          }}
+        >
+          <Typography variant="caption" color="text.secondary">
+            小地图
+          </Typography>
+
+          <Box>
+            <Tooltip title={showDensity ? '普通视图' : '密度视图'}>
+              <IconButton
+                size="small"
+                onClick={() => setShowDensity(!showDensity)}
+                color={showDensity ? 'primary' : 'default'}
+              >
+                <DensityIcon fontSize="small" />
+              </IconButton>
+            </Tooltip>
+
+            <Tooltip title={isExpanded ? '缩小' : '放大'}>
+              <IconButton size="small" onClick={() => setIsExpanded(!isExpanded)}>
+                {isExpanded ? <ZoomOutIcon fontSize="small" /> : <ZoomInIcon fontSize="small" />}
+              </IconButton>
+            </Tooltip>
+
+            <Tooltip title="隐藏小地图">
+              <IconButton size="small" onClick={() => setIsVisible(false)}>
+                <VisibilityOffIcon fontSize="small" />
+              </IconButton>
+            </Tooltip>
+          </Box>
+        </Box>
+
+        <Box
+          sx={{
+            position: 'relative',
+            width: displayWidth,
+            height: displayHeight,
+            backgroundColor: 'background.paper',
+          }}
+        >
+          <canvas
+            ref={canvasRef}
+            style={{
+              width: '100%',
+              height: '100%',
+              cursor: 'pointer',
+              display: 'block',
+            }}
+            onClick={handleMinimapClick}
+          />
+        </Box>
+      </Paper>
+    </Fade>
+  );
 }

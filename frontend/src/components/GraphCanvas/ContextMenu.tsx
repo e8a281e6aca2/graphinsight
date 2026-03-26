@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Menu,
   MenuItem,
@@ -17,109 +17,104 @@ import {
   Info as InfoIcon,
   SelectAll as SelectIcon,
 } from '@mui/icons-material';
-import type { Core, NodeSingular, EdgeSingular } from 'cytoscape';
+import type { RendererAPI, RendererEdge, RendererNode } from '../../renderers/core/types';
 import { useGraphStore } from '../../store/graphStore';
+import { addBookmark } from '../../utils/navigationStorage';
+
+export type ContextMenuTarget = { type: 'node' | 'edge'; id: string } | null;
 
 interface ContextMenuProps {
-  cyRef: React.RefObject<Core | null>;
+  rendererRef: React.RefObject<RendererAPI | null>;
   anchorPosition: { top: number; left: number } | null;
   onClose: () => void;
-  targetElement: NodeSingular | EdgeSingular | null;
+  target: ContextMenuTarget;
+  hiddenNodeIds: Set<string>;
+  hiddenEdgeIds: Set<string>;
+  onHideNode: (id: string) => void;
+  onShowNode: (id: string) => void;
+  onHideEdge: (id: string) => void;
+  onShowEdge: (id: string) => void;
+  viewportSize: { width: number; height: number };
 }
 
 export const ContextMenu: React.FC<ContextMenuProps> = ({
-  cyRef,
+  rendererRef,
   anchorPosition,
   onClose,
-  targetElement,
+  target,
+  hiddenNodeIds,
+  hiddenEdgeIds,
+  onHideNode,
+  onShowNode,
+  onHideEdge,
+  onShowEdge,
+  viewportSize,
 }) => {
-  const { setSelectedNodeId, createGroup } = useGraphStore();
+  const { setSelectedNodeId, createGroup, setNodeTypeFilter, setRelationshipTypeFilter } = useGraphStore();
   const [elementType, setElementType] = useState<'node' | 'edge' | null>(null);
-  const [elementData, setElementData] = useState<any>(null);
+  const [elementData, setElementData] = useState<RendererNode | RendererEdge | null>(null);
 
   useEffect(() => {
-    if (targetElement) {
-      if (targetElement.isNode()) {
-        setElementType('node');
-        setElementData(targetElement.data());
-      } else if (targetElement.isEdge()) {
-        setElementType('edge');
-        setElementData(targetElement.data());
-      }
-    } else {
+    if (!target || !rendererRef.current) {
       setElementType(null);
       setElementData(null);
+      return;
     }
-  }, [targetElement]);
+
+    if (target.type === 'node') {
+      setElementType('node');
+      setElementData(rendererRef.current.getNodeById(target.id) || null);
+      return;
+    }
+
+    setElementType('edge');
+    setElementData(rendererRef.current.getEdgeById(target.id) || null);
+  }, [target, rendererRef]);
 
   const handleClose = () => {
     onClose();
   };
 
-  // 节点操作
   const handleShowNodeDetails = () => {
     if (elementType === 'node' && elementData) {
       setSelectedNodeId(elementData.id);
+      rendererRef.current?.setActiveElement({ type: 'node', id: elementData.id });
     }
     handleClose();
   };
 
   const handleHideNode = () => {
-    if (targetElement && targetElement.isNode()) {
-      targetElement.style('display', 'none');
-      // 同时隐藏连接的边
-      targetElement.connectedEdges().style('display', 'none');
+    if (elementType === 'node' && elementData) {
+      onHideNode(elementData.id);
     }
     handleClose();
   };
 
   const handleShowNode = () => {
-    if (targetElement && targetElement.isNode()) {
-      targetElement.style('display', 'element');
-      // 显示连接的边（如果目标节点也可见）
-      targetElement.connectedEdges().forEach((edge: EdgeSingular) => {
-        const source = edge.source();
-        const target = edge.target();
-        if (source.style('display') !== 'none' && target.style('display') !== 'none') {
-          edge.style('display', 'element');
-        }
-      });
+    if (elementType === 'node' && elementData) {
+      onShowNode(elementData.id);
     }
     handleClose();
   };
 
   const handleFocusNode = () => {
-    if (targetElement && targetElement.isNode() && cyRef.current) {
-      cyRef.current.animate({
-        center: { eles: targetElement },
-        zoom: 2,
-      }, {
-        duration: 500,
-      });
+    if (elementType === 'node' && elementData) {
+      rendererRef.current?.fitTo([elementData.id], 120);
     }
     handleClose();
   };
 
   const handleExpandNeighbors = () => {
-    if (targetElement && targetElement.isNode() && cyRef.current) {
-      // 高亮显示邻居节点
-      const neighbors = targetElement.neighborhood();
-      cyRef.current.elements().removeClass('highlighted');
-      neighbors.addClass('highlighted');
-      targetElement.addClass('highlighted');
-      
-      // 聚焦到节点及其邻居
-      cyRef.current.animate({
-        fit: { eles: neighbors.union(targetElement), padding: 50 },
-      }, {
-        duration: 500,
-      });
+    if (elementType === 'node' && elementData) {
+      const neighbors = rendererRef.current?.getNeighbors(elementData.id) || [];
+      rendererRef.current?.setActiveElement({ type: 'node', id: elementData.id });
+      rendererRef.current?.fitTo([elementData.id, ...neighbors], 80);
     }
     handleClose();
   };
 
   const handleCreateGroup = () => {
-    if (targetElement && targetElement.isNode() && elementData) {
+    if (elementType === 'node' && elementData) {
       const groupName = `Group_${Date.now()}`;
       createGroup(groupName, [elementData.id]);
     }
@@ -127,125 +122,83 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
   };
 
   const handleSelectSimilar = () => {
-    if (targetElement && targetElement.isNode() && cyRef.current && elementData) {
-      // 选择相同类型的所有节点
-      const nodeLabels = elementData.labels || [];
-      if (nodeLabels.length > 0) {
-        const similarNodes = cyRef.current.nodes().filter((node: NodeSingular) => {
-          const nodeData = node.data();
-          const nodeLabelsSet = new Set(nodeData.labels || []);
-          return nodeLabels.some((label: string) => nodeLabelsSet.has(label));
-        });
-        
-        cyRef.current.elements().removeClass('selected');
-        similarNodes.addClass('selected');
-      }
+    if (elementType === 'node' && elementData) {
+      setNodeTypeFilter([elementData.type]);
     }
     handleClose();
   };
 
-  // 边操作
   const handleHideEdge = () => {
-    if (targetElement && targetElement.isEdge()) {
-      targetElement.style('display', 'none');
+    if (elementType === 'edge' && elementData) {
+      onHideEdge(elementData.id);
     }
     handleClose();
   };
 
   const handleShowEdge = () => {
-    if (targetElement && targetElement.isEdge()) {
-      targetElement.style('display', 'element');
+    if (elementType === 'edge' && elementData) {
+      onShowEdge(elementData.id);
     }
     handleClose();
   };
 
   const handleFocusEdge = () => {
-    if (targetElement && targetElement.isEdge() && cyRef.current) {
-      const sourceNode = targetElement.source();
-      const targetNode = targetElement.target();
-      const elements = targetElement.union(sourceNode).union(targetNode);
-      
-      cyRef.current.animate({
-        fit: { eles: elements, padding: 100 },
-      }, {
-        duration: 500,
-      });
+    if (elementType === 'edge' && elementData) {
+      const edge = elementData as RendererEdge;
+      rendererRef.current?.fitTo([edge.source, edge.target], 120);
     }
     handleClose();
   };
 
   const handleSelectSimilarEdges = () => {
-    if (targetElement && targetElement.isEdge() && cyRef.current && elementData) {
-      // 选择相同类型的所有边
-      const edgeType = elementData.type;
-      if (edgeType) {
-        const similarEdges = cyRef.current.edges().filter((edge: EdgeSingular) => {
-          return edge.data('type') === edgeType;
-        });
-        
-        cyRef.current.elements().removeClass('selected');
-        similarEdges.addClass('selected');
-      }
+    if (elementType === 'edge' && elementData) {
+      const edge = elementData as RendererEdge;
+      setRelationshipTypeFilter([edge.type]);
     }
     handleClose();
   };
 
-  // 通用操作
   const handleBookmark = () => {
-    if (cyRef.current) {
-      const viewState = {
-        id: `bookmark_${Date.now()}`,
-        zoom: cyRef.current.zoom(),
-        center: cyRef.current.center(),
-        timestamp: Date.now(),
-        name: elementData ? `${elementType}_${elementData.name || elementData.id || elementData.type}` : `视图_${new Date().toLocaleTimeString()}`
-      };
-      
-      // 保存到localStorage
-      const bookmarks = JSON.parse(localStorage.getItem('graphBookmarks') || '[]');
-      bookmarks.push(viewState);
-      localStorage.setItem('graphBookmarks', JSON.stringify(bookmarks));
+    const transform = rendererRef.current?.getTransform();
+    if (!transform) {
+      handleClose();
+      return;
     }
+
+    const center = {
+      x: (viewportSize.width / 2 - transform.x) / transform.k,
+      y: (viewportSize.height / 2 - transform.y) / transform.k,
+    };
+
+    const viewState = {
+      id: `bookmark_${Date.now()}`,
+      zoom: transform.k,
+      center,
+      timestamp: Date.now(),
+      name: elementData
+        ? `${elementType}_${(elementData as any).label || elementData.id}`
+        : `视图_${new Date().toLocaleTimeString()}`,
+    };
+
+    addBookmark(viewState);
+
     handleClose();
   };
 
-  const isNodeHidden = targetElement?.isNode() && targetElement.style('display') === 'none';
-  const isEdgeHidden = targetElement?.isEdge() && targetElement.style('display') === 'none';
-
-  if (!anchorPosition || !targetElement) {
+  if (!anchorPosition || !target || !elementData) {
     return null;
   }
 
+  const isNodeHidden = elementType === 'node' && hiddenNodeIds.has(elementData.id);
+  const isEdgeHidden = elementType === 'edge' && hiddenEdgeIds.has(elementData.id);
+
   return (
     <Menu
-      open={Boolean(anchorPosition)}
-      onClose={handleClose}
       anchorReference="anchorPosition"
       anchorPosition={anchorPosition}
-      PaperProps={{
-        sx: {
-          minWidth: 200,
-          maxWidth: 250,
-        },
-      }}
+      open={Boolean(anchorPosition)}
+      onClose={handleClose}
     >
-      {/* 元素信息 */}
-      <MenuItem disabled>
-        <ListItemIcon>
-          <InfoIcon fontSize="small" />
-        </ListItemIcon>
-        <ListItemText>
-          <Typography variant="body2" color="text.secondary">
-            {elementType === 'node' 
-              ? `节点: ${elementData?.name || elementData?.id || 'Unknown'}`
-              : `关系: ${elementData?.type || 'Unknown'}`
-            }
-          </Typography>
-        </ListItemText>
-      </MenuItem>
-      
-      <Divider />
-
       {/* 节点操作 */}
       {elementType === 'node' && (
         <>
@@ -253,44 +206,44 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
             <ListItemIcon>
               <InfoIcon fontSize="small" />
             </ListItemIcon>
-            <ListItemText primary="查看详情" />
+            <ListItemText>查看详情</ListItemText>
+          </MenuItem>
+
+          <MenuItem onClick={isNodeHidden ? handleShowNode : handleHideNode}>
+            <ListItemIcon>
+              {isNodeHidden ? <ShowIcon fontSize="small" /> : <HideIcon fontSize="small" />}
+            </ListItemIcon>
+            <ListItemText>{isNodeHidden ? '显示节点' : '隐藏节点'}</ListItemText>
           </MenuItem>
 
           <MenuItem onClick={handleFocusNode}>
             <ListItemIcon>
               <FocusIcon fontSize="small" />
             </ListItemIcon>
-            <ListItemText primary="聚焦节点" />
+            <ListItemText>聚焦节点</ListItemText>
           </MenuItem>
 
           <MenuItem onClick={handleExpandNeighbors}>
             <ListItemIcon>
               <ExpandIcon fontSize="small" />
             </ListItemIcon>
-            <ListItemText primary="展开邻居" />
+            <ListItemText>展开邻居</ListItemText>
           </MenuItem>
 
           <Divider />
-
-          <MenuItem onClick={isNodeHidden ? handleShowNode : handleHideNode}>
-            <ListItemIcon>
-              {isNodeHidden ? <ShowIcon fontSize="small" /> : <HideIcon fontSize="small" />}
-            </ListItemIcon>
-            <ListItemText primary={isNodeHidden ? "显示节点" : "隐藏节点"} />
-          </MenuItem>
 
           <MenuItem onClick={handleSelectSimilar}>
             <ListItemIcon>
               <SelectIcon fontSize="small" />
             </ListItemIcon>
-            <ListItemText primary="选择同类型" />
+            <ListItemText>筛选同类型节点</ListItemText>
           </MenuItem>
 
           <MenuItem onClick={handleCreateGroup}>
             <ListItemIcon>
               <GroupIcon fontSize="small" />
             </ListItemIcon>
-            <ListItemText primary="创建分组" />
+            <ListItemText>创建分组</ListItemText>
           </MenuItem>
         </>
       )}
@@ -298,40 +251,43 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
       {/* 边操作 */}
       {elementType === 'edge' && (
         <>
-          <MenuItem onClick={handleFocusEdge}>
-            <ListItemIcon>
-              <FocusIcon fontSize="small" />
-            </ListItemIcon>
-            <ListItemText primary="聚焦关系" />
-          </MenuItem>
-
-          <Divider />
-
           <MenuItem onClick={isEdgeHidden ? handleShowEdge : handleHideEdge}>
             <ListItemIcon>
               {isEdgeHidden ? <ShowIcon fontSize="small" /> : <HideIcon fontSize="small" />}
             </ListItemIcon>
-            <ListItemText primary={isEdgeHidden ? "显示关系" : "隐藏关系"} />
+            <ListItemText>{isEdgeHidden ? '显示边' : '隐藏边'}</ListItemText>
           </MenuItem>
+
+          <MenuItem onClick={handleFocusEdge}>
+            <ListItemIcon>
+              <FocusIcon fontSize="small" />
+            </ListItemIcon>
+            <ListItemText>聚焦边</ListItemText>
+          </MenuItem>
+
+          <Divider />
 
           <MenuItem onClick={handleSelectSimilarEdges}>
             <ListItemIcon>
               <SelectIcon fontSize="small" />
             </ListItemIcon>
-            <ListItemText primary="选择同类型" />
+            <ListItemText>筛选同类型边</ListItemText>
           </MenuItem>
         </>
       )}
 
       <Divider />
 
-      {/* 通用操作 */}
       <MenuItem onClick={handleBookmark}>
         <ListItemIcon>
           <BookmarkIcon fontSize="small" />
         </ListItemIcon>
-        <ListItemText primary="添加书签" />
+        <ListItemText>添加书签</ListItemText>
       </MenuItem>
+
+      <Typography variant="caption" color="text.secondary" sx={{ px: 2, py: 1 }}>
+        {elementType === 'node' ? `节点: ${(elementData as RendererNode).label || elementData.id}` : `边: ${(elementData as RendererEdge).predicate || elementData.id}`}
+      </Typography>
     </Menu>
   );
 };

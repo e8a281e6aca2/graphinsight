@@ -6,27 +6,37 @@ import {
 import {
   ZoomIn as ZoomInIcon,
   ZoomOut as ZoomOutIcon,
+  Navigation as NavigationIcon,
+  ThreeDRotation as ThreeDIcon,
 } from '@mui/icons-material';
-import type { Core } from 'cytoscape';
+import type { RendererAPI } from '../../renderers/core/types';
 
 interface GraphControlsProps {
-  cyRef: React.RefObject<Core | null>;
+  rendererRef: React.RefObject<RendererAPI | null>;
+  onToggleNavigation?: () => void;
+  navigationOpen?: boolean;
+  viewMode?: '2d' | '3d';
+  onToggleViewMode?: () => void;
 }
 
-export function GraphControls({ cyRef }: GraphControlsProps) {
+export function GraphControls({
+  rendererRef,
+  onToggleNavigation,
+  navigationOpen,
+  viewMode = '2d',
+  onToggleViewMode,
+}: GraphControlsProps) {
   const handleZoomIn = () => {
-    if (cyRef.current) {
-      const cy = cyRef.current;
-      cy.zoom(cy.zoom() * 1.2);
-      cy.center();
+    rendererRef.current?.zoomBy(1.2);
+    if (viewMode === '2d') {
+      rendererRef.current?.center();
     }
   };
 
   const handleZoomOut = () => {
-    if (cyRef.current) {
-      const cy = cyRef.current;
-      cy.zoom(cy.zoom() * 0.8);
-      cy.center();
+    rendererRef.current?.zoomBy(0.8);
+    if (viewMode === '2d') {
+      rendererRef.current?.center();
     }
   };
 
@@ -61,6 +71,30 @@ export function GraphControls({ cyRef }: GraphControlsProps) {
             <ZoomOutIcon />
           </IconButton>
         </Tooltip>
+
+        {onToggleNavigation && (
+          <Tooltip title="图谱导航" placement="left">
+            <IconButton
+              size="small"
+              onClick={onToggleNavigation}
+              color={navigationOpen ? 'primary' : 'default'}
+            >
+              <NavigationIcon />
+            </IconButton>
+          </Tooltip>
+        )}
+
+        {onToggleViewMode && (
+          <Tooltip title={viewMode === '3d' ? '切换到 2D' : '切换到 3D'} placement="left">
+            <IconButton
+              size="small"
+              onClick={onToggleViewMode}
+              color={viewMode === '3d' ? 'primary' : 'default'}
+            >
+              <ThreeDIcon />
+            </IconButton>
+          </Tooltip>
+        )}
       </Paper>
     </>
   );
