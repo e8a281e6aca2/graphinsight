@@ -14,8 +14,8 @@ from ...schemas.auth import (
     RegisterRequest,
     RegisterResponse,
 )
-from ...services import auth_service
-from ..deps import get_current_user, get_client_ip, get_user_agent
+from ...services import auth_service, authz_service
+from ..deps import get_current_user, get_client_ip, get_user_agent, resolve_request_scope
 from core import (
     success_response,
     error_response,
@@ -56,7 +56,9 @@ async def login(
             db=db,
             login_request=login_request,
             ip_address=ip_address,
-            user_agent=user_agent
+            user_agent=user_agent,
+            tenant_id=resolve_request_scope(request).get("tenant_id"),
+            trace_id=getattr(request.state, "trace_id", None),
         )
         
         if success:
@@ -117,7 +119,9 @@ async def logout(
             db=db,
             user=current_user,
             ip_address=ip_address,
-            user_agent=user_agent
+            user_agent=user_agent,
+            tenant_id=resolve_request_scope(request).get("tenant_id"),
+            trace_id=getattr(request.state, "trace_id", None),
         )
         
         return success_response(message="登出成功")
@@ -188,7 +192,9 @@ async def register(
             db=db,
             register_request=register_request,
             ip_address=ip_address,
-            user_agent=user_agent
+            user_agent=user_agent,
+            tenant_id=resolve_request_scope(request).get("tenant_id"),
+            trace_id=getattr(request.state, "trace_id", None),
         )
         
         return success_response(
@@ -239,7 +245,9 @@ async def change_password(
             db=db,
             user=current_user,
             change_request=change_request,
-            ip_address=ip_address
+            ip_address=ip_address,
+            tenant_id=resolve_request_scope(request).get("tenant_id"),
+            trace_id=getattr(request.state, "trace_id", None),
         )
         
         if success:
@@ -270,4 +278,49 @@ async def change_password(
         return error_response(
             message="修改密码失败",
             code=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+
+@router.get(
+    "/authorize",
+    summary="授权校验",
+    description="用于网关侧进行业务权限检查（携带当前用户 Token）",
+)
+async def authorize(
+    permission: str,
+    request: Request,
+    current_user: AdminUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    授权校验（给 Go 网关调用）
+    """
+    try:
+        scope = resolve_request_scope(request)
+        allowed, reason, matched = authz_service.check_permission(
+            db,
+            user_id=current_user.id,
+            permission_code=permission,
+            request_scope=scope,
+        )
+        return success_response(
+            data={
+                "allowed": allowed,
+                "reason": reason,
+                "permission": permission,
+                "scope": scope,
+                "binding": matched,
+                "user": {
+                    "id": current_user.id,
+                    "username": current_user.username,
+                    "email": current_user.email,
+                },
+            },
+            message="ok",
+        )
+    except Exception as e:
+        logger.error(f"授权校验异常: {str(e)}", exc_info=True)
+        return error_response(
+            message="授权服务不可用",
+            code=status.HTTP_503_SERVICE_UNAVAILABLE
         )

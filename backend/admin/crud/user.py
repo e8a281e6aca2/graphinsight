@@ -3,7 +3,7 @@
 """
 from sqlalchemy.orm import Session
 from sqlalchemy import or_, func, desc, asc
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, Any
 from datetime import datetime
 
 from ..models import AdminUser
@@ -26,6 +26,12 @@ class UserCRUD:
     def get_by_email(self, db: Session, email: str) -> Optional[AdminUser]:
         """根据邮箱获取用户"""
         return db.query(AdminUser).filter(AdminUser.email == email).first()
+
+    def get_by_ids(self, db: Session, user_ids: List[int]) -> List[AdminUser]:
+        """根据 ID 列表获取用户"""
+        if not user_ids:
+            return []
+        return db.query(AdminUser).filter(AdminUser.id.in_(user_ids)).all()
     
     def get_multi(
         self, 
@@ -83,31 +89,68 @@ class UserCRUD:
         ).distinct().all()
         return [dept[0] for dept in result if dept[0]]
     
-    def create(self, db: Session, user_create: UserCreate) -> AdminUser:
-        """创建用户 - 所有用户都是管理员"""
+    def create(
+        self,
+        db: Session,
+        user_create: Optional[UserCreate] = None,
+        **kwargs: Any,
+    ) -> AdminUser:
+        """创建用户（兼容 UserCreate 模型和关键字参数两种调用方式）"""
+        if user_create is not None:
+            username = user_create.username
+            email = user_create.email
+            password_hash = get_password_hash(user_create.password)
+            is_active = True
+        else:
+            username = kwargs.get("username")
+            email = kwargs.get("email")
+            password_hash = kwargs.get("password_hash")
+            raw_password = kwargs.get("password")
+            is_active = kwargs.get("is_active", True)
+
+            if not username:
+                raise ValueError("缺少用户名")
+            if not password_hash:
+                if raw_password:
+                    password_hash = get_password_hash(raw_password)
+                else:
+                    raise ValueError("缺少密码或密码哈希")
+
         # 检查用户名是否已存在
-        if self.get_by_username(db, user_create.username):
-            raise ValueError(f"用户名 {user_create.username} 已存在")
-        
+        if self.get_by_username(db, username):
+            raise ValueError(f"用户名 {username} 已存在")
+
         # 检查邮箱是否已存在
-        if user_create.email and self.get_by_email(db, user_create.email):
-            raise ValueError(f"邮箱 {user_create.email} 已存在")
-        
-        # 创建用户数据
-        user_data = {
-            "username": user_create.username,
-            "email": user_create.email,
-            "password_hash": get_password_hash(user_create.password),
-            "is_active": True
-        }
-        
-        # 创建用户
-        db_user = AdminUser(**user_data)
+        if email and self.get_by_email(db, email):
+            raise ValueError(f"邮箱 {email} 已存在")
+
+        db_user = AdminUser(
+            username=username,
+            email=email,
+            password_hash=password_hash,
+            is_active=is_active,
+            full_name=kwargs.get("full_name"),
+            phone=kwargs.get("phone"),
+            department=kwargs.get("department"),
+            avatar=kwargs.get("avatar"),
+        )
         db.add(db_user)
         db.commit()
         db.refresh(db_user)
-        
-        logger.info(f"创建用户成功: {user_create.username}")
+
+        logger.info(f"创建用户成功: {username}")
+        return db_user
+
+    def reset_password(self, db: Session, user_id: int, new_password: str) -> Optional[AdminUser]:
+        """管理员重置用户密码"""
+        db_user = self.get_by_id(db, user_id)
+        if not db_user:
+            return None
+        db_user.password_hash = get_password_hash(new_password)
+        db_user.updated_at = datetime.utcnow()
+        db.commit()
+        db.refresh(db_user)
+        logger.info(f"重置用户密码成功: {db_user.username}")
         return db_user
     
     def update(self, db: Session, user_id: int, user_update: UserUpdate) -> Optional[AdminUser]:
@@ -163,6 +206,127 @@ class UserCRUD:
             if self.delete(db, user_id, soft_delete):
                 count += 1
         return count
+
+    def batch_update_status(
+        self,
+        db: Session,
+        user_ids: List[int],
+        is_active: bool,
+        exclude_user_id: Optional[int] = None,
+    ) -> dict:
+        """批量更新用户状态"""
+        normalized_ids = sorted({uid for uid in user_ids if isinstance(uid, int) and uid > 0})
+        if not normalized_ids:
+            return {"updated_ids": [], "not_found_ids": [], "skipped_self_ids": []}
+
+        users = self.get_by_ids(db, normalized_ids)
+        users_by_id = {user.id: user for user in users}
+        updated_ids: List[int] = []
+        not_found_ids: List[int] = []
+        skipped_self_ids: List[int] = []
+
+        for user_id in normalized_ids:
+            if exclude_user_id is not None and user_id == exclude_user_id:
+                skipped_self_ids.append(user_id)
+                continue
+
+            user = users_by_id.get(user_id)
+            if user is None:
+                not_found_ids.append(user_id)
+                continue
+
+            user.is_active = is_active
+            user.updated_at = datetime.utcnow()
+            updated_ids.append(user_id)
+
+        db.commit()
+        return {
+            "updated_ids": updated_ids,
+            "not_found_ids": not_found_ids,
+            "skipped_self_ids": skipped_self_ids,
+        }
+
+    def batch_delete_users(
+        self,
+        db: Session,
+        user_ids: List[int],
+        soft_delete: bool = True,
+        exclude_user_id: Optional[int] = None,
+    ) -> dict:
+        """批量删除用户（软删优先）"""
+        normalized_ids = sorted({uid for uid in user_ids if isinstance(uid, int) and uid > 0})
+        if not normalized_ids:
+            return {"deleted_ids": [], "not_found_ids": [], "skipped_self_ids": []}
+
+        users = self.get_by_ids(db, normalized_ids)
+        users_by_id = {user.id: user for user in users}
+        deleted_ids: List[int] = []
+        not_found_ids: List[int] = []
+        skipped_self_ids: List[int] = []
+
+        for user_id in normalized_ids:
+            if exclude_user_id is not None and user_id == exclude_user_id:
+                skipped_self_ids.append(user_id)
+                continue
+
+            user = users_by_id.get(user_id)
+            if user is None:
+                not_found_ids.append(user_id)
+                continue
+
+            if soft_delete:
+                user.is_active = False
+                user.updated_at = datetime.utcnow()
+            else:
+                db.delete(user)
+            deleted_ids.append(user_id)
+
+        db.commit()
+        return {
+            "deleted_ids": deleted_ids,
+            "not_found_ids": not_found_ids,
+            "skipped_self_ids": skipped_self_ids,
+        }
+
+    def batch_reset_password(
+        self,
+        db: Session,
+        user_ids: List[int],
+        new_password: str,
+        exclude_user_id: Optional[int] = None,
+    ) -> dict:
+        """批量重置用户密码"""
+        normalized_ids = sorted({uid for uid in user_ids if isinstance(uid, int) and uid > 0})
+        if not normalized_ids:
+            return {"reset_ids": [], "not_found_ids": [], "skipped_self_ids": []}
+
+        users = self.get_by_ids(db, normalized_ids)
+        users_by_id = {user.id: user for user in users}
+        reset_ids: List[int] = []
+        not_found_ids: List[int] = []
+        skipped_self_ids: List[int] = []
+        password_hash = get_password_hash(new_password)
+
+        for user_id in normalized_ids:
+            if exclude_user_id is not None and user_id == exclude_user_id:
+                skipped_self_ids.append(user_id)
+                continue
+
+            user = users_by_id.get(user_id)
+            if user is None:
+                not_found_ids.append(user_id)
+                continue
+
+            user.password_hash = password_hash
+            user.updated_at = datetime.utcnow()
+            reset_ids.append(user_id)
+
+        db.commit()
+        return {
+            "reset_ids": reset_ids,
+            "not_found_ids": not_found_ids,
+            "skipped_self_ids": skipped_self_ids,
+        }
     
     def toggle_status(self, db: Session, user_id: int) -> Optional[AdminUser]:
         """切换用户状态"""

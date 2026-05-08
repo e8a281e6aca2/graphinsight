@@ -2,7 +2,7 @@
 GraphInsight Backend API
 多模态知识图谱可视化平台后端服务
 """
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse
@@ -19,12 +19,14 @@ from core import (
     ErrorHandlingMiddleware,
     DEFAULT_RATE_LIMITS,
     AppException,
+    ErrorCode,
     success_response,
     error_response,
 )
 
 # 获取配置
 settings = get_settings()
+BUILD_TAG = "strict-latest-2026-04-01"
 
 # 初始化日志系统
 init_logger(LogConfig(
@@ -57,6 +59,31 @@ async def app_exception_handler(request: Request, exc: AppException):
             error_type=type(exc).__name__,
             details=exc.details
         )
+    )
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    """HTTP 异常统一包装，确保错误码和响应结构一致"""
+    trace_id = getattr(request.state, "trace_id", None)
+    message = exc.detail if isinstance(exc.detail, str) else "请求失败"
+    error_code = {
+        status.HTTP_401_UNAUTHORIZED: ErrorCode.UNAUTHORIZED,
+        status.HTTP_403_FORBIDDEN: ErrorCode.FORBIDDEN,
+        status.HTTP_404_NOT_FOUND: ErrorCode.NOT_FOUND,
+        status.HTTP_405_METHOD_NOT_ALLOWED: ErrorCode.METHOD_NOT_ALLOWED,
+        status.HTTP_429_TOO_MANY_REQUESTS: ErrorCode.RATE_LIMIT_EXCEEDED,
+    }.get(exc.status_code, str(exc.status_code))
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=error_response(
+            message=message,
+            code=exc.status_code,
+            error_code=error_code,
+            error_type="HTTPException",
+            details={"path": str(request.url.path), "method": request.method, "trace_id": trace_id},
+        ),
+        headers=exc.headers or None,
     )
 
 
@@ -115,7 +142,9 @@ async def startup_event():
     print("GraphInsight API 启动中...")
     print(f"媒体文件目录: {MEDIA_DIR}")
     print(f"Neo4j URI: {settings.neo4j_uri}")
+    print(f"Neo4j Config Source Mode: {getattr(settings, 'neo4j_config_source', 'env')}")
     print(f"API 文档: http://{settings.api_host}:{settings.api_port}/docs")
+    print(f"Admin Config Mode: {BUILD_TAG} (ai_service upsert enabled)")
     
     # 初始化管理系统数据库
     try:
@@ -155,11 +184,26 @@ async def root():
 @app.get("/health")
 async def health_check():
     """健康检查（公开接口）"""
+    runtime_neo4j = {
+        "uri": settings.neo4j_uri,
+        "source": getattr(settings, "neo4j_config_source", "env"),
+        "mode": getattr(settings, "neo4j_config_source", "env"),
+        "connected": False,
+    }
+    try:
+        from services.neo4j_service import get_neo4j_service
+
+        runtime_neo4j = get_neo4j_service().get_runtime_connection_info()
+    except Exception:
+        # 健康检查不应因 Neo4j 初始化失败而直接抛错
+        pass
+
     return success_response(
         data={
             "status": "healthy",
-            "neo4j_uri": settings.neo4j_uri,
-            "media_dir": MEDIA_DIR
+            "neo4j": runtime_neo4j,
+            "media_dir": MEDIA_DIR,
+            "build_tag": BUILD_TAG,
         },
         message="服务正常"
     )
@@ -178,12 +222,26 @@ app.include_router(doc_qa.router, prefix="/api", tags=["文档问答"])
 app.include_router(documents.router, prefix="/api", tags=["文档管理"])
 
 # 导入并注册新的标准化管理 API
-from admin.api.endpoints import auth as new_auth, config as new_config, monitor as new_monitor, logs as new_logs, profile
+from admin.api.endpoints import (
+    auth as new_auth,
+    config as new_config,
+    jobs as new_jobs,
+    monitor as new_monitor,
+    logs as new_logs,
+    profile,
+    qa_traces,
+    rbac,
+    users,
+)
 app.include_router(new_auth.router, prefix="/api/v1", tags=["认证"])
 app.include_router(new_config.router, prefix="/api/v1", tags=["配置管理"])
+app.include_router(new_jobs.router, prefix="/api/v1", tags=["任务中心"])
 app.include_router(new_monitor.router, prefix="/api/v1", tags=["系统监控"])
 app.include_router(new_logs.router, prefix="/api/v1", tags=["日志管理"])
 app.include_router(profile.router, prefix="/api/v1", tags=["个人设置"])
+app.include_router(qa_traces.router, prefix="/api/v1", tags=["问答链路追踪"])
+app.include_router(rbac.router, prefix="/api/v1", tags=["权限管理"])
+app.include_router(users.router, prefix="/api/v1", tags=["用户管理"])
 
 # 注意：旧的管理路由已被新的标准化 API 替代
 # 如需使用旧路由，请手动导入并注册

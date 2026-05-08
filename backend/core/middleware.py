@@ -4,6 +4,7 @@
 """
 import time
 import uuid
+import json
 from typing import Callable, Dict, Optional
 from collections import defaultdict
 from datetime import datetime, timedelta
@@ -14,6 +15,7 @@ from starlette.responses import JSONResponse
 from .logger import get_logger
 from .response import ResponseBuilder
 from .exceptions import RateLimitException
+from .observability import get_api_observability
 
 
 class RequestLoggingMiddleware(BaseHTTPMiddleware):
@@ -22,7 +24,72 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
     def __init__(self, app, logger=None):
         super().__init__(app)
         self.logger = logger or get_logger()
+        self.metrics = get_api_observability()
     
+    async def _normalize_json_envelope(self, request: Request, response: Response, trace_id: str) -> Response:
+        """
+        标准化 JSON 响应：
+        1) 统一补充 trace_id（便于排障）
+        2) 若 body.code 与 HTTP status 不一致，以错误语义优先
+        """
+        content_type = response.headers.get("content-type", "").lower()
+        if "application/json" not in content_type:
+            return response
+
+        # 读取原始 body（call_next 返回的响应通常是流式）
+        body = b""
+        try:
+            async for chunk in response.body_iterator:
+                body += chunk
+        except Exception:
+            return response
+
+        if not body:
+            return response
+
+        try:
+            payload = json.loads(body)
+        except Exception:
+            # 非 JSON 文本，按原样返回
+            new_response = Response(
+                content=body,
+                status_code=response.status_code,
+                media_type=response.media_type,
+            )
+            for key, value in response.headers.items():
+                if key.lower() != "content-length":
+                    new_response.headers[key] = value
+            return new_response
+
+        status_code = response.status_code
+        if isinstance(payload, dict):
+            payload.setdefault("trace_id", trace_id)
+
+            payload_code = payload.get("code")
+            if isinstance(payload_code, int):
+                if status_code < 400 and payload_code >= 400:
+                    status_code = payload_code
+                elif status_code >= 400 and payload_code < 400:
+                    payload["code"] = status_code
+            elif status_code >= 400:
+                payload["code"] = status_code
+
+            if status_code >= 400 and "error" not in payload:
+                payload["error"] = {
+                    "error_code": str(status_code),
+                    "error_type": "HTTPError",
+                    "details": {
+                        "path": request.url.path,
+                        "method": request.method,
+                    },
+                }
+
+        new_response = JSONResponse(content=payload, status_code=status_code)
+        for key, value in response.headers.items():
+            if key.lower() != "content-length":
+                new_response.headers[key] = value
+        return new_response
+
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
         """处理请求"""
         # 生成 trace_id
@@ -36,6 +103,13 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         client_ip = request.client.host if request.client else "unknown"
         
         # 记录请求信息
+        auth_context = {
+            "auth_user_id": request.headers.get("x-auth-user-id"),
+            "auth_user_name": request.headers.get("x-auth-user-name"),
+            "auth_user_email": request.headers.get("x-auth-user-email"),
+            "authz_permission": request.headers.get("x-authz-permission"),
+            "authz_reason": request.headers.get("x-authz-reason"),
+        }
         self.logger.info(
             f"请求开始: {request.method} {request.url.path}",
             context={
@@ -44,6 +118,7 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
                 "query_params": dict(request.query_params),
                 "client_ip": client_ip,
                 "user_agent": request.headers.get("user-agent", ""),
+                **auth_context,
             },
             trace_id=trace_id
         )
@@ -51,6 +126,7 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         # 处理请求
         try:
             response = await call_next(request)
+            response = await self._normalize_json_envelope(request, response, trace_id)
             
             # 计算响应时间
             duration = time.time() - start_time
@@ -64,8 +140,16 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
                     "status_code": response.status_code,
                     "duration_ms": round(duration * 1000, 2),
                     "client_ip": client_ip,
+                    **auth_context,
                 },
                 trace_id=trace_id
+            )
+            self.metrics.record_request(
+                method=request.method,
+                path=request.url.path,
+                status_code=response.status_code,
+                duration_ms=round(duration * 1000, 3),
+                trace_id=trace_id,
             )
             
             # 添加响应头
@@ -88,6 +172,13 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
                 },
                 trace_id=trace_id,
                 exc_info=True
+            )
+            self.metrics.record_request(
+                method=request.method,
+                path=request.url.path,
+                status_code=500,
+                duration_ms=round(duration * 1000, 3),
+                trace_id=trace_id,
             )
             raise
 

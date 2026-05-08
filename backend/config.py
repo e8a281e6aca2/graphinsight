@@ -34,6 +34,9 @@ class Settings:
         self.neo4j_uri = os.getenv("NEO4J_URI", "bolt://localhost:7687")
         self.neo4j_user = os.getenv("NEO4J_USER", "neo4j")
         self.neo4j_password = os.getenv("NEO4J_PASSWORD", "password")
+        self.neo4j_database = os.getenv("NEO4J_DATABASE", "neo4j")
+        # env(默认): 仅使用 .env；admin: 仅使用配置中心；auto: 优先配置中心，缺失时回退 .env
+        self.neo4j_config_source = os.getenv("NEO4J_CONFIG_SOURCE", "env").strip().lower()
         
         # API 配置
         self.api_host = os.getenv("API_HOST", "0.0.0.0")
@@ -71,6 +74,9 @@ class Settings:
         self.llm_qa_temperature = float(os.getenv("LLM_QA_TEMPERATURE", "0.2"))
         self.llm_qa_max_tokens = int(os.getenv("LLM_QA_MAX_TOKENS", "600"))
         self.llm_qa_max_context = int(os.getenv("LLM_QA_MAX_CONTEXT", "4"))
+
+        # HTTP client 配置
+        self.http_client_trust_env = os.getenv("HTTP_CLIENT_TRUST_ENV", "false").lower() == "true"
         
         # NL2Cypher 配置
         self.nl2cypher_enabled = os.getenv("NL2CYPHER_ENABLED", "true").lower() == "true"

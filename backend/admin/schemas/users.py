@@ -81,6 +81,22 @@ class UserPasswordUpdate(BaseModel):
         return v
 
 
+class UserPasswordResetRequest(BaseModel):
+    """管理员重置密码请求"""
+    new_password: str = Field(..., min_length=8, max_length=100, description="新密码")
+
+    @field_validator('new_password')
+    @classmethod
+    def password_strength(cls, v: str) -> str:
+        if len(v) < 8:
+            raise ValueError('密码长度至少为 8 位')
+        if not any(c.isdigit() for c in v):
+            raise ValueError('密码必须包含数字')
+        if not any(c.isalpha() for c in v):
+            raise ValueError('密码必须包含字母')
+        return v
+
+
 class UserResponse(BaseModel):
     """用户响应"""
     id: int
@@ -124,6 +140,29 @@ class BatchDeleteRequest(BaseModel):
     """批量删除请求"""
     user_ids: List[int] = Field(..., min_items=1, description="用户ID列表")
     soft_delete: bool = Field(default=True, description="是否软删除")
+
+
+class BatchStatusUpdateRequest(BaseModel):
+    """批量更新用户状态请求"""
+    user_ids: List[int] = Field(..., min_items=1, description="用户ID列表")
+    is_active: bool = Field(..., description="目标状态")
+
+
+class BatchResetPasswordRequest(BaseModel):
+    """批量重置密码请求"""
+    user_ids: List[int] = Field(..., min_items=1, description="用户ID列表")
+    new_password: str = Field(..., min_length=8, max_length=100, description="新密码")
+
+    @field_validator('new_password')
+    @classmethod
+    def password_strength(cls, v: str) -> str:
+        if len(v) < 8:
+            raise ValueError('密码长度至少为 8 位')
+        if not any(c.isdigit() for c in v):
+            raise ValueError('密码必须包含数字')
+        if not any(c.isalpha() for c in v):
+            raise ValueError('密码必须包含字母')
+        return v
 
 
 # ============ 个人设置相关 ============

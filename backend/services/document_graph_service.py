@@ -7,7 +7,7 @@ import hashlib
 import json
 import re
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from config import get_settings
 from core import get_logger
@@ -60,23 +60,36 @@ STOPWORDS = {
     "信息",
 }
 
+STAGE_KEYWORDS = {
+    "抽穗扬花期",
+    "扬花期",
+    "抽穗期",
+    "开花期",
+    "孕穗期",
+    "拔节期",
+    "分蘖期",
+    "灌浆期",
+    "乳熟期",
+    "蜡熟期",
+    "成熟期",
+}
 
 class DocumentGraphService:
     def __init__(self) -> None:
         self.neo4j = None
 
-    def build_graph(self, force: bool = False) -> Dict[str, object]:
+    def build_graph(self, force: bool = False, doc_ids: Optional[List[str]] = None) -> Dict[str, object]:
         if self.neo4j is None:
             self.neo4j = get_neo4j_service()
         doc_dir = Path(settings.document_storage_path).resolve()
         if not doc_dir.exists():
             doc_dir.mkdir(parents=True, exist_ok=True)
 
-        documents = self._collect_documents(doc_dir)
+        documents = self._collect_documents(doc_dir, doc_ids=doc_ids)
         if not documents:
             fallback_dir = (Path(__file__).resolve().parents[1] / "documents").resolve()
             if fallback_dir != doc_dir and fallback_dir.exists():
-                fallback_docs = self._collect_documents(fallback_dir)
+                fallback_docs = self._collect_documents(fallback_dir, doc_ids=doc_ids)
                 if fallback_docs:
                     logger.warning(
                         "文档目录切换为后端目录",
@@ -95,7 +108,12 @@ class DocumentGraphService:
 
         logger.info(
             "开始解析文档",
-            context={"dir": str(doc_dir), "count": len(documents), "force": force},
+            context={
+                "dir": str(doc_dir),
+                "count": len(documents),
+                "force": force,
+                "doc_ids_count": len(doc_ids or []),
+            },
         )
 
         apoc_available = False
@@ -103,9 +121,9 @@ class DocumentGraphService:
             self._ensure_schema(session)
             if settings.llm_relation_dynamic_type:
                 apoc_available = self._check_apoc_available(session)
-            if force:
-                session.run("MATCH (c:Chunk {source: 'document_ingest'}) DETACH DELETE c")
-                session.run("MATCH (d:Document {source: 'document_ingest'}) DETACH DELETE d")
+            if force and not doc_ids:
+                cleanup = self._clear_graph_data(session)
+                logger.info("强制重建前清理旧文档图谱", context=cleanup)
 
         total_documents = len(documents)
         doc_count = 0
@@ -309,14 +327,290 @@ class DocumentGraphService:
             "total_documents": total_documents,
             "skipped_documents": skipped_documents,
             "failures": failures,
+            "scope": "selected_documents" if doc_ids else "all_documents",
+            "target_doc_ids": doc_ids or [],
         }
 
-    def _collect_documents(self, doc_dir: Path) -> List[Path]:
+    def delete_document_graph(self, doc_id: str) -> Dict[str, int]:
+        if self.neo4j is None:
+            self.neo4j = get_neo4j_service()
+
+        with self.neo4j.driver.session() as session:
+            relation_count = int(
+                (
+                    session.run(
+                        "MATCH ()-[r {doc_id: $doc_id}]-() RETURN count(r) AS c",
+                        {"doc_id": doc_id},
+                    ).single()
+                    or {}
+                ).get("c")
+                or 0
+            )
+            if relation_count:
+                session.run(
+                    "MATCH ()-[r {doc_id: $doc_id}]-() DELETE r",
+                    {"doc_id": doc_id},
+                )
+
+            chunk_count = int(
+                (
+                    session.run(
+                        "MATCH (c:Chunk {doc_id: $doc_id}) RETURN count(c) AS c",
+                        {"doc_id": doc_id},
+                    ).single()
+                    or {}
+                ).get("c")
+                or 0
+            )
+            if chunk_count:
+                session.run(
+                    "MATCH (c:Chunk {doc_id: $doc_id}) DETACH DELETE c",
+                    {"doc_id": doc_id},
+                )
+
+            doc_count = int(
+                (
+                    session.run(
+                        "MATCH (d:Document {doc_id: $doc_id}) RETURN count(d) AS c",
+                        {"doc_id": doc_id},
+                    ).single()
+                    or {}
+                ).get("c")
+                or 0
+            )
+            if doc_count:
+                session.run(
+                    "MATCH (d:Document {doc_id: $doc_id}) DETACH DELETE d",
+                    {"doc_id": doc_id},
+                )
+
+            orphan_entities = self._cleanup_orphan_entities(session)
+
+        return {
+            "documents": doc_count,
+            "chunks": chunk_count,
+            "relations": relation_count,
+            "orphan_entities": orphan_entities,
+        }
+
+    def clear_document_graph(self) -> Dict[str, int]:
+        if self.neo4j is None:
+            self.neo4j = get_neo4j_service()
+        with self.neo4j.driver.session() as session:
+            return self._clear_graph_data(session)
+
+    def preview_delete_document_graph(self, doc_id: str) -> Dict[str, int]:
+        if self.neo4j is None:
+            self.neo4j = get_neo4j_service()
+
+        with self.neo4j.driver.session() as session:
+            relation_count = int(
+                (
+                    session.run(
+                        "MATCH ()-[r {doc_id: $doc_id}]-() RETURN count(r) AS c",
+                        {"doc_id": doc_id},
+                    ).single()
+                    or {}
+                ).get("c")
+                or 0
+            )
+            chunk_count = int(
+                (
+                    session.run(
+                        "MATCH (c:Chunk {doc_id: $doc_id}) RETURN count(c) AS c",
+                        {"doc_id": doc_id},
+                    ).single()
+                    or {}
+                ).get("c")
+                or 0
+            )
+            doc_count = int(
+                (
+                    session.run(
+                        "MATCH (d:Document {doc_id: $doc_id}) RETURN count(d) AS c",
+                        {"doc_id": doc_id},
+                    ).single()
+                    or {}
+                ).get("c")
+                or 0
+            )
+
+        return {
+            "documents": doc_count,
+            "chunks": chunk_count,
+            "relations": relation_count,
+            "orphan_entities": 0,
+        }
+
+    def preview_clear_document_graph(self) -> Dict[str, int]:
+        if self.neo4j is None:
+            self.neo4j = get_neo4j_service()
+        with self.neo4j.driver.session() as session:
+            totals = self._get_graph_totals(session)
+        return {
+            "documents": totals["documents"],
+            "chunks": totals["chunks"],
+            "relations": totals["relations"],
+            "orphan_entities": 0,
+        }
+
+    def get_graph_totals(self) -> Dict[str, int]:
+        if self.neo4j is None:
+            self.neo4j = get_neo4j_service()
+        with self.neo4j.driver.session() as session:
+            return self._get_graph_totals(session)
+
+    def _clear_graph_data(self, session) -> Dict[str, int]:
+        relation_count = int(
+            (
+                session.run(
+                    """
+                    MATCH ()-[r]-()
+                    WHERE r.source = 'document_ingest' OR r.doc_id IS NOT NULL
+                    RETURN count(r) AS c
+                    """
+                ).single()
+                or {}
+            ).get("c")
+            or 0
+        )
+        if relation_count:
+            session.run(
+                """
+                MATCH ()-[r]-()
+                WHERE r.source = 'document_ingest' OR r.doc_id IS NOT NULL
+                DELETE r
+                """
+            )
+
+        chunk_count = int(
+            (
+                session.run(
+                    """
+                    MATCH (c:Chunk)
+                    WHERE c.source = 'document_ingest' OR c.doc_id IS NOT NULL
+                    RETURN count(c) AS c
+                    """
+                ).single()
+                or {}
+            ).get("c")
+            or 0
+        )
+        if chunk_count:
+            session.run(
+                """
+                MATCH (c:Chunk)
+                WHERE c.source = 'document_ingest' OR c.doc_id IS NOT NULL
+                DETACH DELETE c
+                """
+            )
+
+        doc_count = int(
+            (
+                session.run(
+                    "MATCH (d:Document {source: 'document_ingest'}) RETURN count(d) AS c"
+                ).single()
+                or {}
+            ).get("c")
+            or 0
+        )
+        if doc_count:
+            session.run("MATCH (d:Document {source: 'document_ingest'}) DETACH DELETE d")
+
+        orphan_entities = self._cleanup_orphan_entities(session)
+        return {
+            "documents": doc_count,
+            "chunks": chunk_count,
+            "relations": relation_count,
+            "orphan_entities": orphan_entities,
+        }
+
+    def _get_graph_totals(self, session) -> Dict[str, int]:
+        relation_count = int(
+            (
+                session.run(
+                    """
+                    MATCH ()-[r]-()
+                    WHERE r.source = 'document_ingest' OR r.doc_id IS NOT NULL
+                    RETURN count(r) AS c
+                    """
+                ).single()
+                or {}
+            ).get("c")
+            or 0
+        )
+        chunk_count = int(
+            (
+                session.run(
+                    """
+                    MATCH (c:Chunk)
+                    WHERE c.source = 'document_ingest' OR c.doc_id IS NOT NULL
+                    RETURN count(c) AS c
+                    """
+                ).single()
+                or {}
+            ).get("c")
+            or 0
+        )
+        doc_count = int(
+            (
+                session.run(
+                    "MATCH (d:Document {source: 'document_ingest'}) RETURN count(d) AS c"
+                ).single()
+                or {}
+            ).get("c")
+            or 0
+        )
+        entity_count = int(
+            (
+                session.run(
+                    "MATCH (e:Entity {source: 'document_ingest'}) RETURN count(e) AS c"
+                ).single()
+                or {}
+            ).get("c")
+            or 0
+        )
+        return {
+            "documents": doc_count,
+            "chunks": chunk_count,
+            "relations": relation_count,
+            "entities": entity_count,
+        }
+
+    @staticmethod
+    def _cleanup_orphan_entities(session) -> int:
+        count = int(
+            (
+                session.run(
+                    """
+                    MATCH (e:Entity {source: 'document_ingest'})
+                    WHERE NOT (e)--()
+                    RETURN count(e) AS c
+                    """
+                ).single()
+                or {}
+            ).get("c")
+            or 0
+        )
+        if count:
+            session.run(
+                """
+                MATCH (e:Entity {source: 'document_ingest'})
+                WHERE NOT (e)--()
+                DELETE e
+                """
+            )
+        return count
+
+    def _collect_documents(self, doc_dir: Path, doc_ids: Optional[List[str]] = None) -> List[Path]:
+        allowed_ids = {str(item).strip() for item in (doc_ids or []) if str(item).strip()}
         files: List[Path] = []
         for path in doc_dir.rglob("*"):
             if not path.is_file():
                 continue
             if path.suffix.lower() in SUPPORTED_EXTS:
+                if allowed_ids and self._make_doc_id(path) not in allowed_ids:
+                    continue
                 files.append(path)
         return files
 
@@ -339,6 +633,19 @@ class DocumentGraphService:
             doc = docx.Document(str(path))
             return "\n".join([p.text for p in doc.paragraphs if p.text]), None
         if ext == ".pdf":
+            # 优先使用更稳的解析器，失败再回退 pypdf
+            try:
+                import pdfplumber  # type: ignore
+
+                with pdfplumber.open(str(path)) as pdf:
+                    pages = [(page.extract_text() or "") for page in pdf.pages]
+                return "\n".join(pages), None
+            except Exception as exc:
+                logger.warning(
+                    "pdfplumber 解析失败，回退 pypdf",
+                    context={"file": str(path), "error": str(exc)},
+                )
+
             try:
                 from pypdf import PdfReader  # type: ignore
             except Exception:
@@ -399,27 +706,186 @@ class DocumentGraphService:
         if len(entities) < 2:
             return []
         relations = llm_relation_extractor.extract(text, entities)
-        if relations:
-            normalized: List[Dict[str, object]] = []
-            for rel in relations:
-                source = str(rel.get("source") or "").strip()
-                target = str(rel.get("target") or "").strip()
-                label = str(rel.get("label") or rel.get("relation") or rel.get("type") or "").strip()
-                if not source or not target or not label:
+        stage_relations = self._extract_stage_relations(text, entities)
+        if stage_relations:
+            relations = (relations or []) + stage_relations
+        if not relations:
+            # LLM 失败时回退到规则抽取，避免图谱只剩 Chunk -> Entity 的结构。
+            relations = self._extract_relations_by_rules(text, entities)
+        return self._normalize_relations(relations)
+
+    def _normalize_relations(self, relations: List[Dict[str, object]]) -> List[Dict[str, object]]:
+        normalized: List[Dict[str, object]] = []
+        seen = set()
+        for rel in relations:
+            source = str(rel.get("source") or "").strip()
+            target = str(rel.get("target") or "").strip()
+            label = str(rel.get("label") or rel.get("relation") or rel.get("type") or "").strip()
+            if not source or not target or not label:
+                continue
+            if source == target:
+                continue
+            rel_type = self._normalize_relation_type(label)
+            key = (source.lower(), target.lower(), rel_type)
+            if key in seen:
+                continue
+            seen.add(key)
+            item: Dict[str, object] = {
+                "source": source,
+                "target": target,
+                "label": label,
+                "rel_type": rel_type,
+            }
+            confidence = rel.get("confidence")
+            if isinstance(confidence, (int, float)):
+                item["confidence"] = float(confidence)
+            normalized.append(item)
+            if len(normalized) >= settings.llm_max_relations:
+                break
+        return normalized
+
+    def _extract_relations_by_rules(self, text: str, entities: List[str]) -> List[Dict[str, object]]:
+        relations = self._extract_stage_relations(text, entities)
+        seen_pairs = {(item.get("source"), item.get("target"), item.get("label")) for item in relations}
+
+        positions: List[tuple[int, int, str]] = []
+        for entity in entities:
+            if not entity:
+                continue
+            escaped = re.escape(entity)
+            for match in re.finditer(escaped, text):
+                positions.append((match.start(), match.end(), entity))
+                # 每个实体保留前两个命中即可，避免大文本组合爆炸
+                if sum(1 for p in positions if p[2] == entity) >= 2:
+                    break
+        positions.sort(key=lambda item: item[0])
+        if len(positions) < 2:
+            return relations
+
+        max_gap = 80
+
+        for idx, (left_start, left_end, left_entity) in enumerate(positions):
+            for right_start, right_end, right_entity in positions[idx + 1 :]:
+                if right_start <= left_end:
                     continue
-                rel_type = self._normalize_relation_type(label)
-                item: Dict[str, object] = {
-                    "source": source,
-                    "target": target,
-                    "label": label,
-                    "rel_type": rel_type,
+                gap = right_start - left_end
+                if gap > max_gap:
+                    break
+                if left_entity == right_entity:
+                    continue
+                between = text[left_end:right_start]
+                label = self._infer_relation_label(between)
+                relations.append(
+                    {
+                        "source": left_entity,
+                        "target": right_entity,
+                        "label": label,
+                        "confidence": 0.45 if label != "同段提及" else 0.25,
+                    }
+                )
+
+        if relations:
+            return relations
+
+        # 兜底：按实体出现顺序构造弱关系，确保实体层至少有可浏览连边。
+        ordered_entities = [item[2] for item in positions]
+        deduped_entities: List[str] = []
+        seen = set()
+        for item in ordered_entities:
+            key = item.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped_entities.append(item)
+        fallback: List[Dict[str, object]] = []
+        for i in range(len(deduped_entities) - 1):
+            fallback.append(
+                {
+                    "source": deduped_entities[i],
+                    "target": deduped_entities[i + 1],
+                    "label": "同段提及",
+                    "confidence": 0.2,
                 }
-                confidence = rel.get("confidence")
-                if isinstance(confidence, (int, float)):
-                    item["confidence"] = float(confidence)
-                normalized.append(item)
-            return normalized[: settings.llm_max_relations]
-        return []
+            )
+            if len(fallback) >= settings.llm_max_relations:
+                break
+        return fallback
+
+    @staticmethod
+    def _infer_relation_label(window: str) -> str:
+        compact = re.sub(r"\s+", "", window or "")
+        if not compact:
+            return "同段提及"
+
+        keywords = [
+            "属于",
+            "隶属",
+            "位于",
+            "包括",
+            "包含",
+            "使用",
+            "采用",
+            "导致",
+            "影响",
+            "合作",
+            "生产",
+            "采购",
+            "批准",
+            "发布",
+            "制定",
+            "实施",
+            "支持",
+            "关联",
+            "相关",
+        ]
+        for keyword in keywords:
+            if keyword in compact:
+                return keyword
+
+        phrase_match = re.search(r"[A-Za-z\u4e00-\u9fff]{2,8}", compact)
+        if phrase_match:
+            phrase = phrase_match.group(0)
+            if phrase.lower() not in STOPWORDS:
+                return phrase
+        return "同段提及"
+
+    def _extract_stage_relations(self, text: str, entities: List[str]) -> List[Dict[str, object]]:
+        compact = re.sub(r"\s+", "", text or "")
+        relations: List[Dict[str, object]] = []
+        seen_pairs = set()
+
+        stage_terms = {term for term in STAGE_KEYWORDS if term in compact}
+        # 兼容“抽穗-扬花期 / 抽穗至扬花期 / 抽穗/扬花期”等写法
+        if re.search(r"抽穗(?:至|—|-|~|–|/)?扬花期", compact):
+            stage_terms.add("抽穗扬花期")
+        if re.search(r"抽穗(?:至|—|-|~|–|/)?开花期", compact):
+            stage_terms.add("抽穗开花期")
+        disease_terms: List[str] = []
+        for entity in entities:
+            entity_clean = str(entity or "").strip()
+            if not entity_clean:
+                continue
+            if entity_clean.endswith("病") and entity_clean.replace(" ", "") in compact:
+                disease_terms.append(entity_clean)
+        if "赤霉病" in compact and "赤霉病" not in disease_terms:
+            disease_terms.append("赤霉病")
+
+        for disease in disease_terms:
+            for stage in stage_terms:
+                key = (disease, stage, "高发期")
+                if key in seen_pairs:
+                    continue
+                seen_pairs.add(key)
+                relations.append(
+                    {
+                        "source": disease,
+                        "target": stage,
+                        "label": "高发期",
+                        "confidence": 0.75,
+                    }
+                )
+
+        return relations
 
     @staticmethod
     def _normalize_relation_type(label: str) -> str:

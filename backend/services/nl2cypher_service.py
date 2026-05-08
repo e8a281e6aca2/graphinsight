@@ -6,8 +6,8 @@ from typing import Dict, List, Optional
 import json
 import re
 from functools import lru_cache
-from openai import AsyncOpenAI
 from config import get_settings
+from services.openai_client_factory import build_async_openai_client
 from services.schema_service import SchemaService
 
 
@@ -18,7 +18,7 @@ class NL2CypherService:
         self.settings = get_settings()
         self.schema_service = SchemaService()
         
-    def _get_ai_client(self) -> AsyncOpenAI:
+    def _get_ai_client(self):
         """获取 AI 客户端（使用数据库配置）"""
         try:
             from admin.database import SessionLocal
@@ -28,16 +28,16 @@ class NL2CypherService:
             try:
                 config = config_service.get_ai_service_config(db)
                 
-                client_kwargs = {"api_key": config["api_key"]}
-                if config["base_url"]:
-                    client_kwargs["base_url"] = config["base_url"]
-                
-                return AsyncOpenAI(**client_kwargs)
+                return build_async_openai_client(
+                    api_key=config["api_key"],
+                    base_url=config["base_url"] or None,
+                    timeout=30.0,
+                )
             finally:
                 db.close()
         except:
             # 回退到环境变量配置
-            return AsyncOpenAI(api_key=self.settings.openai_api_key)
+            return build_async_openai_client(api_key=self.settings.openai_api_key, timeout=30.0)
     
     def _get_nl2cypher_config(self) -> dict:
         """获取 NL2Cypher 配置（使用数据库配置）"""

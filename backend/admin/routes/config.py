@@ -6,11 +6,11 @@ from sqlalchemy.orm import Session
 from typing import Dict, Any
 import os
 from neo4j import GraphDatabase
-import openai
 from ..database import get_db
 from ..models import AdminUser, AdminConfig, AdminLog
 from ..schemas import ConfigUpdate, ConfigResponse, ConfigTest
 from ..auth import get_current_user
+from services.openai_client_factory import build_openai_client
 
 router = APIRouter(prefix="/admin/config", tags=["admin-config"])
 
@@ -152,7 +152,11 @@ async def test_config(
             if base_url_config and base_url_config.value:
                 client_kwargs["base_url"] = base_url_config.value
             
-            client = openai.OpenAI(**client_kwargs)
+            client = build_openai_client(
+                api_key=client_kwargs["api_key"],
+                base_url=client_kwargs.get("base_url"),
+                timeout=20.0,
+            )
             # 简单测试
             response = client.models.list()
             
@@ -188,7 +192,11 @@ async def get_openai_models(
         if base_url_config and base_url_config.value:
             client_kwargs["base_url"] = base_url_config.value
         
-        client = openai.OpenAI(**client_kwargs)
+        client = build_openai_client(
+            api_key=client_kwargs["api_key"],
+            base_url=client_kwargs.get("base_url"),
+            timeout=20.0,
+        )
         
         # 获取模型列表
         models_response = client.models.list()

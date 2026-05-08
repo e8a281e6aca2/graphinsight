@@ -14,7 +14,7 @@ from ...schemas.config import (
     ConfigBatchUpdate,
 )
 from ...services import config_service
-from ..deps import get_current_user, get_client_ip
+from ..deps import get_current_user, get_client_ip, require_admin_permission, resolve_request_scope
 from core import (
     success_response,
     error_response,
@@ -26,7 +26,11 @@ from core import (
 )
 
 logger = get_logger()
-router = APIRouter(prefix="/admin/config", tags=["配置管理"])
+router = APIRouter(
+    prefix="/admin/config",
+    tags=["配置管理"],
+    dependencies=[Depends(require_admin_permission("config:read", resource="system_config"))],
+)
 
 
 @router.get(
@@ -85,13 +89,25 @@ async def get_config_list(
     description="获取可用模型列表"
 )
 async def get_available_models(
+    provider: str | None = Query(default=None, description="临时 provider（不落库）"),
+    base_url: str | None = Query(default=None, description="临时 base_url（不落库）"),
+    model: str | None = Query(default=None, description="当前已选模型（用于兼容供应商识别）"),
     current_user: AdminUser = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """获取可用的 OpenAI 模型列表"""
     try:
         logger.info("开始获取可用模型列表...")
-        models = config_service.get_available_openai_models(db)
+        overrides = {
+            k: v
+            for k, v in {
+                "provider": provider,
+                "base_url": base_url,
+                "model": model,
+            }.items()
+            if v is not None and str(v).strip() != ""
+        }
+        models = config_service.get_available_openai_models(db, overrides=overrides or None)
         logger.info(f"获取到 {len(models)} 个模型")
         return success_response(data={"models": models}, message="获取成功")
     except Exception as e:
@@ -230,7 +246,8 @@ async def get_config_detail(
 @router.post(
     "",
     summary="创建配置",
-    description="创建新的配置项"
+    description="创建新的配置项",
+    dependencies=[Depends(require_admin_permission("config:write", resource="system_config"))],
 )
 async def create_config(
     config_create: ConfigCreate,
@@ -254,7 +271,9 @@ async def create_config(
             db=db,
             config_create=config_create,
             user=current_user,
-            ip_address=ip_address
+            ip_address=ip_address,
+            tenant_id=resolve_request_scope(request).get("tenant_id"),
+            trace_id=getattr(request.state, "trace_id", None),
         )
         
         return success_response(
@@ -289,7 +308,8 @@ async def create_config(
 @router.put(
     "/{category}/{key}",
     summary="更新配置",
-    description="更新指定的配置项"
+    description="更新指定的配置项",
+    dependencies=[Depends(require_admin_permission("config:write", resource="system_config"))],
 )
 async def update_config(
     category: str,
@@ -314,7 +334,9 @@ async def update_config(
             key=key,
             config_update=config_update,
             user=current_user,
-            ip_address=ip_address
+            ip_address=ip_address,
+            tenant_id=resolve_request_scope(request).get("tenant_id"),
+            trace_id=getattr(request.state, "trace_id", None),
         )
         
         return success_response(
@@ -323,12 +345,35 @@ async def update_config(
         )
         
     except NotFoundException as e:
-        return error_response(
-            message=e.message,
-            code=e.status_code,
-            error_code=e.error_code,
-            error_type="NotFoundError"
-        )
+        # 严格新版本语义：更新不存在配置时自动创建
+        try:
+            is_sensitive = any(flag in key.lower() for flag in ["password", "secret", "token", "key"])
+            created = config_service.create_config(
+                db=db,
+                config_create=ConfigCreate(
+                    category=category,
+                    key=key,
+                    value=config_update.value,
+                    description=config_update.description,
+                    is_sensitive=is_sensitive,
+                ),
+                user=current_user,
+                ip_address=ip_address,
+                tenant_id=resolve_request_scope(request).get("tenant_id"),
+                trace_id=getattr(request.state, "trace_id", None),
+            )
+            return success_response(
+                data=created.model_dump(),
+                message="配置不存在，已自动创建"
+            )
+        except Exception as create_exc:
+            logger.error(f"更新失败且自动创建失败: {str(create_exc)}", exc_info=True)
+            return error_response(
+                message=e.message,
+                code=e.status_code,
+                error_code=e.error_code,
+                error_type="NotFoundError"
+            )
     except BusinessException as e:
         return error_response(
             message=e.message,
@@ -347,7 +392,8 @@ async def update_config(
 @router.post(
     "/batch",
     summary="批量更新配置",
-    description="批量更新多个配置项"
+    description="批量更新多个配置项",
+    dependencies=[Depends(require_admin_permission("config:write", resource="system_config"))],
 )
 async def batch_update_configs(
     batch_update: ConfigBatchUpdate,
@@ -367,7 +413,9 @@ async def batch_update_configs(
             db=db,
             batch_update=batch_update,
             user=current_user,
-            ip_address=ip_address
+            ip_address=ip_address,
+            tenant_id=resolve_request_scope(request).get("tenant_id"),
+            trace_id=getattr(request.state, "trace_id", None),
         )
         
         return success_response(
@@ -393,7 +441,8 @@ async def batch_update_configs(
 @router.delete(
     "/{category}/{key}",
     summary="删除配置",
-    description="删除指定的配置项"
+    description="删除指定的配置项",
+    dependencies=[Depends(require_admin_permission("config:write", resource="system_config"))],
 )
 async def delete_config(
     category: str,
@@ -413,7 +462,9 @@ async def delete_config(
             category=category,
             key=key,
             user=current_user,
-            ip_address=ip_address
+            ip_address=ip_address,
+            tenant_id=resolve_request_scope(request).get("tenant_id"),
+            trace_id=getattr(request.state, "trace_id", None),
         )
         
         if success:
@@ -442,7 +493,8 @@ async def delete_config(
 @router.post(
     "/init",
     summary="从环境变量初始化配置",
-    description="从环境变量初始化所有配置项"
+    description="从环境变量初始化所有配置项",
+    dependencies=[Depends(require_admin_permission("config:write", resource="system_config"))],
 )
 async def init_from_env(
     request: Request,
@@ -452,7 +504,13 @@ async def init_from_env(
     """从环境变量初始化配置"""
     try:
         ip_address = get_client_ip(request)
-        count = config_service.init_from_env(db, current_user, ip_address)
+        count = config_service.init_from_env(
+            db,
+            current_user,
+            ip_address,
+            tenant_id=resolve_request_scope(request).get("tenant_id"),
+            trace_id=getattr(request.state, "trace_id", None),
+        )
         return success_response(
             data={"initialized_count": count},
             message=f"成功初始化 {count} 个配置项"
@@ -468,7 +526,8 @@ async def init_from_env(
 @router.post(
     "/test/{service_type}",
     summary="测试服务连接",
-    description="测试 Neo4j 或 OpenAI 服务连接"
+    description="测试 Neo4j、AI 服务配置或当前模型连通性",
+    dependencies=[Depends(require_admin_permission("config:write", resource="system_config"))],
 )
 async def test_connection(
     service_type: str,
@@ -479,8 +538,10 @@ async def test_connection(
     try:
         if service_type == "neo4j":
             result = config_service.test_neo4j_connection(db)
-        elif service_type == "openai":
+        elif service_type in {"openai", "ai_service"}:
             result = config_service.test_openai_connection(db)
+        elif service_type == "model":
+            result = config_service.test_model_connection(db)
         else:
             return error_response(
                 message=f"不支持的服务类型: {service_type}",
@@ -492,6 +553,25 @@ async def test_connection(
         logger.error(f"测试连接异常: {str(e)}", exc_info=True)
         return error_response(
             message="测试连接失败",
+            code=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+
+@router.get(
+    "/test/model/latest",
+    summary="最近一次模型连通性测试结果",
+    description="返回当前进程内最近一次模型连通性测试结果",
+)
+async def get_latest_model_connection_test(
+    current_user: AdminUser = Depends(get_current_user),
+):
+    try:
+        result = config_service.get_last_model_connection_test()
+        return success_response(data=result, message="获取成功")
+    except Exception as e:
+        logger.error(f"获取最近一次模型测试结果异常: {str(e)}", exc_info=True)
+        return error_response(
+            message="获取最近一次模型测试结果失败",
             code=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
 

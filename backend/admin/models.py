@@ -1,7 +1,17 @@
 """
 管理系统数据模型
 """
-from sqlalchemy import Column, Integer, String, Boolean, Text, DateTime, ForeignKey
+from sqlalchemy import (
+    Column,
+    Integer,
+    String,
+    Boolean,
+    Text,
+    DateTime,
+    ForeignKey,
+    UniqueConstraint,
+    Index,
+)
 from sqlalchemy.sql import func
 from .database import Base
 
@@ -61,6 +71,9 @@ class AdminLog(Base):
     
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("admin_users.id"))
+    operator_id = Column(Integer, ForeignKey("admin_users.id"), index=True)
+    tenant_id = Column(String(100), index=True)
+    trace_id = Column(String(100), index=True)
     action = Column(String(100), nullable=False, index=True)
     resource = Column(String(100), index=True)
     resource_id = Column(String(100))  # 新增：资源ID
@@ -70,3 +83,121 @@ class AdminLog(Base):
     status = Column(String(20), default="success", index=True)  # 新增：状态
     error_message = Column(Text)  # 新增：错误信息
     created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
+class AdminRole(Base):
+    """角色表"""
+    __tablename__ = "admin_roles"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(50), unique=True, nullable=False, index=True)
+    description = Column(Text)
+    is_system = Column(Boolean, default=True, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class AdminPermission(Base):
+    """权限表"""
+    __tablename__ = "admin_permissions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    code = Column(String(100), unique=True, nullable=False, index=True)
+    resource_type = Column(String(50), nullable=False, index=True)
+    action = Column(String(50), nullable=False, index=True)
+    description = Column(Text)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class AdminRolePermission(Base):
+    """角色权限关联表"""
+    __tablename__ = "admin_role_permissions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    role_id = Column(Integer, ForeignKey("admin_roles.id", ondelete="CASCADE"), nullable=False)
+    permission_id = Column(Integer, ForeignKey("admin_permissions.id", ondelete="CASCADE"), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("role_id", "permission_id", name="uq_admin_role_permission"),
+    )
+
+
+class AdminUserRoleBinding(Base):
+    """用户角色绑定（支持资源作用域）"""
+    __tablename__ = "admin_user_role_bindings"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("admin_users.id", ondelete="CASCADE"), nullable=False, index=True)
+    role_id = Column(Integer, ForeignKey("admin_roles.id", ondelete="CASCADE"), nullable=False, index=True)
+    scope_type = Column(String(20), nullable=False, default="global", index=True)  # global/tenant/project/kb
+    tenant_id = Column(String(100), nullable=True, index=True)
+    project_id = Column(String(100), nullable=True, index=True)
+    kb_id = Column(String(100), nullable=True, index=True)
+    expires_at = Column(DateTime(timezone=True), nullable=True)
+    created_by = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "role_id",
+            "scope_type",
+            "tenant_id",
+            "project_id",
+            "kb_id",
+            name="uq_admin_user_role_scope",
+        ),
+        Index("idx_admin_user_role_expire", "user_id", "expires_at"),
+    )
+
+
+class AdminJob(Base):
+    """后台任务表"""
+    __tablename__ = "admin_jobs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    job_type = Column(String(50), nullable=False, index=True)  # build_graph/clear_kb/reindex
+    status = Column(String(20), nullable=False, default="pending", index=True)
+    tenant_id = Column(String(100), nullable=True, index=True)
+    project_id = Column(String(100), nullable=True, index=True)
+    kb_id = Column(String(100), nullable=True, index=True)
+    payload = Column(Text)
+    result = Column(Text)
+    error_message = Column(Text)
+    retry_count = Column(Integer, nullable=False, default=0)
+    max_retries = Column(Integer, nullable=False, default=3)
+    requested_by = Column(Integer, ForeignKey("admin_users.id"), nullable=True, index=True)
+    trace_id = Column(String(100), nullable=True, index=True)
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    finished_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class AdminQATrace(Base):
+    """问答链路追踪表"""
+    __tablename__ = "admin_qa_traces"
+
+    id = Column(Integer, primary_key=True, index=True)
+    trace_id = Column(String(100), nullable=True, index=True)
+    qa_type = Column(String(50), nullable=False, index=True)  # docqa/deep_research
+    status = Column(String(20), nullable=False, default="success", index=True)
+    question = Column(Text, nullable=False)
+    operator_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True, index=True)
+    model = Column(String(120), nullable=True)
+    top_k = Column(Integer, nullable=True)
+    latency_ms = Column(Integer, nullable=True)
+    retrieval_count = Column(Integer, nullable=False, default=0)
+    citation_count = Column(Integer, nullable=False, default=0)
+    answer_preview = Column(Text, nullable=True)
+    retrieval_snapshot = Column(Text, nullable=True)
+    generation_snapshot = Column(Text, nullable=True)
+    response_snapshot = Column(Text, nullable=True)
+    error_message = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+    __table_args__ = (
+        Index("idx_admin_qa_trace_type_created", "qa_type", "created_at"),
+        Index("idx_admin_qa_trace_status_created", "status", "created_at"),
+    )

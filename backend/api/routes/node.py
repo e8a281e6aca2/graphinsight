@@ -1,10 +1,14 @@
 """
 节点 API 路由
 """
+from typing import Optional
+
 from fastapi import APIRouter, HTTPException, Depends
 from models.graph import NodeDetail, MediaResource
 from services.neo4j_service import get_neo4j_service, Neo4jService
 from utils.neo4j_parser import extract_media_resources
+from admin.api.deps import require_permission
+from admin.models import AdminUser
 
 router = APIRouter()
 
@@ -12,6 +16,7 @@ router = APIRouter()
 @router.get("/node/{node_id}", response_model=NodeDetail)
 async def get_node_detail(
     node_id: str,
+    current_user: Optional[AdminUser] = Depends(require_permission("graph:read", resource="graph")),
     neo4j: Neo4jService = Depends(get_neo4j_service)
 ):
     """

@@ -2,7 +2,10 @@
 监控服务
 处理系统监控、健康检查等业务逻辑
 """
+import json
+import os
 import time
+import urllib.request
 from datetime import datetime
 from typing import Dict, Optional
 from sqlalchemy.orm import Session
@@ -15,6 +18,7 @@ except ImportError:
     PSUTIL_AVAILABLE = False
 
 from ..database import engine
+from ..models import AdminJob
 from ..schemas.monitor import (
     SystemStats,
     HealthStatus,
@@ -22,7 +26,7 @@ from ..schemas.monitor import (
     Neo4jStatus,
     AIServiceStatus,
 )
-from core import get_logger, SystemException
+from core import get_logger, SystemException, get_api_observability, get_qa_observability
 
 logger = get_logger()
 
@@ -35,6 +39,8 @@ class MonitorService:
     
     def __init__(self):
         self.start_time = _start_time
+        self.api_metrics = get_api_observability()
+        self.qa_metrics = get_qa_observability()
     
     def get_system_stats(self) -> SystemStats:
         """获取系统统计信息"""
@@ -312,18 +318,231 @@ class MonitorService:
             logger.error(f"获取健康状态失败: {str(e)}", exc_info=True)
             raise SystemException("获取健康状态失败")
     
-    def get_performance_metrics(self) -> Dict:
-        """获取性能指标（占位符，需要实际实现）"""
-        # TODO: 实现性能指标收集
+    def get_performance_metrics(self, window_seconds: int = 900) -> Dict:
+        """获取 API 性能指标"""
+        metrics = self.api_metrics.snapshot(window_seconds=window_seconds)
         return {
-            "avg_response_time_ms": 0,
-            "p95_response_time_ms": 0,
-            "p99_response_time_ms": 0,
-            "requests_per_second": 0,
-            "error_rate": 0,
-            "total_requests": 0,
-            "failed_requests": 0,
-            "timestamp": datetime.utcnow()
+            "avg_response_time_ms": metrics["avg_response_time_ms"],
+            "p50_response_time_ms": metrics["p50_response_time_ms"],
+            "p95_response_time_ms": metrics["p95_response_time_ms"],
+            "p99_response_time_ms": metrics["p99_response_time_ms"],
+            "requests_per_second": metrics["requests_per_second"],
+            "error_rate": metrics["error_rate"],
+            "total_requests": metrics["total_requests"],
+            "failed_requests": metrics["failed_requests"],
+            "window_seconds": metrics["window_seconds"],
+            "top_paths": metrics["top_paths"],
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+        }
+
+    def get_qa_quality_metrics(self, window_seconds: int = 900) -> Dict:
+        """获取问答质量指标"""
+        metrics = self.qa_metrics.snapshot(window_seconds=window_seconds)
+        return {
+            "window_seconds": metrics["window_seconds"],
+            "total_requests": metrics["total_requests"],
+            "failed_requests": metrics["failed_requests"],
+            "success_rate": metrics["success_rate"],
+            "failure_rate": metrics["failure_rate"],
+            "citation_rate": metrics["citation_rate"],
+            "avg_citations": metrics["avg_citations"],
+            "avg_latency_ms": metrics["avg_latency_ms"],
+            "p50_latency_ms": metrics["p50_latency_ms"],
+            "p95_latency_ms": metrics["p95_latency_ms"],
+            "p99_latency_ms": metrics["p99_latency_ms"],
+            "by_type": metrics["by_type"],
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+        }
+
+    def get_job_slo_metrics(self, db: Session, window_minutes: int = 60) -> Dict:
+        """获取任务中心 SLO 指标"""
+        start_time = datetime.utcnow().timestamp() - max(window_minutes, 1) * 60
+        rows = (
+            db.query(AdminJob)
+            .filter(AdminJob.created_at >= datetime.utcfromtimestamp(start_time))
+            .order_by(AdminJob.created_at.desc())
+            .all()
+        )
+        total = len(rows)
+        succeeded = sum(1 for item in rows if item.status == "succeeded")
+        failed = sum(1 for item in rows if item.status == "failed")
+        cancelled = sum(1 for item in rows if item.status == "cancelled")
+        running = sum(1 for item in rows if item.status == "running")
+        pending = sum(1 for item in rows if item.status == "pending")
+        timeout_failed = sum(
+            1
+            for item in rows
+            if item.status == "failed"
+            and isinstance(item.error_message, str)
+            and item.error_message.startswith("JobExecutionTimeoutError")
+        )
+
+        durations: list[float] = []
+        for item in rows:
+            if item.status != "succeeded":
+                continue
+            if not item.started_at or not item.finished_at:
+                continue
+            try:
+                sec = (item.finished_at - item.started_at).total_seconds()
+                if sec >= 0:
+                    durations.append(sec * 1000)
+            except Exception:
+                continue
+        durations.sort()
+
+        def percentile(values: list[float], p: float) -> float:
+            if not values:
+                return 0.0
+            pos = min(max(int(round((len(values) - 1) * p)), 0), len(values) - 1)
+            return round(values[pos], 3)
+
+        success_rate = round((succeeded / total), 6) if total > 0 else 0.0
+        timeout_rate = round((timeout_failed / total), 6) if total > 0 else 0.0
+        return {
+            "window_minutes": window_minutes,
+            "total_jobs": total,
+            "succeeded_jobs": succeeded,
+            "failed_jobs": failed,
+            "cancelled_jobs": cancelled,
+            "running_jobs": running,
+            "pending_jobs": pending,
+            "timeout_failed_jobs": timeout_failed,
+            "success_rate": success_rate,
+            "timeout_rate": timeout_rate,
+            "p95_duration_ms": percentile(durations, 0.95),
+            "p99_duration_ms": percentile(durations, 0.99),
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+        }
+
+    def get_unified_metrics_snapshot(
+        self,
+        db: Session,
+        *,
+        api_window_seconds: int = 900,
+        qa_window_seconds: int = 900,
+        job_window_minutes: int = 60,
+    ) -> Dict:
+        """获取统一指标快照，聚合 API / QA / Jobs 的核心运营指标。"""
+        api_metrics = self.get_performance_metrics(window_seconds=api_window_seconds)
+        qa_metrics = self.get_qa_quality_metrics(window_seconds=qa_window_seconds)
+        job_metrics = self.get_job_slo_metrics(db, window_minutes=job_window_minutes)
+
+        summary = {
+            "api_error_rate": api_metrics["error_rate"],
+            "api_requests_per_second": api_metrics["requests_per_second"],
+            "qa_success_rate": qa_metrics["success_rate"],
+            "qa_citation_rate": qa_metrics["citation_rate"],
+            "job_success_rate": job_metrics["success_rate"],
+            "job_timeout_rate": job_metrics["timeout_rate"],
+        }
+
+        return {
+            "summary": summary,
+            "api": api_metrics,
+            "qa": qa_metrics,
+            "jobs": job_metrics,
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+        }
+
+    def get_slo_snapshot(self, db: Session, *, api_window_seconds: int = 900, job_window_minutes: int = 60) -> Dict:
+        api_metrics = self.get_performance_metrics(window_seconds=api_window_seconds)
+        job_metrics = self.get_job_slo_metrics(db, window_minutes=job_window_minutes)
+
+        return {
+            "api": api_metrics,
+            "jobs": job_metrics,
+            "slo": {
+                "api_error_rate": {
+                    "value": api_metrics["error_rate"],
+                    "target": "<=0.01",
+                },
+                "job_success_rate": {
+                    "value": job_metrics["success_rate"],
+                    "target": ">=0.99",
+                },
+                "job_timeout_rate": {
+                    "value": job_metrics["timeout_rate"],
+                    "target": "<=0.10",
+                },
+                "job_p95_duration_ms": {
+                    "value": job_metrics["p95_duration_ms"],
+                    "target": "track",
+                },
+            },
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+        }
+
+    def check_and_send_alerts(
+        self,
+        db: Session,
+        *,
+        send_webhook: bool = True,
+        api_window_seconds: int = 900,
+        job_window_minutes: int = 60,
+    ) -> Dict:
+        snapshot = self.get_slo_snapshot(
+            db,
+            api_window_seconds=api_window_seconds,
+            job_window_minutes=job_window_minutes,
+        )
+        api_error_threshold = float(os.getenv("ALERT_API_ERROR_RATE_THRESHOLD", "0.05"))
+        timeout_threshold = float(os.getenv("ALERT_JOB_TIMEOUT_RATE_THRESHOLD", "0.10"))
+
+        alerts = []
+        api_error_rate = float(snapshot["api"]["error_rate"])
+        job_timeout_rate = float(snapshot["jobs"]["timeout_rate"])
+
+        if api_error_rate > api_error_threshold:
+            alerts.append(
+                {
+                    "type": "api_error_rate_high",
+                    "severity": "warning",
+                    "message": f"API 错误率过高: {api_error_rate:.4f} > {api_error_threshold:.4f}",
+                }
+            )
+        if job_timeout_rate > timeout_threshold:
+            alerts.append(
+                {
+                    "type": "job_timeout_rate_high",
+                    "severity": "warning",
+                    "message": f"任务超时率过高: {job_timeout_rate:.4f} > {timeout_threshold:.4f}",
+                }
+            )
+
+        webhook_url = os.getenv("ALERT_WEBHOOK_URL", "").strip()
+        delivered = False
+        delivery_error = None
+
+        if alerts and send_webhook and webhook_url:
+            payload = {
+                "source": "GraphInsight",
+                "type": "slo_alert",
+                "alerts": alerts,
+                "snapshot": snapshot,
+            }
+            body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            req = urllib.request.Request(
+                webhook_url,
+                data=body,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=8):  # noqa: S310
+                    delivered = True
+            except Exception as exc:  # noqa: BLE001
+                delivery_error = str(exc)
+                logger.warning("告警 webhook 发送失败", context={"error": delivery_error})
+
+        return {
+            "alerts": alerts,
+            "alert_count": len(alerts),
+            "sent": delivered,
+            "delivery_error": delivery_error,
+            "webhook_configured": bool(webhook_url),
+            "snapshot": snapshot,
+            "timestamp": datetime.utcnow().isoformat() + "Z",
         }
 
 

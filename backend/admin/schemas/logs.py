@@ -10,6 +10,9 @@ class LogItem(BaseModel):
     """日志项"""
     id: int
     user_id: Optional[int] = Field(None, description="用户ID")
+    operator_id: Optional[int] = Field(None, description="操作人ID")
+    tenant_id: Optional[str] = Field(None, description="租户ID")
+    trace_id: Optional[str] = Field(None, description="请求追踪ID")
     username: Optional[str] = Field(None, description="用户名")
     action: str = Field(..., description="操作类型")
     resource: Optional[str] = Field(None, description="资源类型")
@@ -18,6 +21,7 @@ class LogItem(BaseModel):
     ip_address: Optional[str] = Field(None, description="IP地址")
     user_agent: Optional[str] = Field(None, description="User Agent")
     status: str = Field("success", description="状态: success, failed")
+    severity: str = Field("info", description="日志级别: info, warn, error")
     error_message: Optional[str] = Field(None, description="错误信息")
     created_at: datetime = Field(..., description="创建时间")
     
@@ -29,6 +33,9 @@ class LogDetail(BaseModel):
     """日志详情"""
     id: int
     user_id: Optional[int] = None
+    operator_id: Optional[int] = None
+    tenant_id: Optional[str] = None
+    trace_id: Optional[str] = None
     username: Optional[str] = None
     action: str
     resource: Optional[str] = None
@@ -37,6 +44,7 @@ class LogDetail(BaseModel):
     ip_address: Optional[str] = None
     user_agent: Optional[str] = None
     status: str
+    severity: str = "info"
     error_message: Optional[str] = None
     created_at: datetime
     
@@ -50,6 +58,7 @@ class LogQuery(BaseModel):
     action: Optional[str] = Field(None, description="操作类型")
     resource: Optional[str] = Field(None, description="资源类型")
     status: Optional[str] = Field(None, description="状态")
+    trace_id: Optional[str] = Field(None, description="追踪ID")
     start_date: Optional[datetime] = Field(None, description="开始时间")
     end_date: Optional[datetime] = Field(None, description="结束时间")
     ip_address: Optional[str] = Field(None, description="IP地址")
@@ -63,6 +72,7 @@ class LogStats(BaseModel):
     success_count: int = Field(..., description="成功数")
     failed_count: int = Field(..., description="失败数")
     success_rate: float = Field(..., description="成功率")
+    severity_stats: Dict[str, int] = Field(..., description="日志级别统计")
     action_stats: Dict[str, int] = Field(..., description="操作统计")
     user_stats: Dict[str, int] = Field(..., description="用户统计")
     hourly_stats: Dict[str, int] = Field(..., description="小时统计")
@@ -74,6 +84,11 @@ class LogStats(BaseModel):
                 "success_count": 950,
                 "failed_count": 50,
                 "success_rate": 0.95,
+                "severity_stats": {
+                    "info": 880,
+                    "warn": 70,
+                    "error": 50
+                },
                 "action_stats": {
                     "login": 100,
                     "update": 200,
@@ -95,6 +110,9 @@ class LogStats(BaseModel):
 class LogCreate(BaseModel):
     """创建日志"""
     user_id: Optional[int] = None
+    operator_id: Optional[int] = None
+    tenant_id: Optional[str] = Field(None, max_length=100)
+    trace_id: Optional[str] = Field(None, max_length=100)
     action: str = Field(..., min_length=1, max_length=100)
     resource: Optional[str] = Field(None, max_length=100)
     resource_id: Optional[str] = Field(None, max_length=100)

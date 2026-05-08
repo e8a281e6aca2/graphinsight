@@ -1,12 +1,15 @@
 """
 NL2Cypher API 路由
 """
-from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel
 from typing import Optional, Dict, List
+
+from fastapi import APIRouter, HTTPException, Request, Depends
+from pydantic import BaseModel
 from services.nl2cypher_service import NL2CypherService
 from neo4j.exceptions import ServiceUnavailable
 from utils.logger import log_action
+from admin.api.deps import require_permission
+from admin.models import AdminUser
 
 router = APIRouter()
 
@@ -30,7 +33,8 @@ class NL2CypherResponse(BaseModel):
 @router.post("/nl2cypher", response_model=NL2CypherResponse)
 async def convert_nl_to_cypher(
     nl_request: NL2CypherRequest,
-    http_request: Request
+    http_request: Request,
+    current_user: Optional[AdminUser] = Depends(require_permission("nl2cypher:use", resource="nl2cypher")),
 ):
     """
     将自然语言转换为 Cypher 查询
@@ -60,6 +64,7 @@ async def convert_nl_to_cypher(
             action="nl2cypher_generate",
             resource="ai_query",
             details=f"NL: {nl_request.natural_language[:100]}, Confidence: {result.get('confidence', 0)}",
+            user_id=current_user.id if current_user else None,
             ip_address=http_request.client.host if http_request.client else None
         )
     
@@ -104,7 +109,9 @@ async def get_examples():
 
 
 @router.get("/nl2cypher/status")
-async def get_status():
+async def get_status(
+    current_user: Optional[AdminUser] = Depends(require_permission("config:read", resource="system_config")),
+):
     """
     获取 NL2Cypher 服务状态
     

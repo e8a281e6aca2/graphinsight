@@ -4,13 +4,13 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from neo4j import GraphDatabase
-import openai
 import time
 from datetime import datetime, timedelta
 from ..database import get_db
 from ..models import AdminUser, AdminConfig, AdminLog
 from ..schemas import MonitorStatus, MonitorStats, ServiceStatus
 from ..auth import get_current_user
+from services.openai_client_factory import build_openai_client
 
 router = APIRouter(prefix="/admin/monitor", tags=["admin-monitor"])
 
@@ -74,7 +74,11 @@ async def get_service_status(
             if base_url_config and base_url_config.value:
                 client_kwargs["base_url"] = base_url_config.value
             
-            client = openai.OpenAI(**client_kwargs)
+            client = build_openai_client(
+                api_key=client_kwargs["api_key"],
+                base_url=client_kwargs.get("base_url"),
+                timeout=20.0,
+            )
             client.models.list()
             openai_status = ServiceStatus(status="configured", message="API 可用")
         else:

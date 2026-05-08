@@ -11,6 +11,19 @@ from ..schemas.logs import LogCreate, LogQuery
 from core import DatabaseException
 
 
+def classify_log_severity(*, status: Optional[str], action: Optional[str], error_message: Optional[str]) -> str:
+    """统一日志分级策略。"""
+    normalized_status = (status or "").strip().lower()
+    normalized_action = (action or "").strip().lower()
+    normalized_error = (error_message or "").strip().lower()
+
+    if normalized_status == "failed" or normalized_error:
+        return "error"
+    if any(keyword in normalized_action for keyword in ("retry", "cancel", "cleanup", "clean", "delete")):
+        return "warn"
+    return "info"
+
+
 class LogCRUD:
     """日志 CRUD 操作类"""
     
@@ -47,6 +60,8 @@ class LogCRUD:
                 filters.append(AdminLog.resource == query.resource)
             if query.status:
                 filters.append(AdminLog.status == query.status)
+            if query.trace_id:
+                filters.append(AdminLog.trace_id == query.trace_id)
             if query.start_date:
                 filters.append(AdminLog.created_at >= query.start_date)
             if query.end_date:
@@ -72,6 +87,9 @@ class LogCRUD:
                 log_dict = {
                     "id": log.id,
                     "user_id": log.user_id,
+                    "operator_id": log.operator_id,
+                    "tenant_id": log.tenant_id,
+                    "trace_id": log.trace_id,
                     "username": username,
                     "action": log.action,
                     "resource": log.resource,
@@ -80,6 +98,11 @@ class LogCRUD:
                     "ip_address": log.ip_address,
                     "user_agent": log.user_agent,
                     "status": log.status,
+                    "severity": classify_log_severity(
+                        status=log.status,
+                        action=log.action,
+                        error_message=log.error_message,
+                    ),
                     "error_message": log.error_message,
                     "created_at": log.created_at
                 }
@@ -100,6 +123,9 @@ class LogCRUD:
             
             db_log = AdminLog(
                 user_id=log_create.user_id,
+                operator_id=log_create.operator_id or log_create.user_id,
+                tenant_id=log_create.tenant_id,
+                trace_id=log_create.trace_id,
                 action=log_create.action,
                 resource=log_create.resource,
                 resource_id=log_create.resource_id,
@@ -143,6 +169,24 @@ class LogCRUD:
             # 成功/失败数
             success_count = base_query.filter(AdminLog.status == "success").count()
             failed_count = base_query.filter(AdminLog.status == "failed").count()
+            severity_stats = {
+                "info": 0,
+                "warn": 0,
+                "error": 0,
+            }
+
+            severity_rows = base_query.with_entities(
+                AdminLog.status,
+                AdminLog.action,
+                AdminLog.error_message,
+            ).all()
+            for status_value, action_value, error_message in severity_rows:
+                severity = classify_log_severity(
+                    status=status_value,
+                    action=action_value,
+                    error_message=error_message,
+                )
+                severity_stats[severity] = severity_stats.get(severity, 0) + 1
             
             # 成功率
             success_rate = success_count / total_logs if total_logs > 0 else 0
@@ -190,6 +234,7 @@ class LogCRUD:
                 "success_count": success_count,
                 "failed_count": failed_count,
                 "success_rate": round(success_rate, 4),
+                "severity_stats": severity_stats,
                 "action_stats": action_stats,
                 "user_stats": user_stats,
                 "hourly_stats": hourly_stats

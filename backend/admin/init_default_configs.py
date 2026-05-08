@@ -31,8 +31,8 @@ def init_default_configs():
             },
             {
                 "category": "neo4j",
-                "key": "username",
-                "value": os.getenv("NEO4J_USERNAME", "neo4j"),
+                "key": "user",
+                "value": os.getenv("NEO4J_USER", os.getenv("NEO4J_USERNAME", "neo4j")),
                 "description": "Neo4j 用户名",
                 "is_sensitive": False
             },

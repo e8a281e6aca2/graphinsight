@@ -8,6 +8,7 @@ from typing import Optional, Tuple
 from jose import JWTError, jwt
 import bcrypt
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import OperationalError, ProgrammingError
 
 from ..models import AdminUser
 from ..crud import user_crud, log_crud
@@ -150,7 +151,9 @@ class AuthService:
         db: Session,
         login_request: LoginRequest,
         ip_address: Optional[str] = None,
-        user_agent: Optional[str] = None
+        user_agent: Optional[str] = None,
+        tenant_id: Optional[str] = None,
+        trace_id: Optional[str] = None,
     ) -> Tuple[LoginResponse, bool]:
         """
         用户登录 - 使用邮箱登录
@@ -171,6 +174,8 @@ class AuthService:
                 log_crud.create(db, LogCreate(
                     action="login",
                     resource="user",
+                    tenant_id=tenant_id,
+                    trace_id=trace_id,
                     details={"email": login_request.username},
                     ip_address=ip_address,
                     user_agent=user_agent,
@@ -194,6 +199,9 @@ class AuthService:
             # 记录成功日志
             log_crud.create(db, LogCreate(
                 user_id=user.id,
+                operator_id=user.id,
+                tenant_id=tenant_id,
+                trace_id=trace_id,
                 action="login",
                 resource="user",
                 resource_id=str(user.id),
@@ -232,13 +240,18 @@ class AuthService:
         db: Session,
         user: AdminUser,
         ip_address: Optional[str] = None,
-        user_agent: Optional[str] = None
+        user_agent: Optional[str] = None,
+        tenant_id: Optional[str] = None,
+        trace_id: Optional[str] = None,
     ):
         """用户登出"""
         try:
             # 记录登出日志
             log_crud.create(db, LogCreate(
                 user_id=user.id,
+                operator_id=user.id,
+                tenant_id=tenant_id,
+                trace_id=trace_id,
                 action="logout",
                 resource="user",
                 resource_id=str(user.id),
@@ -259,7 +272,9 @@ class AuthService:
         db: Session,
         user: AdminUser,
         change_request: ChangePasswordRequest,
-        ip_address: Optional[str] = None
+        ip_address: Optional[str] = None,
+        tenant_id: Optional[str] = None,
+        trace_id: Optional[str] = None,
     ) -> bool:
         """修改密码"""
         try:
@@ -280,6 +295,9 @@ class AuthService:
                 # 记录日志
                 log_crud.create(db, LogCreate(
                     user_id=user.id,
+                    operator_id=user.id,
+                    tenant_id=tenant_id,
+                    trace_id=trace_id,
                     action="change_password",
                     resource="user",
                     resource_id=str(user.id),
@@ -317,7 +335,9 @@ class AuthService:
         db: Session,
         register_request: RegisterRequest,
         ip_address: Optional[str] = None,
-        user_agent: Optional[str] = None
+        user_agent: Optional[str] = None,
+        tenant_id: Optional[str] = None,
+        trace_id: Optional[str] = None,
     ) -> RegisterResponse:
         """
         用户注册 - 使用邮箱注册
@@ -366,10 +386,30 @@ class AuthService:
                 email=register_request.email,
                 is_active=True  # 注册后直接激活
             )
+
+            # 为首个管理员授予全局 super_admin（RBAC）
+            try:
+                from .authz_service import authz_service
+
+                authz_service.assign_role_binding(
+                    db=db,
+                    user_id=user.id,
+                    role_name="super_admin",
+                    scope_type="global",
+                    created_by=user.id,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "授予默认 RBAC 角色失败，已进入兼容模式",
+                    context={"user_id": user.id, "error": str(exc)},
+                )
             
             # 记录注册日志
             log_crud.create(db, LogCreate(
                 user_id=user.id,
+                operator_id=user.id,
+                tenant_id=tenant_id,
+                trace_id=trace_id,
                 action="register",
                 resource="user",
                 resource_id=str(user.id),
@@ -399,6 +439,15 @@ class AuthService:
             
         except (ValidationException, AuthenticationException):
             raise
+        except OperationalError as e:
+            logger.error(f"注册失败（数据库不可用）: {str(e)}", exc_info=True)
+            raise ValidationException("管理员数据库不可用，请检查 ADMIN_DATABASE_URL")
+        except ProgrammingError as e:
+            msg = str(e).lower()
+            if "admin_users" in msg and "does not exist" in msg:
+                raise ValidationException("管理员数据库未初始化，请先执行数据库迁移")
+            logger.error(f"注册失败（数据库结构异常）: {str(e)}", exc_info=True)
+            raise ValidationException("管理员数据库结构异常，请先执行迁移脚本")
         except Exception as e:
             logger.error(f"注册失败: {str(e)}", exc_info=True)
             raise ValidationException("注册失败，请稍后重试")

@@ -1,9 +1,13 @@
 """
 节点展开 API 路由
 """
+from typing import Optional
+
 from fastapi import APIRouter, HTTPException, Depends
 from models.graph import ExpandRequest, QueryResponse
 from services.neo4j_service import get_neo4j_service, Neo4jService
+from admin.api.deps import require_permission
+from admin.models import AdminUser
 
 router = APIRouter()
 
@@ -11,6 +15,7 @@ router = APIRouter()
 @router.post("/expand", response_model=QueryResponse)
 async def expand_node(
     request: ExpandRequest,
+    current_user: Optional[AdminUser] = Depends(require_permission("graph:read", resource="graph")),
     neo4j: Neo4jService = Depends(get_neo4j_service)
 ):
     """

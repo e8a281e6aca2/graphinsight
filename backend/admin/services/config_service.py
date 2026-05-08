@@ -3,10 +3,15 @@
 处理配置管理、缓存等业务逻辑
 """
 import os
+import time
 from typing import Optional, Dict, List, Tuple
 from functools import lru_cache
 from datetime import datetime, timedelta
+import httpx
 from sqlalchemy.orm import Session
+from neo4j import GraphDatabase
+from config import get_settings
+from services.openai_client_factory import build_httpx_client
 
 from ..models import AdminUser
 from ..crud import config_crud, log_crud
@@ -26,6 +31,7 @@ from core import (
 )
 
 logger = get_logger()
+settings = get_settings()
 
 
 class ConfigService:
@@ -34,6 +40,7 @@ class ConfigService:
     def __init__(self):
         self._cache: Dict[str, Tuple[str, datetime]] = {}
         self._cache_ttl = timedelta(minutes=5)  # 缓存5分钟
+        self._last_model_connection_test: Optional[Dict[str, any]] = None
     
     def _get_cache_key(self, category: str, key: str) -> str:
         """生成缓存键"""
@@ -120,6 +127,61 @@ class ConfigService:
         except Exception as e:
             logger.error(f"获取配置失败: {category}.{key}, {str(e)}")
             return default
+
+    def set_config(
+        self,
+        db: Session,
+        category: str,
+        key: str,
+        value: str,
+        *,
+        user_id: int = 0,
+        description: Optional[str] = None,
+        is_sensitive: Optional[bool] = None,
+    ) -> ConfigItem:
+        """
+        设置配置（upsert）
+
+        - 已存在：更新 value（可选更新 description）
+        - 不存在：自动创建
+        """
+        try:
+            value_str = "" if value is None else str(value)
+            sensitive = is_sensitive
+            if sensitive is None:
+                lower_key = key.lower()
+                sensitive = any(flag in lower_key for flag in ["password", "secret", "token", "key"])
+
+            existed = config_crud.get_by_key(db, category, key)
+            if existed:
+                updated = config_crud.update(
+                    db=db,
+                    category=category,
+                    key=key,
+                    config_update=ConfigUpdate(value=value_str, description=description),
+                    user_id=user_id,
+                )
+                if not updated:
+                    raise BusinessException(f"配置更新失败: {category}.{key}")
+                self._clear_cache(category, key)
+                return ConfigItem.model_validate(updated)
+
+            created = config_crud.create(
+                db=db,
+                config_create=ConfigCreate(
+                    category=category,
+                    key=key,
+                    value=value_str,
+                    description=description,
+                    is_sensitive=sensitive,
+                ),
+                user_id=user_id,
+            )
+            self._clear_cache(category, key)
+            return ConfigItem.model_validate(created)
+        except Exception as e:
+            logger.error(f"设置配置失败: {category}.{key}, {str(e)}", exc_info=True)
+            raise
     
     def get_config_item(
         self,
@@ -131,6 +193,39 @@ class ConfigService:
         try:
             config = config_crud.get_by_key(db, category, key)
             if not config:
+                default_item = self._resolve_default_config(category, key)
+                if default_item:
+                    try:
+                        created = config_crud.create(
+                            db,
+                            config_create=ConfigCreate(
+                                category=category,
+                                key=key,
+                                value=default_item["value"],
+                                description=default_item["description"],
+                                is_sensitive=default_item["is_sensitive"],
+                            ),
+                            user_id=None,
+                        )
+                        self._clear_cache(category, key)
+                        return ConfigItem.model_validate(created)
+                    except Exception as exc:
+                        logger.warning(
+                            f"默认配置写入失败: {category}.{key}",
+                            context={"error": str(exc)},
+                        )
+                        return ConfigItem(
+                            id=0,
+                            category=category,
+                            key=key,
+                            value=default_item["value"],
+                            description=default_item["description"],
+                            is_sensitive=default_item["is_sensitive"],
+                            is_encrypted=False,
+                            updated_by=None,
+                            updated_at=None,
+                            version=1,
+                        )
                 raise NotFoundException(f"配置不存在: {category}.{key}")
             
             return ConfigItem.model_validate(config)
@@ -139,6 +234,99 @@ class ConfigService:
         except Exception as e:
             logger.error(f"获取配置项失败: {str(e)}", exc_info=True)
             raise BusinessException("获取配置失败")
+
+    @staticmethod
+    def _resolve_default_config(category: str, key: str) -> Optional[Dict[str, str]]:
+        category = (category or "").strip()
+        key = (key or "").strip()
+        if not category or not key:
+            return None
+        defaults: Dict[str, Dict[str, Dict[str, str]]] = {
+            "neo4j": {
+                "uri": {
+                    "value": os.getenv("NEO4J_URI", "bolt://localhost:7687"),
+                    "description": "Neo4j 连接地址",
+                    "is_sensitive": "false",
+                },
+                "user": {
+                    "value": os.getenv("NEO4J_USER", os.getenv("NEO4J_USERNAME", "neo4j")),
+                    "description": "Neo4j 用户名",
+                    "is_sensitive": "false",
+                },
+                "password": {
+                    "value": os.getenv("NEO4J_PASSWORD", "password"),
+                    "description": "Neo4j 密码",
+                    "is_sensitive": "true",
+                },
+                "database": {
+                    "value": os.getenv("NEO4J_DATABASE", "neo4j"),
+                    "description": "Neo4j 数据库名称",
+                    "is_sensitive": "false",
+                },
+            },
+            "ai_service": {
+                "provider": {
+                    "value": os.getenv("AI_SERVICE_PROVIDER", os.getenv("OPENAI_PROVIDER", "openai")),
+                    "description": "AI 服务提供商",
+                    "is_sensitive": "false",
+                },
+                "enabled": {
+                    "value": os.getenv("AI_SERVICE_ENABLED", "true"),
+                    "description": "是否启用 AI 服务",
+                    "is_sensitive": "false",
+                },
+                "api_key": {
+                    "value": os.getenv("AI_SERVICE_API_KEY", os.getenv("OPENAI_API_KEY", "")),
+                    "description": "AI 服务 API Key",
+                    "is_sensitive": "true",
+                },
+                "base_url": {
+                    "value": os.getenv("AI_SERVICE_BASE_URL", os.getenv("OPENAI_BASE_URL", "")),
+                    "description": "AI 服务 API 地址",
+                    "is_sensitive": "false",
+                },
+                "model": {
+                    "value": os.getenv("AI_SERVICE_MODEL", os.getenv("OPENAI_MODEL", "gpt-3.5-turbo")),
+                    "description": "AI 模型名称",
+                    "is_sensitive": "false",
+                },
+                "max_tokens": {
+                    "value": os.getenv("AI_SERVICE_MAX_TOKENS", os.getenv("OPENAI_MAX_TOKENS", "2000")),
+                    "description": "最大 Token 数",
+                    "is_sensitive": "false",
+                },
+                "temperature": {
+                    "value": os.getenv("AI_SERVICE_TEMPERATURE", os.getenv("OPENAI_TEMPERATURE", "0.7")),
+                    "description": "温度参数",
+                    "is_sensitive": "false",
+                },
+            },
+            "nl2cypher": {
+                "enabled": {
+                    "value": os.getenv("NL2CYPHER_ENABLED", "true"),
+                    "description": "是否启用 NL2Cypher",
+                    "is_sensitive": "false",
+                },
+                "cache_size": {
+                    "value": os.getenv("NL2CYPHER_CACHE_SIZE", "100"),
+                    "description": "缓存大小",
+                    "is_sensitive": "false",
+                },
+                "max_limit": {
+                    "value": os.getenv("NL2CYPHER_MAX_LIMIT", "100"),
+                    "description": "最大查询限制",
+                    "is_sensitive": "false",
+                },
+            },
+        }
+        payload = defaults.get(category, {}).get(key)
+        if not payload:
+            return None
+        return {
+            "value": str(payload["value"]),
+            "description": payload["description"],
+            "is_sensitive": payload["is_sensitive"] == "true",
+        }
     
     def get_config_list(
         self,
@@ -162,7 +350,9 @@ class ConfigService:
         db: Session,
         config_create: ConfigCreate,
         user: AdminUser,
-        ip_address: Optional[str] = None
+        ip_address: Optional[str] = None,
+        tenant_id: Optional[str] = None,
+        trace_id: Optional[str] = None
     ) -> ConfigItem:
         """创建配置"""
         try:
@@ -172,6 +362,9 @@ class ConfigService:
             # 记录日志
             log_crud.create(db, LogCreate(
                 user_id=user.id,
+                operator_id=user.id,
+                tenant_id=tenant_id,
+                trace_id=trace_id,
                 action="create",
                 resource="config",
                 resource_id=str(config.id),
@@ -201,42 +394,81 @@ class ConfigService:
         key: str,
         config_update: ConfigUpdate,
         user: AdminUser,
-        ip_address: Optional[str] = None
+        ip_address: Optional[str] = None,
+        tenant_id: Optional[str] = None,
+        trace_id: Optional[str] = None
     ) -> ConfigItem:
-        """更新配置"""
+        """更新配置（不存在时自动创建）"""
         try:
             # 更新配置
             config = config_crud.update(db, category, key, config_update, user.id)
-            if not config:
-                raise NotFoundException(f"配置不存在: {category}.{key}")
-            
-            # 清除缓存
+            if config:
+                # 清除缓存
+                self._clear_cache(category, key)
+
+                # 记录日志
+                log_crud.create(db, LogCreate(
+                    user_id=user.id,
+                    operator_id=user.id,
+                    tenant_id=tenant_id,
+                    trace_id=trace_id,
+                    action="update",
+                    resource="config",
+                    resource_id=str(config.id),
+                    details={
+                        "category": category,
+                        "key": key,
+                        "old_version": config.version - 1,
+                        "new_version": config.version
+                    },
+                    ip_address=ip_address,
+                    status="success"
+                ))
+
+                logger.info(
+                    f"更新配置: {category}.{key}",
+                    context={"user_id": user.id, "config_id": config.id}
+                )
+                return ConfigItem.model_validate(config)
+
+            # 不存在则自动创建，避免前端首次配置失败
+            is_sensitive = any(flag in key.lower() for flag in ["password", "secret", "token", "key"])
+            created = config_crud.create(
+                db,
+                ConfigCreate(
+                    category=category,
+                    key=key,
+                    value=config_update.value,
+                    description=config_update.description,
+                    is_sensitive=is_sensitive,
+                ),
+                user.id,
+            )
             self._clear_cache(category, key)
-            
-            # 记录日志
+
             log_crud.create(db, LogCreate(
                 user_id=user.id,
-                action="update",
+                operator_id=user.id,
+                tenant_id=tenant_id,
+                trace_id=trace_id,
+                action="create",
                 resource="config",
-                resource_id=str(config.id),
+                resource_id=str(created.id),
                 details={
                     "category": category,
                     "key": key,
-                    "old_version": config.version - 1,
-                    "new_version": config.version
+                    "is_sensitive": is_sensitive,
+                    "auto_created": True,
                 },
                 ip_address=ip_address,
                 status="success"
             ))
-            
+
             logger.info(
-                f"更新配置: {category}.{key}",
-                context={"user_id": user.id, "config_id": config.id}
+                f"自动创建配置: {category}.{key}",
+                context={"user_id": user.id, "config_id": created.id}
             )
-            
-            return ConfigItem.model_validate(config)
-        except NotFoundException:
-            raise
+            return ConfigItem.model_validate(created)
         except Exception as e:
             logger.error(f"更新配置失败: {str(e)}", exc_info=True)
             raise BusinessException("更新配置失败")
@@ -246,7 +478,9 @@ class ConfigService:
         db: Session,
         batch_update: ConfigBatchUpdate,
         user: AdminUser,
-        ip_address: Optional[str] = None
+        ip_address: Optional[str] = None,
+        tenant_id: Optional[str] = None,
+        trace_id: Optional[str] = None
     ) -> int:
         """批量更新配置"""
         try:
@@ -263,6 +497,9 @@ class ConfigService:
             # 记录日志
             log_crud.create(db, LogCreate(
                 user_id=user.id,
+                operator_id=user.id,
+                tenant_id=tenant_id,
+                trace_id=trace_id,
                 action="batch_update",
                 resource="config",
                 details={
@@ -289,7 +526,9 @@ class ConfigService:
         category: str,
         key: str,
         user: AdminUser,
-        ip_address: Optional[str] = None
+        ip_address: Optional[str] = None,
+        tenant_id: Optional[str] = None,
+        trace_id: Optional[str] = None
     ) -> bool:
         """删除配置"""
         try:
@@ -304,6 +543,9 @@ class ConfigService:
             # 记录日志
             log_crud.create(db, LogCreate(
                 user_id=user.id,
+                operator_id=user.id,
+                tenant_id=tenant_id,
+                trace_id=trace_id,
                 action="delete",
                 resource="config",
                 details={"category": category, "key": key},
@@ -352,18 +594,52 @@ class ConfigService:
     
     def get_neo4j_config(self, db: Session) -> Dict[str, str]:
         """获取 Neo4j 配置"""
+        mode = str(getattr(settings, "neo4j_config_source", "env") or "env").strip().lower()
+        if mode == "env":
+            env_user = os.getenv("NEO4J_USER", os.getenv("NEO4J_USERNAME", "neo4j"))
+            return {
+                "uri": os.getenv("NEO4J_URI", "bolt://localhost:7687"),
+                "user": env_user,
+                "username": env_user,
+                "password": os.getenv("NEO4J_PASSWORD", "password"),
+                "database": os.getenv("NEO4J_DATABASE", "neo4j"),
+                "source": "env",
+                "mode": "env",
+            }
+
+        db_user = config_crud.get_by_key(db, "neo4j", "user")
+        db_username = config_crud.get_by_key(db, "neo4j", "username")
+        db_uri = config_crud.get_by_key(db, "neo4j", "uri")
+        db_pwd = config_crud.get_by_key(db, "neo4j", "password")
+        db_database = config_crud.get_by_key(db, "neo4j", "database")
+        has_admin_value = any(
+            item and str(item.value or "").strip()
+            for item in [db_uri, db_user, db_username, db_pwd, db_database]
+        )
+
+        user_value = (
+            self.get_config(db, "neo4j", "user", None)
+            or self.get_config(db, "neo4j", "username", None)
+            or "neo4j"
+        )
         return {
             "uri": self.get_config(db, "neo4j", "uri", "bolt://localhost:7687"),
-            "username": self.get_config(db, "neo4j", "username", "neo4j"),
+            "user": user_value,
+            # 仅用于兼容历史读取方，严格模式仍推荐使用 user
+            "username": user_value,
             "password": self.get_config(db, "neo4j", "password", "password"),
             "database": self.get_config(db, "neo4j", "database", "neo4j"),
+            "source": "admin_config" if has_admin_value else "env_fallback",
+            "mode": mode,
         }
     
     def init_from_env(
         self,
         db: Session,
         user: AdminUser,
-        ip_address: Optional[str] = None
+        ip_address: Optional[str] = None,
+        tenant_id: Optional[str] = None,
+        trace_id: Optional[str] = None
     ) -> int:
         """从环境变量初始化配置"""
         try:
@@ -372,37 +648,42 @@ class ConfigService:
             # Neo4j 配置
             neo4j_configs = {
                 "uri": os.getenv("NEO4J_URI", "bolt://localhost:7687"),
-                "username": os.getenv("NEO4J_USERNAME", "neo4j"),
+                "user": os.getenv("NEO4J_USER", os.getenv("NEO4J_USERNAME", "neo4j")),
                 "password": os.getenv("NEO4J_PASSWORD", "password"),
                 "database": os.getenv("NEO4J_DATABASE", "neo4j"),
             }
             
             for key, value in neo4j_configs.items():
                 try:
-                    self.set_config(db, "neo4j", key, value)
+                    self.set_config(db, "neo4j", key, value, user_id=user.id)
                     count += 1
-                except:
-                    pass
+                except Exception as exc:
+                    logger.warning(f"初始化配置失败(neo4j.{key}): {str(exc)}")
             
-            # OpenAI 配置
-            openai_configs = {
-                "api_key": os.getenv("OPENAI_API_KEY", ""),
-                "base_url": os.getenv("OPENAI_BASE_URL", ""),
-                "model": os.getenv("OPENAI_MODEL", "gpt-3.5-turbo"),
-                "max_tokens": os.getenv("OPENAI_MAX_TOKENS", "2000"),
-                "temperature": os.getenv("OPENAI_TEMPERATURE", "0.7"),
+            # AI Service 配置（标准分类）
+            ai_service_configs = {
+                "provider": os.getenv("AI_SERVICE_PROVIDER", os.getenv("OPENAI_PROVIDER", "openai")),
+                "enabled": os.getenv("AI_SERVICE_ENABLED", "true"),
+                "api_key": os.getenv("AI_SERVICE_API_KEY", os.getenv("OPENAI_API_KEY", "")),
+                "base_url": os.getenv("AI_SERVICE_BASE_URL", os.getenv("OPENAI_BASE_URL", "")),
+                "model": os.getenv("AI_SERVICE_MODEL", os.getenv("OPENAI_MODEL", "gpt-3.5-turbo")),
+                "max_tokens": os.getenv("AI_SERVICE_MAX_TOKENS", os.getenv("OPENAI_MAX_TOKENS", "2000")),
+                "temperature": os.getenv("AI_SERVICE_TEMPERATURE", os.getenv("OPENAI_TEMPERATURE", "0.7")),
             }
             
-            for key, value in openai_configs.items():
+            for key, value in ai_service_configs.items():
                 try:
-                    self.set_config(db, "openai", key, value)
+                    self.set_config(db, "ai_service", key, value, user_id=user.id)
                     count += 1
-                except:
-                    pass
+                except Exception as exc:
+                    logger.warning(f"初始化配置失败(ai_service.{key}): {str(exc)}")
             
             # 记录日志
             log_crud.create(db, LogCreate(
                 user_id=user.id,
+                operator_id=user.id,
+                tenant_id=tenant_id,
+                trace_id=trace_id,
                 action="init_config",
                 resource="config",
                 details={"count": count},
@@ -420,29 +701,33 @@ class ConfigService:
     def test_neo4j_connection(self, db: Session) -> Dict[str, any]:
         """测试 Neo4j 连接"""
         try:
-            from services.neo4j_service import get_neo4j_service
-            
-            # 获取配置
             config = self.get_neo4j_config(db)
-            
-            # 尝试执行简单查询
-            neo4j_service = get_neo4j_service()
-            
-            # 直接使用driver测试连接
-            with neo4j_service.driver.session() as session:
-                result = session.run("RETURN 1 as test")
-                record = result.single()
-                
-                if record and record["test"] == 1:
-                    return {
-                        "success": True,
-                        "message": "Neo4j 连接成功"
-                    }
-                else:
-                    return {
-                        "success": False,
-                        "message": "Neo4j 连接失败: 查询无结果"
-                    }
+            uri = config.get("uri") or "bolt://localhost:7687"
+            user = config.get("user") or config.get("username") or "neo4j"
+            password = config.get("password") or ""
+            database = config.get("database") or "neo4j"
+
+            driver = GraphDatabase.driver(
+                uri,
+                auth=(user, password),
+                max_connection_pool_size=10,
+                connection_timeout=8,
+            )
+            try:
+                driver.verify_connectivity()
+                with driver.session(database=database) as session:
+                    record = session.run("RETURN 1 as test").single()
+                    if record and record.get("test") == 1:
+                        return {
+                            "success": True,
+                            "message": f"Neo4j 连接成功 ({uri})"
+                        }
+                return {
+                    "success": False,
+                    "message": f"Neo4j 连接失败: 查询无结果 ({uri})"
+                }
+            finally:
+                driver.close()
                 
         except Exception as e:
             logger.error(f"测试 Neo4j 连接失败: {str(e)}")
@@ -518,106 +803,391 @@ class ConfigService:
                 "success": False,
                 "message": f"测试失败: {str(e)}"
             }
+
+    @staticmethod
+    def _build_chat_completion_url(base_url: str) -> str:
+        normalized = (base_url or "").strip().rstrip("/")
+        if not normalized:
+            return "https://api.openai.com/v1/chat/completions"
+        if normalized.endswith("/chat/completions"):
+            return normalized
+        if normalized.endswith("/v1") or "/v1/" in normalized:
+            return f"{normalized}/chat/completions"
+        return f"{normalized}/v1/chat/completions"
+
+    @staticmethod
+    def _build_claude_messages_url(base_url: str) -> str:
+        normalized = (base_url or "").strip().rstrip("/")
+        if not normalized:
+            return "https://api.anthropic.com/v1/messages"
+        if normalized.endswith("/messages"):
+            return normalized
+        if normalized.endswith("/v1") or "/v1/" in normalized:
+            return f"{normalized}/messages"
+        return f"{normalized}/v1/messages"
+
+    def test_model_connection(self, db: Session) -> Dict[str, any]:
+        """真实探测模型网关与当前模型。"""
+        checked_at = datetime.utcnow().isoformat() + "Z"
+        started_at = time.perf_counter()
+        checks: List[Dict[str, any]] = []
+
+        def finish(result: Dict[str, any]) -> Dict[str, any]:
+            result["checked_at"] = checked_at
+            result["latency_ms"] = round((time.perf_counter() - started_at) * 1000, 3)
+            result["checks"] = checks
+            self._last_model_connection_test = result
+            return result
+
+        try:
+            import httpx
+
+            config = self.get_ai_service_config(db)
+            provider = str(config.get("provider") or "openai").strip()
+            enabled = bool(config.get("enabled"))
+            api_key = str(config.get("api_key") or "").strip()
+            base_url = str(config.get("base_url") or "").strip()
+            model = str(config.get("model") or "").strip()
+
+            if not enabled:
+                checks.append({"name": "enabled", "success": False, "message": "AI 服务未启用"})
+                return finish(
+                    {
+                        "success": False,
+                        "message": "AI 服务未启用",
+                        "provider": provider,
+                        "model": model,
+                        "base_url": base_url,
+                        "endpoint": None,
+                    }
+                )
+
+            checks.append({"name": "enabled", "success": True, "message": "AI 服务已启用"})
+
+            if not api_key or api_key == "your-api-key-here":
+                checks.append({"name": "api_key", "success": False, "message": "API Key 未配置"})
+                return finish(
+                    {
+                        "success": False,
+                        "message": "API Key 未配置",
+                        "provider": provider,
+                        "model": model,
+                        "base_url": base_url,
+                        "endpoint": None,
+                    }
+                )
+
+            checks.append({"name": "api_key", "success": True, "message": "API Key 已配置"})
+
+            if not model:
+                checks.append({"name": "model", "success": False, "message": "模型未配置"})
+                return finish(
+                    {
+                        "success": False,
+                        "message": "模型未配置",
+                        "provider": provider,
+                        "model": model,
+                        "base_url": base_url,
+                        "endpoint": None,
+                    }
+                )
+
+            checks.append({"name": "model", "success": True, "message": f"当前模型: {model}"})
+
+            if provider == "claude":
+                endpoint = self._build_claude_messages_url(base_url)
+                headers = {
+                    "x-api-key": api_key,
+                    "anthropic-version": "2023-06-01",
+                    "Content-Type": "application/json",
+                }
+                payload = {
+                    "model": model,
+                    "max_tokens": 8,
+                    "messages": [{"role": "user", "content": "Reply with ok."}],
+                }
+                request_started = time.perf_counter()
+                with build_httpx_client(timeout=20.0) as client:
+                    response = client.post(endpoint, headers=headers, json=payload)
+                request_ms = round((time.perf_counter() - request_started) * 1000, 3)
+                if response.status_code < 400:
+                    checks.append(
+                        {
+                            "name": "probe",
+                            "success": True,
+                            "message": f"模型探测成功，HTTP {response.status_code}",
+                            "latency_ms": request_ms,
+                        }
+                    )
+                    return finish(
+                        {
+                            "success": True,
+                            "message": "模型连通性测试成功",
+                            "provider": provider,
+                            "model": model,
+                            "base_url": base_url or "https://api.anthropic.com/v1",
+                            "endpoint": endpoint,
+                        }
+                    )
+
+                body = response.text[:240]
+                checks.append(
+                    {
+                        "name": "probe",
+                        "success": False,
+                        "message": f"模型探测失败，HTTP {response.status_code}: {body}",
+                        "latency_ms": request_ms,
+                    }
+                )
+                return finish(
+                    {
+                        "success": False,
+                        "message": f"模型探测失败，HTTP {response.status_code}",
+                        "provider": provider,
+                        "model": model,
+                        "base_url": base_url or "https://api.anthropic.com/v1",
+                        "endpoint": endpoint,
+                    }
+                )
+
+            endpoint = self._build_chat_completion_url(base_url)
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            }
+            payload = {
+                "model": model,
+                "messages": [{"role": "user", "content": "Reply with ok."}],
+                "max_tokens": 8,
+                "temperature": 0,
+            }
+            request_started = time.perf_counter()
+            with build_httpx_client(timeout=20.0) as client:
+                response = client.post(endpoint, headers=headers, json=payload)
+            request_ms = round((time.perf_counter() - request_started) * 1000, 3)
+
+            if response.status_code < 400:
+                checks.append(
+                    {
+                        "name": "probe",
+                        "success": True,
+                        "message": f"模型探测成功，HTTP {response.status_code}",
+                        "latency_ms": request_ms,
+                    }
+                )
+                return finish(
+                    {
+                        "success": True,
+                        "message": "模型连通性测试成功",
+                        "provider": provider,
+                        "model": model,
+                        "base_url": base_url or "https://api.openai.com/v1",
+                        "endpoint": endpoint,
+                    }
+                )
+
+            body = response.text[:240]
+            checks.append(
+                {
+                    "name": "probe",
+                    "success": False,
+                    "message": f"模型探测失败，HTTP {response.status_code}: {body}",
+                    "latency_ms": request_ms,
+                }
+            )
+            return finish(
+                {
+                    "success": False,
+                    "message": f"模型探测失败，HTTP {response.status_code}",
+                    "provider": provider,
+                    "model": model,
+                    "base_url": base_url or "https://api.openai.com/v1",
+                    "endpoint": endpoint,
+                }
+            )
+        except Exception as e:
+            logger.warning("模型连通性测试异常", context={"error": str(e)})
+            checks.append({"name": "probe", "success": False, "message": str(e)})
+            return finish(
+                {
+                    "success": False,
+                    "message": f"模型连通性测试失败: {str(e)}",
+                    "provider": None,
+                    "model": None,
+                    "base_url": None,
+                    "endpoint": None,
+                }
+            )
+
+    def get_last_model_connection_test(self) -> Optional[Dict[str, any]]:
+        """获取最近一次模型连通性测试结果（进程内留存）。"""
+        return self._last_model_connection_test
     
     def test_openai_connection(self, db: Session) -> Dict[str, any]:
         """测试 OpenAI 连接（兼容旧代码）"""
         return self.test_ai_service_connection(db)
     
-    def get_available_models(self, db: Session) -> List[str]:
-        """获取可用的 AI 模型列表"""
-        # 默认模型列表
+    def _build_models_urls(self, base_url: str) -> List[str]:
+        """把 base_url 规整为候选 models 接口地址（兼容 /v1 与非 /v1）。"""
+        normalized = (base_url or "").strip().rstrip("/")
+        if not normalized:
+            return ["https://api.openai.com/v1/models"]
+        if normalized.endswith("/models"):
+            return [normalized]
+
+        candidates: List[str] = []
+        # 常见 OpenAI-compatible：base_url = https://host 或 https://host/v1
+        if normalized.endswith("/v1") or "/v1/" in normalized:
+            candidates.append(f"{normalized}/models")
+        else:
+            candidates.append(f"{normalized}/v1/models")
+            candidates.append(f"{normalized}/models")
+
+        # 去重并保持顺序
+        unique: List[str] = []
+        for url in candidates:
+            if url not in unique:
+                unique.append(url)
+        return unique
+
+    @staticmethod
+    def _parse_model_ids(payload: Dict) -> List[str]:
+        """兼容多种 OpenAI-compatible 返回结构。"""
+        candidates = payload.get("data")
+        if isinstance(candidates, list):
+            models = [
+                item.get("id")
+                for item in candidates
+                if isinstance(item, dict) and isinstance(item.get("id"), str) and item.get("id").strip()
+            ]
+            return sorted(list(dict.fromkeys(models)))[:30]
+        model_list = payload.get("models")
+        if isinstance(model_list, list):
+            models = [item for item in model_list if isinstance(item, str) and item.strip()]
+            return sorted(list(dict.fromkeys(models)))[:30]
+        return []
+
+    @staticmethod
+    def _guess_compatible_vendor(base_url: str, current_model: str) -> str:
+        hint = f"{(base_url or '').lower()} {(current_model or '').lower()}"
+        if "bigmodel" in hint or "zhipu" in hint or "glm-" in hint:
+            return "zhipu"
+        if "dashscope" in hint or "qwen" in hint or "aliyuncs" in hint:
+            return "qwen"
+        if "deepseek" in hint:
+            return "deepseek"
+        return "generic"
+
+    def _fallback_models(self, provider: str, base_url: str, current_model: str) -> List[str]:
         openai_models = [
+            "gpt-4.1",
+            "gpt-4.1-mini",
+            "gpt-4.1-nano",
             "gpt-4o",
-            "gpt-4o-mini", 
-            "gpt-4-turbo",
-            "gpt-4-turbo-preview",
-            "gpt-4",
-            "gpt-3.5-turbo",
-            "gpt-3.5-turbo-16k",
+            "gpt-4o-mini",
         ]
-        
         claude_models = [
-            "claude-3-5-sonnet-20241022",
-            "claude-3-opus-20240229",
-            "claude-3-sonnet-20240229",
-            "claude-3-haiku-20240307",
-            "claude-2.1",
+            "claude-3-7-sonnet-latest",
+            "claude-3-5-sonnet-latest",
+            "claude-3-5-haiku-latest",
         ]
-        
-        # 智谱 GLM 模型列表
         zhipu_models = [
             "glm-4-plus",
-            "glm-4-0520",
-            "glm-4",
             "glm-4-air",
-            "glm-4-airx",
             "glm-4-long",
             "glm-4-flash",
-            "glm-4v-plus",
-            "glm-4v",
         ]
-        
+        qwen_models = [
+            "qwen-max",
+            "qwen-plus",
+            "qwen-turbo",
+            "qwen-long",
+        ]
+        deepseek_models = [
+            "deepseek-chat",
+            "deepseek-reasoner",
+        ]
+        compatible_generic = [
+            "gpt-4o-mini",
+            "deepseek-chat",
+            "qwen-plus",
+            "glm-4-flash",
+        ]
+
+        if provider == "claude":
+            return claude_models
+        if provider == "openai":
+            return openai_models
+        if provider == "openai_compatible":
+            vendor = self._guess_compatible_vendor(base_url, current_model)
+            if vendor == "zhipu":
+                return zhipu_models
+            if vendor == "qwen":
+                return qwen_models
+            if vendor == "deepseek":
+                return deepseek_models
+            return compatible_generic
+        return openai_models
+
+    def get_available_models(self, db: Session, overrides: Optional[Dict[str, str]] = None) -> List[str]:
+        """获取可用的 AI 模型列表。优先实时请求，其次回退静态列表。"""
         try:
             config = self.get_ai_service_config(db)
-            provider = config.get("provider", "openai")
-            api_key = config.get("api_key", "")
-            base_url = config.get("base_url", "")
-            
-            logger.info(f"获取模型列表 - provider: {provider}, has_api_key: {bool(api_key and len(api_key) > 5)}, base_url: {base_url}")
-            
-            # 对于 OpenAI 兼容接口或配置了自定义 base_url 的情况，尝试动态获取模型
-            if api_key and len(api_key) > 10 and (provider in ["openai", "openai_compatible"] or base_url):
+            merged = {
+                **config,
+                **(overrides or {}),
+            }
+
+            provider = str(merged.get("provider", "openai") or "openai").strip()
+            api_key = str(merged.get("api_key", "") or "").strip()
+            base_url = str(merged.get("base_url", "") or "").strip()
+            current_model = str(merged.get("model", "") or "").strip()
+
+            logger.info(
+                "获取模型列表",
+                context={
+                    "provider": provider,
+                    "base_url": base_url,
+                    "has_api_key": bool(api_key),
+                    "is_override": bool(overrides),
+                },
+            )
+
+            should_probe = bool(api_key) and (provider in ["openai", "openai_compatible"] or bool(base_url))
+            if should_probe:
                 try:
-                    import httpx
-                    
-                    # 使用配置的 base_url 或默认 OpenAI API
-                    api_base = base_url.rstrip('/') if base_url else "https://api.openai.com/v1"
-                    url = f"{api_base}/models"
-                    
+                    urls = self._build_models_urls(base_url)
                     headers = {
                         "Authorization": f"Bearer {api_key}",
-                        "Content-Type": "application/json"
+                        "Content-Type": "application/json",
                     }
-                    
-                    logger.info(f"尝试从 API 获取模型列表: {url}")
-                    
-                    with httpx.Client(timeout=15.0) as client:
-                        response = client.get(url, headers=headers)
-                        
-                        if response.status_code == 200:
-                            data = response.json()
-                            models = [m["id"] for m in data.get("data", [])]
-                            
-                            if models:
-                                # 按名称排序
-                                models.sort(reverse=True)
-                                logger.info(f"从 API 获取到 {len(models)} 个模型: {models[:5]}...")
-                                return models[:30]  # 最多返回 30 个
-                        else:
-                            logger.warning(f"获取模型列表失败: HTTP {response.status_code} - {response.text[:200]}")
+                    with build_httpx_client(timeout=15.0) as client:
+                        for url in urls:
+                            response = client.get(url, headers=headers)
+                            if response.status_code == 200:
+                                payload = response.json()
+                                models = self._parse_model_ids(payload if isinstance(payload, dict) else {})
+                                if models:
+                                    logger.info(f"动态获取模型成功: {len(models)} 个, url={url}")
+                                    return models
+                                logger.warning(f"模型接口返回成功但未发现可解析字段: url={url}")
+                                continue
+                            logger.warning(
+                                f"动态获取模型失败: status={response.status_code}, url={url}, body={response.text[:180]}"
+                            )
                 except Exception as e:
-                    logger.warning(f"从 API 获取模型列表失败: {str(e)}")
-            
-            # 返回静态列表作为后备
-            if provider == "claude":
-                logger.info(f"返回 Claude 静态模型列表: {len(claude_models)} 个")
-                return claude_models
-            elif provider == "openai_compatible":
-                # 对于 OpenAI 兼容接口，返回智谱模型列表作为示例
-                logger.info(f"返回智谱 GLM 静态模型列表: {len(zhipu_models)} 个")
-                return zhipu_models
-            else:
-                logger.info(f"返回 OpenAI 静态模型列表: {len(openai_models)} 个")
-                return openai_models
-                
+                    logger.warning(f"动态获取模型异常: {str(e)}")
+
+            fallback = self._fallback_models(provider, base_url, current_model)
+            logger.info(f"返回静态模型列表: provider={provider}, count={len(fallback)}")
+            return fallback
         except Exception as e:
             logger.error(f"获取模型列表异常: {str(e)}", exc_info=True)
-            # 返回默认列表
-            return openai_models
-    
-    def get_available_openai_models(self, db: Session) -> List[str]:
+            return self._fallback_models("openai", "", "")
+
+    def get_available_openai_models(self, db: Session, overrides: Optional[Dict[str, str]] = None) -> List[str]:
         """获取可用的 OpenAI 模型列表（兼容旧代码）"""
-        return self.get_available_models(db)
+        return self.get_available_models(db, overrides=overrides)
 
 
 # 创建全局实例

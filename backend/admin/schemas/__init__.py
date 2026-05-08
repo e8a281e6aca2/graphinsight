@@ -29,6 +29,23 @@ from .logs import (
     LogStats,
     LogCreate,
 )
+from .rbac import (
+    RoleItem,
+    PermissionItem,
+    BindingItem,
+    BindingCreateRequest,
+)
+from .jobs import (
+    JobCreateRequest,
+    JobItem,
+    JobQuery,
+)
+from .qa_traces import (
+    QATraceCreate,
+    QATraceDetail,
+    QATraceItem,
+    QATraceQuery,
+)
 
 __all__ = [
     # Auth
@@ -54,4 +71,18 @@ __all__ = [
     "LogDetail",
     "LogStats",
     "LogCreate",
+    # RBAC
+    "RoleItem",
+    "PermissionItem",
+    "BindingItem",
+    "BindingCreateRequest",
+    # Jobs
+    "JobCreateRequest",
+    "JobItem",
+    "JobQuery",
+    # QA traces
+    "QATraceCreate",
+    "QATraceDetail",
+    "QATraceItem",
+    "QATraceQuery",
 ]

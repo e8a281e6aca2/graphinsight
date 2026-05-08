@@ -39,6 +39,7 @@ from .middleware import (
     ErrorHandlingMiddleware,
     DEFAULT_RATE_LIMITS,
 )
+from .observability import get_api_observability, get_qa_observability
 from .constants import (
     HTTPStatus,
     LogLevel,
@@ -86,6 +87,8 @@ __all__ = [
     "RateLimitMiddleware",
     "ErrorHandlingMiddleware",
     "DEFAULT_RATE_LIMITS",
+    "get_api_observability",
+    "get_qa_observability",
     # Constants
     "HTTPStatus",
     "LogLevel",

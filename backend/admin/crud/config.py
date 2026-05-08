@@ -80,7 +80,7 @@ class ConfigCRUD:
         self,
         db: Session,
         config_create: ConfigCreate,
-        user_id: int
+        user_id: Optional[int] = None
     ) -> AdminConfig:
         """创建配置"""
         try:

@@ -19,12 +19,14 @@ class ErrorCode:
     INVALID_TOKEN = "2003"
     INVALID_CREDENTIALS = "2004"
     USER_DISABLED = "2005"
+    FORBIDDEN = "2006"
     
     # 业务逻辑错误 (3xxx)
     BUSINESS_ERROR = "3000"
     RESOURCE_NOT_FOUND = "3001"
     RESOURCE_ALREADY_EXISTS = "3002"
     OPERATION_FAILED = "3003"
+    OPERATION_NOT_ALLOWED = "3004"
     
     # 验证错误 (4xxx)
     VALIDATION_ERROR = "4001"
@@ -109,7 +111,7 @@ class AuthorizationException(AppException):
     def __init__(
         self,
         message: str = "权限不足",
-        error_code: str = ErrorCode.UNAUTHORIZED,
+        error_code: str = ErrorCode.FORBIDDEN,
         details: Optional[dict] = None
     ):
         super().__init__(
@@ -229,11 +231,13 @@ ERROR_MESSAGES = {
     ErrorCode.INVALID_TOKEN: "无效的 Token",
     ErrorCode.INVALID_CREDENTIALS: "用户名或密码错误",
     ErrorCode.USER_DISABLED: "用户已被禁用",
+    ErrorCode.FORBIDDEN: "权限不足",
     
     ErrorCode.BUSINESS_ERROR: "业务处理失败",
     ErrorCode.RESOURCE_NOT_FOUND: "资源不存在",
     ErrorCode.RESOURCE_ALREADY_EXISTS: "资源已存在",
     ErrorCode.OPERATION_FAILED: "操作失败",
+    ErrorCode.OPERATION_NOT_ALLOWED: "操作不被允许",
     
     ErrorCode.VALIDATION_ERROR: "参数验证失败",
     ErrorCode.MISSING_PARAMETER: "缺少必需参数",

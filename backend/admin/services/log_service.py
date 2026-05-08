@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
 
 from ..crud import log_crud
+from ..crud.log import classify_log_severity
 from ..schemas.logs import (
     LogItem,
     LogDetail,
@@ -49,6 +50,9 @@ class LogService:
             return LogDetail(
                 id=log.id,
                 user_id=log.user_id,
+                operator_id=log.operator_id,
+                tenant_id=log.tenant_id,
+                trace_id=log.trace_id,
                 username=username,
                 action=log.action,
                 resource=log.resource,
@@ -57,6 +61,11 @@ class LogService:
                 ip_address=log.ip_address,
                 user_agent=log.user_agent,
                 status=log.status,
+                severity=classify_log_severity(
+                    status=log.status,
+                    action=log.action,
+                    error_message=log.error_message,
+                ),
                 error_message=log.error_message,
                 created_at=log.created_at
             )
@@ -81,6 +90,9 @@ class LogService:
                 log_item = LogItem(
                     id=item["id"],
                     user_id=item["user_id"],
+                    operator_id=item.get("operator_id"),
+                    tenant_id=item.get("tenant_id"),
+                    trace_id=item.get("trace_id"),
                     username=item["username"],
                     action=item["action"],
                     resource=item["resource"],
@@ -89,6 +101,11 @@ class LogService:
                     ip_address=item["ip_address"],
                     user_agent=item["user_agent"],
                     status=item["status"],
+                    severity=item.get("severity") or classify_log_severity(
+                        status=item["status"],
+                        action=item["action"],
+                        error_message=item["error_message"],
+                    ),
                     error_message=item["error_message"],
                     created_at=item["created_at"]
                 )
@@ -115,6 +132,9 @@ class LogService:
             return LogItem(
                 id=log.id,
                 user_id=log.user_id,
+                operator_id=log.operator_id,
+                tenant_id=log.tenant_id,
+                trace_id=log.trace_id,
                 username=username,
                 action=log.action,
                 resource=log.resource,
@@ -123,6 +143,11 @@ class LogService:
                 ip_address=log.ip_address,
                 user_agent=log.user_agent,
                 status=log.status,
+                severity=classify_log_severity(
+                    status=log.status,
+                    action=log.action,
+                    error_message=log.error_message,
+                ),
                 error_message=log.error_message,
                 created_at=log.created_at
             )

@@ -18,6 +18,7 @@ class ResponseModel(BaseModel):
     message: str = Field(description="响应消息")
     data: Optional[Any] = Field(default=None, description="业务数据")
     timestamp: str = Field(description="响应时间戳")
+    trace_id: Optional[str] = Field(default=None, description="请求追踪ID")
     
     model_config = ConfigDict(
         json_schema_extra={
@@ -25,7 +26,8 @@ class ResponseModel(BaseModel):
                 "code": 200,
                 "message": "success",
                 "data": {"key": "value"},
-                "timestamp": "2025-11-26T10:00:00Z"
+                "timestamp": "2025-11-26T10:00:00Z",
+                "trace_id": "5f88e7b0-2f38-4c8e-bd9f-7ab4cf8f2e40"
             }
         }
     )
@@ -77,6 +79,7 @@ class ErrorResponse(BaseModel):
     message: str = Field(description="错误消息")
     error: ErrorDetail = Field(description="错误详情")
     timestamp: str = Field(description="响应时间戳")
+    trace_id: Optional[str] = Field(default=None, description="请求追踪ID")
     
     model_config = ConfigDict(
         json_schema_extra={
@@ -88,7 +91,8 @@ class ErrorResponse(BaseModel):
                     "error_type": "ValidationError",
                     "details": {"field": "username", "message": "用户名不能为空"}
                 },
-                "timestamp": "2025-11-26T10:00:00Z"
+                "timestamp": "2025-11-26T10:00:00Z",
+                "trace_id": "5f88e7b0-2f38-4c8e-bd9f-7ab4cf8f2e40"
             }
         }
     )

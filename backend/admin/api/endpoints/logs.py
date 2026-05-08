@@ -10,7 +10,7 @@ from ...database import get_db
 from ...models import AdminUser
 from ...schemas.logs import LogQuery
 from ...services import log_service
-from ..deps import get_current_user
+from ..deps import get_current_user, require_admin_permission
 from core import (
     success_response,
     error_response,
@@ -21,7 +21,11 @@ from core import (
 )
 
 logger = get_logger()
-router = APIRouter(prefix="/admin/logs", tags=["日志管理"])
+router = APIRouter(
+    prefix="/admin/logs",
+    tags=["日志管理"],
+    dependencies=[Depends(require_admin_permission("logs:read", resource="audit_log"))],
+)
 
 
 @router.get(
@@ -34,6 +38,7 @@ async def get_log_list(
     action: str = Query(None, description="操作类型"),
     resource: str = Query(None, description="资源类型"),
     status_filter: str = Query(None, alias="status", description="状态"),
+    trace_id: str = Query(None, description="追踪ID"),
     start_date: datetime = Query(None, description="开始时间"),
     end_date: datetime = Query(None, description="结束时间"),
     ip_address: str = Query(None, description="IP地址"),
@@ -53,6 +58,7 @@ async def get_log_list(
             action=action,
             resource=resource,
             status=status_filter,
+            trace_id=trace_id,
             start_date=start_date,
             end_date=end_date,
             ip_address=ip_address,
@@ -186,7 +192,8 @@ async def get_recent_logs(
 @router.delete(
     "/clean",
     summary="清理旧日志",
-    description="删除指定天数之前的日志"
+    description="删除指定天数之前的日志",
+    dependencies=[Depends(require_admin_permission("logs:clean", resource="audit_log"))],
 )
 async def clean_old_logs(
     days: int = Query(90, ge=1, le=365, description="保留天数"),

@@ -1,63 +1,113 @@
 """
 API 依赖项
-提供通用的依赖注入
+提供通用的认证和授权依赖
 """
-from typing import Optional
-from fastapi import Depends, HTTPException, status, Request
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from __future__ import annotations
+
+import os
+from typing import Dict, Optional
+
+from fastapi import Depends, HTTPException, Request, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 
+from ..crud import user_crud, log_crud
 from ..database import get_db
 from ..models import AdminUser
-from ..services import auth_service
+from ..schemas.logs import LogCreate
+from ..services import auth_service, authz_service
 from core import AuthenticationException, get_logger
 
 logger = get_logger()
-security = HTTPBearer()
+
+security = HTTPBearer(auto_error=False)
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _resolve_user_from_credentials(
+    credentials: Optional[HTTPAuthorizationCredentials],
+    db: Session,
+    *,
+    required: bool,
+) -> Optional[AdminUser]:
+    if credentials is None:
+        if required:
+            raise AuthenticationException("缺少认证凭证")
+        return None
+
+    token = credentials.credentials
+    token_data = auth_service.verify_token(token)
+
+    # Token 中存储邮箱，兼容旧 token 中可能的用户名
+    user = user_crud.get_by_email(db, token_data.username) or user_crud.get_by_username(db, token_data.username)
+    if not user:
+        raise AuthenticationException("用户不存在")
+    if not user.is_active:
+        raise AuthenticationException("用户已被禁用")
+    return user
 
 
 def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
-    db: Session = Depends(get_db)
+    request: Request,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+    db: Session = Depends(get_db),
 ) -> AdminUser:
     """
-    获取当前登录用户
-    
-    依赖项，用于需要认证的端点
+    严格认证依赖（后台接口默认使用）
     """
     try:
-        # 验证 Token
-        token = credentials.credentials
-        token_data = auth_service.verify_token(token)
-        
-        # 获取用户 - Token中存储的是邮箱
-        from ..crud import user_crud
-        # 先尝试用邮箱查找
-        user = user_crud.get_by_email(db, token_data.username)
-        
-        # 如果找不到,再尝试用用户名查找(兼容旧Token)
-        if not user:
-            user = user_crud.get_by_username(db, token_data.username)
-        
-        if not user:
-            raise AuthenticationException("用户不存在")
-        
-        if not user.is_active:
-            raise AuthenticationException("用户已被禁用")
-        
+        cached_user = getattr(request.state, "current_user", None)
+        if cached_user is not None:
+            return cached_user
+
+        user = _resolve_user_from_credentials(credentials, db, required=True)
+        assert user is not None
+        request.state.current_user = user
         return user
-        
-    except AuthenticationException as e:
+    except AuthenticationException as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=e.message,
+            detail=exc.message,
             headers={"WWW-Authenticate": "Bearer"},
         )
-    except Exception as e:
-        logger.error(f"认证失败: {str(e)}", exc_info=True)
+    except Exception as exc:
+        logger.error(f"认证失败: {str(exc)}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="认证失败",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+
+def get_optional_current_user(
+    request: Request,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+    db: Session = Depends(get_db),
+) -> Optional[AdminUser]:
+    """
+    可选认证依赖（业务接口灰度阶段使用）
+    """
+    if credentials is None:
+        return None
+    try:
+        cached_user = getattr(request.state, "current_user", None)
+        if cached_user is not None:
+            return cached_user
+
+        user = _resolve_user_from_credentials(credentials, db, required=False)
+        if user is not None:
+            request.state.current_user = user
+        return user
+    except AuthenticationException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=exc.message,
             headers={"WWW-Authenticate": "Bearer"},
         )
 
@@ -72,3 +122,212 @@ def get_client_ip(request: Request) -> Optional[str]:
 def get_user_agent(request: Request) -> Optional[str]:
     """获取 User Agent"""
     return request.headers.get("user-agent")
+
+
+def resolve_request_scope(request: Request) -> Dict[str, Optional[str]]:
+    """
+    解析请求作用域（优先级：Header > Query）
+    """
+    def pick(header_key: str, query_key: str) -> Optional[str]:
+        return request.headers.get(header_key) or request.query_params.get(query_key)
+
+    return {
+        "tenant_id": pick("x-tenant-id", "tenant_id"),
+        "project_id": pick("x-project-id", "project_id"),
+        "kb_id": pick("x-kb-id", "kb_id"),
+    }
+
+
+def _write_authz_log(
+    db: Session,
+    *,
+    user_id: Optional[int],
+    request: Request,
+    permission: str,
+    resource: str,
+    status_value: str,
+    reason: str,
+    scope: Dict[str, Optional[str]],
+) -> None:
+    try:
+        log_crud.create(
+            db,
+            LogCreate(
+                user_id=user_id,
+                operator_id=user_id,
+                tenant_id=scope.get("tenant_id"),
+                trace_id=getattr(request.state, "trace_id", None),
+                action="authz_check",
+                resource=resource,
+                details={
+                    "permission": permission,
+                    "reason": reason,
+                    "scope": scope,
+                    "path": str(request.url.path),
+                    "method": request.method,
+                },
+                ip_address=get_client_ip(request),
+                user_agent=get_user_agent(request),
+                status=status_value,
+                error_message=None if status_value == "success" else reason,
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("写入授权审计日志失败", context={"error": str(exc)})
+
+
+def require_permission(permission_code: str, resource: str = "business"):
+    """
+    权限守卫
+
+    环境变量：
+    - RBAC_ENFORCE_BUSINESS_API=true：强制要求登录并严格权限校验
+    - RBAC_ENFORCE_BUSINESS_API=false：灰度模式，允许匿名访问（用于平滑迁移）
+    """
+
+    async def dependency(
+        request: Request,
+        db: Session = Depends(get_db),
+        current_user: Optional[AdminUser] = Depends(get_optional_current_user),
+    ) -> Optional[AdminUser]:
+        enforce = _env_bool("RBAC_ENFORCE_BUSINESS_API", True)
+
+        if current_user is None:
+            if enforce:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="缺少认证凭证",
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+            request.state.authz = {
+                "permission": permission_code,
+                "allowed": True,
+                "reason": "legacy_allow_anonymous",
+            }
+            return None
+
+        scope = resolve_request_scope(request)
+        try:
+            allowed, reason, matched = authz_service.check_permission(
+                db,
+                user_id=current_user.id,
+                permission_code=permission_code,
+                request_scope=scope,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.error("授权检查失败", context={"error": str(exc), "permission": permission_code})
+            if enforce:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="授权服务不可用",
+                )
+            allowed, reason, matched = True, "legacy_allow_authz_error", None
+
+        if not allowed:
+            _write_authz_log(
+                db,
+                user_id=current_user.id,
+                request=request,
+                permission=permission_code,
+                resource=resource,
+                status_value="failed",
+                reason=reason,
+                scope=scope,
+            )
+            if enforce:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="权限不足",
+                )
+
+            # 灰度模式：仅记录，不拦截
+            request.state.authz = {
+                "permission": permission_code,
+                "allowed": True,
+                "reason": f"legacy_soft_allow:{reason}",
+            }
+            return current_user
+
+        request.state.authz = {
+            "permission": permission_code,
+            "allowed": True,
+            "reason": reason,
+            "scope": scope,
+            "binding": matched,
+        }
+        _write_authz_log(
+            db,
+            user_id=current_user.id,
+            request=request,
+            permission=permission_code,
+            resource=resource,
+            status_value="success",
+            reason=reason,
+            scope=scope,
+        )
+        return current_user
+
+    return dependency
+
+
+def require_admin_permission(permission_code: str, resource: str = "admin"):
+    """
+    后台权限守卫（严格模式，始终拦截）
+    """
+
+    async def dependency(
+        request: Request,
+        db: Session = Depends(get_db),
+        current_user: AdminUser = Depends(get_current_user),
+    ) -> AdminUser:
+        scope = resolve_request_scope(request)
+        try:
+            allowed, reason, matched = authz_service.check_permission(
+                db,
+                user_id=current_user.id,
+                permission_code=permission_code,
+                request_scope=scope,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.error("后台授权检查失败", context={"error": str(exc), "permission": permission_code})
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="授权服务不可用",
+            )
+
+        if not allowed:
+            _write_authz_log(
+                db,
+                user_id=current_user.id,
+                request=request,
+                permission=permission_code,
+                resource=resource,
+                status_value="failed",
+                reason=reason,
+                scope=scope,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="权限不足",
+            )
+
+        request.state.authz = {
+            "permission": permission_code,
+            "allowed": True,
+            "reason": reason,
+            "scope": scope,
+            "binding": matched,
+        }
+        _write_authz_log(
+            db,
+            user_id=current_user.id,
+            request=request,
+            permission=permission_code,
+            resource=resource,
+            status_value="success",
+            reason=reason,
+            scope=scope,
+        )
+        return current_user
+
+    return dependency

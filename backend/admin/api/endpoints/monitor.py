@@ -1,13 +1,13 @@
 """
 监控 API 端点
 """
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.orm import Session
 
 from ...database import get_db
 from ...models import AdminUser
 from ...services import monitor_service
-from ..deps import get_current_user
+from ..deps import require_admin_permission
 from core import (
     success_response,
     error_response,
@@ -25,7 +25,7 @@ router = APIRouter(prefix="/admin/monitor", tags=["系统监控"])
     description="获取系统资源使用情况"
 )
 async def get_system_stats(
-    current_user: AdminUser = Depends(get_current_user)
+    current_user: AdminUser = Depends(require_admin_permission("monitor:read", resource="monitor")),
 ):
     """
     获取系统统计
@@ -61,7 +61,7 @@ async def get_system_stats(
     description="检查系统各组件的健康状态"
 )
 async def get_health_status(
-    current_user: AdminUser = Depends(get_current_user),
+    current_user: AdminUser = Depends(require_admin_permission("monitor:read", resource="monitor")),
     db: Session = Depends(get_db)
 ):
     """
@@ -88,6 +88,128 @@ async def get_health_status(
         logger.error(f"获取健康状态异常: {str(e)}", exc_info=True)
         return error_response(
             message="获取健康状态失败",
+            code=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+
+@router.get(
+    "/metrics/unified",
+    summary="统一指标快照",
+    description="聚合 API、问答与任务中心的统一运营指标",
+)
+async def get_unified_metrics(
+    api_window_seconds: int = Query(default=900, ge=60, le=86400),
+    qa_window_seconds: int = Query(default=900, ge=60, le=86400),
+    job_window_minutes: int = Query(default=60, ge=5, le=10080),
+    current_user: AdminUser = Depends(require_admin_permission("monitor:read", resource="monitor")),
+    db: Session = Depends(get_db),
+):
+    try:
+        data = monitor_service.get_unified_metrics_snapshot(
+            db,
+            api_window_seconds=api_window_seconds,
+            qa_window_seconds=qa_window_seconds,
+            job_window_minutes=job_window_minutes,
+        )
+        return success_response(data=data, message="获取成功")
+    except Exception as e:
+        logger.error(f"获取统一指标快照异常: {str(e)}", exc_info=True)
+        return error_response(
+            message="获取统一指标快照失败",
+            code=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+
+@router.get(
+    "/performance",
+    summary="性能指标",
+    description="获取 API 性能指标（延迟、错误率、RPS）",
+)
+async def get_performance_metrics(
+    window_seconds: int = Query(default=900, ge=60, le=86400),
+    current_user: AdminUser = Depends(require_admin_permission("monitor:read", resource="monitor")),
+):
+    try:
+        data = monitor_service.get_performance_metrics(window_seconds=window_seconds)
+        return success_response(data=data, message="获取成功")
+    except Exception as e:
+        logger.error(f"获取性能指标异常: {str(e)}", exc_info=True)
+        return error_response(
+            message="获取性能指标失败",
+            code=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+
+@router.get(
+    "/qa",
+    summary="问答质量指标",
+    description="获取文档问答成功率、引用率、失败率与延迟分布",
+)
+async def get_qa_quality_metrics(
+    window_seconds: int = Query(default=900, ge=60, le=86400),
+    current_user: AdminUser = Depends(require_admin_permission("monitor:read", resource="monitor")),
+):
+    try:
+        data = monitor_service.get_qa_quality_metrics(window_seconds=window_seconds)
+        return success_response(data=data, message="获取成功")
+    except Exception as e:
+        logger.error(f"获取问答质量指标异常: {str(e)}", exc_info=True)
+        return error_response(
+            message="获取问答质量指标失败",
+            code=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+
+@router.get(
+    "/slo",
+    summary="SLO 快照",
+    description="获取 API 与任务中心的 SLO 快照",
+)
+async def get_slo_snapshot(
+    api_window_seconds: int = Query(default=900, ge=60, le=86400),
+    job_window_minutes: int = Query(default=60, ge=5, le=10080),
+    current_user: AdminUser = Depends(require_admin_permission("monitor:read", resource="monitor")),
+    db: Session = Depends(get_db),
+):
+    try:
+        data = monitor_service.get_slo_snapshot(
+            db,
+            api_window_seconds=api_window_seconds,
+            job_window_minutes=job_window_minutes,
+        )
+        return success_response(data=data, message="获取成功")
+    except Exception as e:
+        logger.error(f"获取 SLO 快照异常: {str(e)}", exc_info=True)
+        return error_response(
+            message="获取 SLO 快照失败",
+            code=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+
+@router.post(
+    "/alerts/check",
+    summary="检查并发送告警",
+    description="按阈值检查 SLO 并可选发送 webhook 告警",
+)
+async def check_alerts(
+    send_webhook: bool = Query(default=True, description="是否发送告警 webhook"),
+    api_window_seconds: int = Query(default=900, ge=60, le=86400),
+    job_window_minutes: int = Query(default=60, ge=5, le=10080),
+    current_user: AdminUser = Depends(require_admin_permission("monitor:read", resource="monitor")),
+    db: Session = Depends(get_db),
+):
+    try:
+        data = monitor_service.check_and_send_alerts(
+            db,
+            send_webhook=send_webhook,
+            api_window_seconds=api_window_seconds,
+            job_window_minutes=job_window_minutes,
+        )
+        return success_response(data=data, message="检查完成")
+    except Exception as e:
+        logger.error(f"告警检查异常: {str(e)}", exc_info=True)
+        return error_response(
+            message="告警检查失败",
             code=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
 

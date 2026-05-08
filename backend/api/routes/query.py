@@ -1,12 +1,16 @@
 """
 查询 API 路由
 """
+from typing import Optional
+
 from fastapi import APIRouter, HTTPException, Depends, Request
 from models.graph import QueryRequest, QueryResponse, GraphStats
 from services.neo4j_service import get_neo4j_service, Neo4jService
 from neo4j.exceptions import CypherSyntaxError, ServiceUnavailable
 from utils.logger import log_action
 import time
+from admin.api.deps import require_permission
+from admin.models import AdminUser
 
 router = APIRouter()
 
@@ -15,6 +19,7 @@ router = APIRouter()
 async def execute_query(
     query_request: QueryRequest,
     http_request: Request,
+    current_user: Optional[AdminUser] = Depends(require_permission("graph:read", resource="graph")),
     neo4j: Neo4jService = Depends(get_neo4j_service)
 ):
     """
@@ -53,7 +58,8 @@ async def execute_query(
             action="query_execute",
             resource="cypher_query",
             details=f"Nodes: {len(result['nodes'])}, Edges: {len(result['edges'])}, Time: {execution_time:.3f}s",
-            ip_address=http_request.client.host if http_request.client else None
+            user_id=current_user.id if current_user else None,
+            ip_address=http_request.client.host if http_request.client else None,
         )
         
         return result
