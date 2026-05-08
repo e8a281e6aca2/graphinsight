@@ -1,0 +1,36 @@
+{
+  "nodes": [
+    {
+      "id": "42",
+      "labels": ["Entity"],
+      "properties": {
+        "name": "Fhb1",
+        "source": "document_ingest"
+      }
+    },
+    {
+      "id": "43",
+      "labels": ["Disease"],
+      "properties": {
+        "name": "赤霉病"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "99",
+      "source": "42",
+      "target": "43",
+      "type": "ASSOCIATED_WITH",
+      "properties": {
+        "doc_id": "doc-1",
+        "label": "相关"
+      }
+    }
+  ],
+  "stats": {
+    "nodeCount": 2,
+    "edgeCount": 1,
+    "executionTime": 0.013
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "id": "42",
+  "labels": ["Entity"],
+  "properties": {
+    "name": "Fhb1",
+    "images": ["fhb1.png"],
+    "videos": ["fhb1_intro.mp4"],
+    "audios": ["fhb1_audio.mp3"]
+  },
+  "media": {
+    "images": [
+      {
+        "filename": "fhb1.png",
+        "url": "/api/media/fhb1.png",
+        "thumbnail": "/api/media/fhb1.png"
+      }
+    ],
+    "videos": [
+      {
+        "filename": "fhb1_intro.mp4",
+        "url": "/api/media/fhb1_intro.mp4",
+        "thumbnail": "/api/media/fhb1_intro_thumb.jpg"
+      }
+    ],
+    "audios": [
+      {
+        "filename": "fhb1_audio.mp3",
+        "url": "/api/media/fhb1_audio.mp3"
+      }
+    ]
+  }
+}

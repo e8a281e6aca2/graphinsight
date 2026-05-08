@@ -1,0 +1,5 @@
+{
+  "error": "Node not found",
+  "code": "NODE_NOT_FOUND",
+  "message": "Node with ID not-exists does not exist"
+}
