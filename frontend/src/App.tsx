@@ -17,6 +17,10 @@ import MonitorPage from './pages/Admin/MonitorPage';
 import LogsPage from './pages/Admin/LogsPage';
 import AnalyticsPage from './pages/Admin/AnalyticsPage';
 import ProfilePage from './pages/Admin/ProfilePage';
+import RbacPage from './pages/Admin/RbacPage';
+import UsersPage from './pages/Admin/UsersPage';
+import JobsPage from './pages/Admin/JobsPage';
+import QATracesPage from './pages/Admin/QATracesPage';
 
 function MainApp() {
   const [exportDialogOpen, setExportDialogOpen] = useState(false);
@@ -76,6 +80,10 @@ function App() {
       <Route path="/admin/logs" element={<LogsPage />} />
       <Route path="/admin/analytics" element={<AnalyticsPage />} />
       <Route path="/admin/profile" element={<ProfilePage />} />
+      <Route path="/admin/rbac" element={<RbacPage />} />
+      <Route path="/admin/users" element={<UsersPage />} />
+      <Route path="/admin/jobs" element={<JobsPage />} />
+      <Route path="/admin/qa-traces" element={<QATracesPage />} />
     </Routes>
   );
 }

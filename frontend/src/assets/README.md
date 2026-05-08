@@ -75,7 +75,8 @@ const logoUrl = new URL('@/assets/images/logo.svg', import.meta.url).href;
 ```tsx
 // 静态Logo
 import appLogo from '@/assets/images/logo.svg';
+import { buildProxyMediaUrl } from '@/utils/apiBase';
 
 // 动态节点图片
-const nodeImage = `http://localhost:8000/api/proxy-media?url=${encodeURIComponent(imageUrl)}`;
+const nodeImage = buildProxyMediaUrl(imageUrl);
 ```

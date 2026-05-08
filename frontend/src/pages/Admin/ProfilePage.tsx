@@ -9,19 +9,14 @@ import {
   CardContent,
   TextField,
   Button,
-  AppBar,
-  Toolbar,
   Typography,
   Alert,
   CircularProgress,
-  IconButton,
   Avatar,
-  Grid,
   Divider,
-  Chip,
 } from '@mui/material';
+import Grid from '@mui/material/GridLegacy';
 import {
-  ArrowBack,
   Save as SaveIcon,
   Lock as LockIcon,
   Person as PersonIcon,
@@ -30,6 +25,7 @@ import { useNavigate } from 'react-router-dom';
 import { profileApi } from '../../services/adminService';
 import type { ProfileInfo } from '../../types/admin';
 import PasswordDialog from '../../components/Admin/PasswordDialog';
+import AdminLayout from '../../components/Admin/AdminLayout';
 
 const ProfilePage: React.FC = () => {
   const navigate = useNavigate();
@@ -114,25 +110,15 @@ const ProfilePage: React.FC = () => {
     );
   }
 
-  return (
-    <Box>
-      <AppBar position="static">
-        <Toolbar>
-          <IconButton
-            edge="start"
-            color="inherit"
-            onClick={() => navigate('/admin/dashboard')}
-            sx={{ mr: 2 }}
-          >
-            <ArrowBack />
-          </IconButton>
-          <Typography variant="h6" component="div" sx={{ flexGrow: 1 }}>
-            个人设置
-          </Typography>
-        </Toolbar>
-      </AppBar>
+  const actionBar = (
+    <Button variant="outlined" startIcon={<SaveIcon />} onClick={handleSave} disabled={saving}>
+      保存资料
+    </Button>
+  );
 
-      <Container maxWidth="md" sx={{ mt: 4, mb: 4 }}>
+  return (
+    <AdminLayout title="个人设置" subtitle="账号资料、安全与偏好" actions={actionBar}>
+      <Container maxWidth="md" sx={{ px: 0 }}>
         {error && (
           <Alert severity="error" sx={{ mb: 3 }} onClose={() => setError('')}>
             {error}
@@ -315,7 +301,7 @@ const ProfilePage: React.FC = () => {
         onClose={() => setPasswordDialogOpen(false)}
         onSuccess={handlePasswordChangeSuccess}
       />
-    </Box>
+    </AdminLayout>
   );
 };
 

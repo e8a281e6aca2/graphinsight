@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import {
   Box,
   Button,
@@ -17,7 +19,7 @@ import {
 import { triggerGraphBuild } from '../../services/graphBuild';
 import { reportClientLog } from '../../services/clientLog';
 import { useGraphStore } from '../../store/graphStore';
-import { askDocQa } from '../../services/docQa';
+import { askDocDeepResearch, askDocQa } from '../../services/docQa';
 import { executeQuery } from '../../services/graphService';
 
 interface Citation {
@@ -25,6 +27,10 @@ interface Citation {
   title: string;
   snippet: string;
   location?: string;
+  entity_names?: string[];
+  retrieval_score?: number;
+  confidence?: number;
+  confidence_level?: 'high' | 'medium' | 'low' | string;
 }
 
 interface ChatMessage {
@@ -32,6 +38,34 @@ interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
   citations?: Citation[];
+  mode?: 'qa' | 'deep_research';
+  summary?: string;
+  finalConclusion?: string;
+  confidence?: {
+    score: number;
+    level: 'high' | 'medium' | 'low' | string;
+    reason?: string;
+  };
+  subQuestions?: string[];
+  evidenceStats?: {
+    sub_questions: number;
+    answered_sub_questions?: number;
+    coverage_ratio?: number;
+    retrieved_chunks: number;
+    unique_citations: number;
+    avg_citation_confidence?: number;
+  };
+}
+
+interface BuildStats {
+  documents?: number;
+  chunks?: number;
+  entities?: number;
+}
+
+interface BuildFailure {
+  file?: string;
+  reason?: string;
 }
 
 const CITATION_COUNT = 2;
@@ -41,41 +75,77 @@ const quickPrompts = [
   '列出关键人物与关系',
   '生成一份结构化大纲',
   '找出政策中的关键时间点',
+  '请基于当前文档做一份深度调研报告',
 ];
 
-const baseCitations: Citation[] = [
-  {
-    id: 'doc-1',
-    title: '农业补贴政策汇编.pdf',
-    snippet: '涉及补贴条件、适用对象与审批流程的条款说明。',
-    location: '第 3 页 · 第 2 段',
-  },
-  {
-    id: 'doc-2',
-    title: '农机采购台账.xlsx',
-    snippet: '记录了采购批次、型号、数量与资金流向。',
-    location: 'Sheet1 · 行 24-36',
-  },
-  {
-    id: 'doc-3',
-    title: '项目验收报告.docx',
-    snippet: '包含验收标准、关键节点与整改建议。',
-    location: '第 8 页 · 表 4',
-  },
-];
+const QUERY_STOPWORDS = new Set([
+  '如何',
+  '怎么',
+  '怎样',
+  '请问',
+  '一下',
+  '关于',
+  '这个',
+  '那个',
+  '哪些',
+  '以及',
+  '我们',
+  '你们',
+  '他们',
+  '是否',
+  '可以',
+  '能够',
+  '进行',
+  '对于',
+  '什么',
+  '问题',
+  '分析',
+  '研究',
+  '报告',
+  '文档',
+  '资料',
+  '知识库',
+]);
 
-const DOC_GRAPH_QUERY = `MATCH (n)-[r]->(m)
+const DOC_ENTITY_GRAPH_QUERY = `MATCH (e1:Entity)-[r]->(e2:Entity)
+WHERE r.source = 'document_ingest'
+RETURN e1 AS n, r, e2 AS m
+LIMIT 600`;
+
+const DOC_FALLBACK_GRAPH_QUERY = `MATCH (n)-[r]->(m)
 WHERE n.source = 'document_ingest' OR m.source = 'document_ingest'
 RETURN n, r, m
-LIMIT 300`;
+LIMIT 600`;
 
-function buildCitations(question: string) {
-  const topic = question.trim().slice(0, 12) || '文档内容';
-  return baseCitations.slice(0, CITATION_COUNT).map((item) => ({
-    ...item,
-    snippet: `围绕「${topic}」的相关段落摘要。${item.snippet}`,
-  }));
-}
+const DOC_CITATION_FOCUS_QUERY = `MATCH (d:Document)-[h:HAS_CHUNK]->(c:Chunk)
+WHERE d.source = 'document_ingest'
+  AND c.chunk_id IN $chunkIds
+MATCH (c)-[m:MENTIONS]->(e:Entity)
+WHERE size($keywords) = 0
+   OR any(k IN $keywords WHERE toLower(e.name) CONTAINS k OR k CONTAINS toLower(e.name))
+WITH DISTINCT d, h, c, m, e
+OPTIONAL MATCH (c)-[:MENTIONS]->(ePeer:Entity)
+WHERE ePeer <> e
+  AND (
+    size($keywords) = 0
+    OR any(k IN $keywords WHERE toLower(ePeer.name) CONTAINS k OR k CONTAINS toLower(ePeer.name))
+  )
+OPTIONAL MATCH (e)-[r]-(ePeer)
+WHERE r.source = 'document_ingest'
+RETURN d, h, c, m, e, r, ePeer
+LIMIT 240`;
+
+const DOC_ENTITY_FOCUS_QUERY = `MATCH (e:Entity)
+WHERE toLower(e.name) IN $entityNames
+   OR (
+     size($keywords) > 0
+     AND any(k IN $keywords WHERE toLower(e.name) CONTAINS k OR k CONTAINS toLower(e.name))
+   )
+OPTIONAL MATCH (c:Chunk)-[m:MENTIONS]->(e)
+OPTIONAL MATCH (d:Document)-[h:HAS_CHUNK]->(c)
+WHERE d.source = 'document_ingest'
+RETURN d, h, c, m, e
+LIMIT 180`;
 
 export function DocChatPanel() {
   const setSelectedCitation = useGraphStore((state) => state.setSelectedCitation);
@@ -83,6 +153,9 @@ export function DocChatPanel() {
   const setGraphData = useGraphStore((state) => state.setGraphData);
   const setLastQueryStats = useGraphStore((state) => state.setLastQueryStats);
   const addQueryToHistory = useGraphStore((state) => state.addQueryToHistory);
+  const setHighlightAll = useGraphStore((state) => state.setHighlightAll);
+  const recentUploadedDocIds = useGraphStore((state) => state.recentUploadedDocIds);
+  const setRecentUploadedDocIds = useGraphStore((state) => state.setRecentUploadedDocIds);
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       id: 'welcome',
@@ -92,10 +165,67 @@ export function DocChatPanel() {
   ]);
   const [input, setInput] = useState('');
   const [isTyping, setIsTyping] = useState(false);
+  const [typingLabel, setTypingLabel] = useState('正在整理答案...');
   const [buildStatus, setBuildStatus] = useState<'idle' | 'running' | 'done'>('idle');
   const [buildError, setBuildError] = useState<string | null>(null);
   const [buildSummary, setBuildSummary] = useState<string | null>(null);
+  const [graphSyncMode, setGraphSyncMode] = useState<'precise' | 'full'>('precise');
   const endRef = useRef<HTMLDivElement | null>(null);
+  const lastSyncRef = useRef<{ citations: Citation[]; question: string; answer: string } | null>(null);
+
+  const extractQuestionKeywords = (question: string) => {
+    const tokens = (question || '')
+      .toLowerCase()
+      .match(/[\u4e00-\u9fff0-9]{2,12}|[a-z][a-z0-9_-]{2,}/g);
+    if (!tokens) return [] as string[];
+    return Array.from(
+      new Set(
+        tokens
+          .map((token) => token.trim())
+          .filter((token) => token.length >= 2 && !QUERY_STOPWORDS.has(token))
+      )
+    ).slice(0, 10);
+  };
+
+  const normalizeEntityNames = (citations: Citation[]) =>
+    Array.from(
+      new Set(
+        citations
+          .flatMap((item) => item.entity_names || [])
+          .map((name) => (name || '').trim().toLowerCase())
+          .filter(Boolean)
+      )
+    ).slice(0, 60);
+
+  const collectChunkIds = (citations: Citation[]) =>
+    Array.from(
+      new Set(
+        citations
+          .map((item) => (item.id || '').trim())
+          .filter(Boolean)
+      )
+    ).slice(0, 60);
+
+  const applyCitationSelection = (
+    citation: Citation,
+    openGraph = true,
+    extraKeywords?: string[]
+  ) => {
+    setSelectedCitation({
+      id: citation.id,
+      title: citation.title,
+      snippet: citation.snippet,
+      location: citation.location,
+      entityNames: citation.entity_names || [],
+      keywords: extraKeywords?.length ? extraKeywords : undefined,
+      retrievalScore: citation.retrieval_score,
+      confidence: citation.confidence,
+      confidenceLevel: citation.confidence_level,
+    });
+    if (openGraph) {
+      setWorkspaceTab('graph');
+    }
+  };
 
   const handleSend = async () => {
     const value = input.trim();
@@ -110,17 +240,21 @@ export function DocChatPanel() {
     setMessages((prev) => [...prev, userMessage]);
     setInput('');
     setIsTyping(true);
+    setTypingLabel('正在整理答案...');
 
     try {
       const result = await askDocQa(value, CITATION_COUNT);
-      const citations = result?.citations?.length ? result.citations : buildCitations(value);
+      const citations = result?.citations || [];
       const assistantMessage: ChatMessage = {
         id: `assistant-${Date.now()}`,
         role: 'assistant',
         content: result?.answer || `我已基于文档库检索到与「${value.slice(0, 24)}」相关的内容，并整理如下。`,
         citations,
+        mode: 'qa',
       };
       setMessages((prev) => [...prev, assistantMessage]);
+      const answerText = result?.answer || '';
+      await syncGraphWithCitations(citations, value, answerText);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setMessages((prev) => [
@@ -144,23 +278,85 @@ export function DocChatPanel() {
     }
   };
 
+  const handleDeepResearch = async () => {
+    const value = input.trim();
+    if (!value || isTyping) return;
+
+    const userMessage: ChatMessage = {
+      id: `user-${Date.now()}`,
+      role: 'user',
+      content: `[深度调研] ${value}`,
+    };
+
+    setMessages((prev) => [...prev, userMessage]);
+    setInput('');
+    setIsTyping(true);
+    setTypingLabel('正在进行深度调研...');
+
+    try {
+      const result = await askDocDeepResearch(value, { topK: 8, maxSubQuestions: 4 });
+      const citations = result?.citations || [];
+      const assistantMessage: ChatMessage = {
+        id: `assistant-${Date.now()}`,
+        role: 'assistant',
+        content: result?.report || result?.summary || '已生成深度调研报告。',
+        summary: result?.summary || '',
+        finalConclusion: result?.final_conclusion || '',
+        confidence: result?.confidence,
+        subQuestions: result?.sub_questions || [],
+        evidenceStats: result?.evidence_stats,
+        citations,
+        mode: 'deep_research',
+      };
+      setMessages((prev) => [...prev, assistantMessage]);
+      const answerText = result?.report || result?.summary || '';
+      await syncGraphWithCitations(citations, value, answerText);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `assistant-${Date.now()}`,
+          role: 'assistant',
+          content: '抱歉，深度调研暂时不可用，请稍后重试。',
+          citations: [],
+          mode: 'deep_research',
+        },
+      ]);
+      reportClientLog({
+        level: 'error',
+        message: '文档深度调研失败',
+        source: 'doc_chat',
+        event: 'doc_deep_research',
+        context: { error: message },
+      });
+    } finally {
+      setIsTyping(false);
+      setTypingLabel('正在整理答案...');
+    }
+  };
+
   const handlePromptClick = (prompt: string) => {
     setInput(prompt);
   };
 
   const handleCitationClick = (citation: Citation) => {
-    setSelectedCitation(citation);
-    setWorkspaceTab('document');
+    applyCitationSelection(citation, true);
   };
 
   const runDocGraphQuery = async () => {
     try {
-      const result = await executeQuery(DOC_GRAPH_QUERY);
+      let result = await executeQuery(DOC_ENTITY_GRAPH_QUERY);
+      let queryUsed = DOC_ENTITY_GRAPH_QUERY;
+      if (!result?.edges?.length) {
+        result = await executeQuery(DOC_FALLBACK_GRAPH_QUERY);
+        queryUsed = DOC_FALLBACK_GRAPH_QUERY;
+      }
       setGraphData(result);
       if (result.stats) {
         setLastQueryStats(result.stats);
       }
-      addQueryToHistory(DOC_GRAPH_QUERY, result.nodes.length + result.edges.length);
+      addQueryToHistory(queryUsed, result.nodes.length + result.edges.length);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       reportClientLog({
@@ -173,38 +369,152 @@ export function DocChatPanel() {
     }
   };
 
+  const syncGraphWithCitations = async (
+    citations: Citation[],
+    question: string,
+    answerText: string
+  ) => {
+    lastSyncRef.current = { citations, question, answer: answerText };
+    const rankedCitations = [...citations].sort((a, b) => {
+      const aScore = (a.confidence ?? a.retrieval_score ?? 0);
+      const bScore = (b.confidence ?? b.retrieval_score ?? 0);
+      return bScore - aScore;
+    });
+    const focusCitations = rankedCitations.slice(0, 1);
+    const chunkIds = collectChunkIds(focusCitations);
+    const entityNames = normalizeEntityNames(focusCitations);
+    const questionKeywords = extractQuestionKeywords(question);
+    const answerKeywords = extractQuestionKeywords(answerText);
+    const keywords = Array.from(new Set([...questionKeywords, ...answerKeywords])).slice(0, 16);
+
+    try {
+      if (graphSyncMode === 'full') {
+        setHighlightAll(true);
+        await runDocGraphQuery();
+        if (focusCitations.length > 0) {
+          applyCitationSelection(focusCitations[0], true, keywords);
+        } else {
+          setWorkspaceTab('graph');
+        }
+        return;
+      }
+      setHighlightAll(false);
+
+      let result = null as Awaited<ReturnType<typeof executeQuery>> | null;
+      let queryUsed = '';
+
+      if (chunkIds.length > 0) {
+        result = await executeQuery(DOC_CITATION_FOCUS_QUERY, { chunkIds, keywords });
+        queryUsed = DOC_CITATION_FOCUS_QUERY;
+      }
+
+      if ((!result || (!result.nodes.length && !result.edges.length)) && entityNames.length > 0) {
+        result = await executeQuery(DOC_ENTITY_FOCUS_QUERY, { entityNames, keywords });
+        queryUsed = DOC_ENTITY_FOCUS_QUERY;
+      }
+
+      if (!result || (!result.nodes.length && !result.edges.length)) {
+        result = await executeQuery(DOC_ENTITY_GRAPH_QUERY);
+        queryUsed = DOC_ENTITY_GRAPH_QUERY;
+      }
+
+      if (!result.nodes.length && !result.edges.length) {
+        result = await executeQuery(DOC_FALLBACK_GRAPH_QUERY);
+        queryUsed = DOC_FALLBACK_GRAPH_QUERY;
+      }
+
+      setGraphData(result);
+      if (result.stats) {
+        setLastQueryStats(result.stats);
+      }
+      addQueryToHistory(queryUsed, result.nodes.length + result.edges.length);
+
+      if (focusCitations.length > 0) {
+        applyCitationSelection(focusCitations[0], true, keywords);
+      } else {
+        setWorkspaceTab('graph');
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      reportClientLog({
+        level: 'warn',
+        message: '问答后图谱自动联动失败',
+        source: 'doc_chat',
+        event: 'doc_graph_auto_sync',
+        context: {
+          error: message,
+          chunkCount: chunkIds.length,
+          entityCount: entityNames.length,
+          keywordCount: keywords.length,
+        },
+      });
+      await runDocGraphQuery();
+      if (focusCitations.length > 0) {
+        applyCitationSelection(focusCitations[0], true, keywords);
+      } else {
+        setWorkspaceTab('graph');
+      }
+    }
+  };
+
+  useEffect(() => {
+    if (!lastSyncRef.current) return;
+    if (graphSyncMode !== 'full') return;
+    const { citations, question, answer } = lastSyncRef.current;
+    syncGraphWithCitations(citations, question, answer);
+  }, [graphSyncMode]);
+
   const handleBuildGraph = () => {
     if (buildStatus === 'running') return;
     setBuildStatus('running');
     setBuildError(null);
     setBuildSummary(null);
-    triggerGraphBuild({ source: 'documents' })
+    const targetDocIds = recentUploadedDocIds.filter(Boolean);
+    triggerGraphBuild({
+      source: targetDocIds.length > 0 ? 'selected_documents' : 'documents',
+      docIds: targetDocIds,
+      note: targetDocIds.length > 0 ? 'recent_upload_scope' : 'full_library_scope',
+    })
       .then((result) => {
-        const failures = result?.failures || [];
+        const failures: BuildFailure[] = Array.isArray(result?.failures) ? result.failures : [];
         if (result?.status === 'completed') {
           setBuildStatus('done');
+          if (targetDocIds.length > 0) {
+            setRecentUploadedDocIds([]);
+          }
           if (result?.stats) {
-            const { documents, chunks, entities } = result.stats as any;
+            const { documents = 0, chunks = 0, entities = 0 } = result.stats as BuildStats;
             setBuildSummary(`文档 ${documents} · 片段 ${chunks} · 实体 ${entities}`);
           }
           runDocGraphQuery();
           if (failures.length > 0) {
-            const sample = failures.slice(0, 2).map((item: any) => item.file).join('、');
+            const sample = failures
+              .slice(0, 2)
+              .map((item) => item.file)
+              .filter((item): item is string => Boolean(item))
+              .join('、');
             setBuildError(`解析失败 ${failures.length} 个文件${sample ? `：${sample}` : ''}`);
           }
         } else if (result?.status === 'empty') {
           setBuildStatus('done');
+          if (targetDocIds.length > 0) {
+            setRecentUploadedDocIds([]);
+          }
           if (result?.message?.includes('文档未变更')) {
             runDocGraphQuery();
           }
           if (failures.length > 0) {
-            const sample = failures.slice(0, 2).map((item: any) => item.file).join('、');
+            const sample = failures
+              .slice(0, 2)
+              .map((item) => item.file)
+              .filter((item): item is string => Boolean(item))
+              .join('、');
             setBuildError(`解析失败 ${failures.length} 个文件${sample ? `：${sample}` : ''}`);
           } else {
             setBuildError('未发现可解析文档');
           }
           if (result?.stats) {
-            const { documents, chunks, entities } = result.stats as any;
+            const { documents = 0, chunks = 0, entities = 0 } = result.stats as BuildStats;
             setBuildSummary(`文档 ${documents} · 片段 ${chunks} · 实体 ${entities}`);
           }
         } else {
@@ -285,12 +595,19 @@ export function DocChatPanel() {
         <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, mt: 1.5 }}>
           <Chip
             icon={<MenuBookIcon />}
-            label="范围：全库文档"
+            label={recentUploadedDocIds.length > 0 ? `范围：最近上传 ${recentUploadedDocIds.length} 个文档` : '范围：全库文档'}
             size="small"
             variant="outlined"
           />
           <Chip label={`引用摘要：${CITATION_COUNT} 条`} size="small" variant="outlined" />
           <Chip label="已接入文档" size="small" variant="outlined" />
+          <Chip
+            label={`图谱联动：${graphSyncMode === 'precise' ? '精准' : '全量'}`}
+            size="small"
+            color={graphSyncMode === 'precise' ? 'primary' : 'default'}
+            variant={graphSyncMode === 'precise' ? 'filled' : 'outlined'}
+            onClick={() => setGraphSyncMode((prev) => (prev === 'precise' ? 'full' : 'precise'))}
+          />
           {buildSummary && (
             <Chip label={buildSummary} size="small" color="success" variant="outlined" />
           )}
@@ -352,9 +669,43 @@ export function DocChatPanel() {
                   boxShadow: isUser ? 'none' : theme.shadows[1],
                 })}
               >
-                <Typography variant="body2" component="div" sx={{ lineHeight: 1.6 }}>
-                  {message.content}
-                </Typography>
+                {isUser ? (
+                  <Typography variant="body2" component="div" sx={{ lineHeight: 1.6 }}>
+                    {message.content}
+                  </Typography>
+                ) : (
+                  <Box sx={{ typography: 'body2', lineHeight: 1.6 }}>
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                      {message.content}
+                    </ReactMarkdown>
+                  </Box>
+                )}
+                {message.mode === 'deep_research' && message.summary && (
+                  <Typography variant="caption" component="div" color="text.secondary" sx={{ mt: 1 }}>
+                    摘要：{message.summary}
+                  </Typography>
+                )}
+                {message.mode === 'deep_research' && message.finalConclusion && (
+                  <Typography variant="caption" component="div" sx={{ mt: 0.5, fontWeight: 700 }}>
+                    结论：{message.finalConclusion}
+                  </Typography>
+                )}
+                {message.mode === 'deep_research' && message.confidence && (
+                  <Typography variant="caption" component="div" color="text.secondary" sx={{ mt: 0.5 }}>
+                    置信度：{Math.round((message.confidence.score || 0) * 100)}%（{message.confidence.level}）
+                    {message.confidence.reason ? ` · ${message.confidence.reason}` : ''}
+                  </Typography>
+                )}
+                {message.mode === 'deep_research' && message.evidenceStats && (
+                  <Typography variant="caption" component="div" color="text.secondary" sx={{ mt: 0.5 }}>
+                    子问题 {message.evidenceStats.sub_questions} · 检索片段 {message.evidenceStats.retrieved_chunks} · 引用 {message.evidenceStats.unique_citations}
+                  </Typography>
+                )}
+                {message.mode === 'deep_research' && message.subQuestions && message.subQuestions.length > 0 && (
+                  <Typography variant="caption" component="div" color="text.secondary" sx={{ mt: 0.5 }}>
+                    子问题：{message.subQuestions.join('；')}
+                  </Typography>
+                )}
               </Box>
 
               {!isUser && message.citations && message.citations.length > 0 && (
@@ -397,6 +748,16 @@ export function DocChatPanel() {
                         <Typography variant="body2" component="div" color="text.secondary" sx={{ mt: 0.5 }}>
                           {citation.snippet}
                         </Typography>
+                        {typeof citation.confidence === 'number' && (
+                          <Typography variant="caption" component="div" color="text.secondary" sx={{ mt: 0.5 }}>
+                            证据置信度：{Math.round(citation.confidence * 100)}%
+                          </Typography>
+                        )}
+                        {citation.entity_names && citation.entity_names.length > 0 && (
+                          <Typography variant="caption" component="div" color="text.secondary" sx={{ mt: 0.5 }}>
+                            关联实体：{citation.entity_names.slice(0, 6).join('、')}
+                          </Typography>
+                        )}
                         {citation.location && (
                           <Typography variant="caption" component="div" color="text.secondary" sx={{ mt: 0.5 }}>
                             {citation.location}
@@ -415,7 +776,7 @@ export function DocChatPanel() {
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
             <TipsIcon fontSize="small" color="primary" />
             <Typography variant="body2" color="text.secondary">
-              正在整理答案...
+              {typingLabel}
             </Typography>
           </Box>
         )}
@@ -446,12 +807,17 @@ export function DocChatPanel() {
           }}
         />
         <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <Chip
-            label="回答必带引用"
-            size="small"
-            variant="outlined"
-            color="primary"
-          />
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            <Chip label="回答必带引用" size="small" variant="outlined" color="primary" />
+            <Button
+              size="small"
+              variant="outlined"
+              onClick={handleDeepResearch}
+              disabled={!input.trim() || isTyping}
+            >
+              深度调研
+            </Button>
+          </Box>
           <IconButton
             color="primary"
             onClick={handleSend}

@@ -140,6 +140,7 @@ function findAllSimplePaths(
 
 export function PathAnalysisPanel({ rendererRef }: PathAnalysisPanelProps) {
   const graphData = useGraphStore((state) => state.graphData);
+  const autoPaths = useGraphStore((state) => state.autoPaths);
   const [sourceNode, setSourceNode] = useState<string>('');
   const [targetNode, setTargetNode] = useState<string>('');
   const [paths, setPaths] = useState<PathInfo[]>([]);
@@ -375,7 +376,74 @@ export function PathAnalysisPanel({ rendererRef }: PathAnalysisPanelProps) {
         </>
       )}
 
-      {paths.length === 0 && !error && (
+      {paths.length === 0 && !error && autoPaths.length > 0 && (
+        <>
+          <Typography variant="subtitle2" gutterBottom sx={{ mt: 2 }}>
+            自动推理链（{autoPaths.length} 条）
+          </Typography>
+          <Paper variant="outlined" sx={{ maxHeight: 320, overflow: 'auto' }}>
+            <List dense>
+              {autoPaths.map((path, index) => (
+                <Box key={path.id}>
+                  <ListItem
+                    secondaryAction={
+                      <Tooltip title={highlightedPathId === path.id ? '取消高亮' : '高亮路径'}>
+                        <IconButton
+                          size="small"
+                          onClick={() => {
+                            if (highlightedPathId === path.id) {
+                              clearHighlight();
+                            } else {
+                              highlightPath(path);
+                            }
+                          }}
+                        >
+                          {highlightedPathId === path.id ? (
+                            <VisibilityOffIcon fontSize="small" />
+                          ) : (
+                            <VisibilityIcon fontSize="small" />
+                          )}
+                        </IconButton>
+                      </Tooltip>
+                    }
+                    sx={{
+                      backgroundColor: highlightedPathId === path.id ? 'action.selected' : 'transparent',
+                    }}
+                  >
+                    <ListItemText
+                      primary={
+                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                          <Chip label={`自动路径 ${index + 1}`} size="small" />
+                          <Chip label={`${path.length} 节点`} size="small" variant="outlined" />
+                          <Chip label={`${path.weight} 跳`} size="small" variant="outlined" />
+                        </Box>
+                      }
+                      secondary={
+                        <Typography variant="caption" sx={{ display: 'block', mt: 0.5 }}>
+                          {path.nodes.map((nodeId, i) => (
+                            <span key={nodeId}>
+                              {snapshot?.labels.get(nodeId) || nodeId}
+                              {i < path.nodes.length - 1 && ' → '}
+                            </span>
+                          ))}
+                        </Typography>
+                      }
+                    />
+                  </ListItem>
+                  {index < autoPaths.length - 1 && <Divider />}
+                </Box>
+              ))}
+            </List>
+          </Paper>
+          <Box sx={{ mt: 2, p: 1.5, backgroundColor: 'background.default', borderRadius: 1 }}>
+            <Typography variant="caption" color="text.secondary">
+              提示: 自动推理链来自问答关键词联动，可在图谱中直接高亮显示
+            </Typography>
+          </Box>
+        </>
+      )}
+
+      {paths.length === 0 && !error && autoPaths.length === 0 && (
         <Alert severity="info">
           选择起点和终点节点，然后点击"最短路径"或"所有路径"按钮进行分析
         </Alert>

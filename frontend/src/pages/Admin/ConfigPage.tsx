@@ -12,8 +12,6 @@ import {
   Button,
   Alert,
   Snackbar,
-  AppBar,
-  Toolbar,
   Tabs,
   Tab,
   IconButton,
@@ -21,17 +19,18 @@ import {
   CircularProgress,
   Chip,
   Stack,
+  Autocomplete,
 } from '@mui/material';
 import { 
   Visibility, 
   VisibilityOff, 
-  ArrowBack,
   CheckCircle,
   Error as ErrorIcon,
 } from '@mui/icons-material';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useSearchParams } from 'react-router-dom';
 import { configApi } from '../../services/adminService';
-import type { ConfigItem, ConfigCategory } from '../../types/admin';
+import type { ConfigItem, ConfigCategory, ConnectionTestResult } from '../../types/admin';
+import AdminLayout from '../../components/Admin/AdminLayout';
 
 interface TabPanelProps {
   children?: React.ReactNode;
@@ -69,7 +68,6 @@ interface FormValues {
 }
 
 const ConfigPage: React.FC = () => {
-  const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const initialTab = parseInt(searchParams.get('tab') || '0', 10);
   const [tabValue, setTabValue] = useState(initialTab);
@@ -82,6 +80,8 @@ const ConfigPage: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [testResults, setTestResults] = useState<Record<string, boolean>>({});
+  const [modelTestResult, setModelTestResult] = useState<ConnectionTestResult | null>(null);
+  const [testingModel, setTestingModel] = useState(false);
   
   // 使用受控表单值，避免刷新时重置
   const [formValues, setFormValues] = useState<FormValues>({
@@ -135,6 +135,12 @@ const ConfigPage: React.FC = () => {
       setLoading(true);
       const data = await configApi.getAll();
       setConfigs(data);
+      try {
+        const latestModelTest = await configApi.getLatestModelConnectionTest();
+        setModelTestResult(latestModelTest);
+      } catch (latestErr) {
+        console.warn('Load latest model test skipped:', latestErr);
+      }
       setError('');
     } catch (err: any) {
       console.error('Load configs error:', err);
@@ -166,7 +172,12 @@ const ConfigPage: React.FC = () => {
       });
       setMessage('配置已保存');
     } catch (err: any) {
-      console.error('Save config error:', err);
+      console.error('Save config error:', {
+        message: err?.message,
+        code: err?.code,
+        trace_id: err?.trace_id,
+        details: err?.details,
+      });
       setError(err.message || '保存失败');
     } finally {
       setSaving(false);
@@ -273,20 +284,82 @@ const ConfigPage: React.FC = () => {
     setShowPassword((prev) => ({ ...prev, [key]: !prev[key] }));
   };
 
+  const saveDirtyAiServiceFields = async () => {
+    const aiDirtyMap: Array<{ field: keyof FormValues; key: string }> = [
+      { field: 'ai_service_provider', key: 'provider' },
+      { field: 'ai_service_enabled', key: 'enabled' },
+      { field: 'ai_service_base_url', key: 'base_url' },
+      { field: 'ai_service_api_key', key: 'api_key' },
+      { field: 'ai_service_model', key: 'model' },
+      { field: 'ai_service_max_tokens', key: 'max_tokens' },
+      { field: 'ai_service_temperature', key: 'temperature' },
+    ];
+    const savedFields = new Set<string>();
+    for (const item of aiDirtyMap) {
+      if (!dirtyFields.has(item.field)) continue;
+      await configApi.update('ai_service' as ConfigCategory, item.key, formValues[item.field]);
+      savedFields.add(item.field);
+    }
+    if (savedFields.size > 0) {
+      setDirtyFields(prev => {
+        const next = new Set(prev);
+        savedFields.forEach((field) => next.delete(field));
+        return next;
+      });
+    }
+  };
+
+  const handleModelConnectionTest = async () => {
+    setTestingModel(true);
+    setError('');
+    try {
+      await saveDirtyAiServiceFields();
+      const result = await configApi.testConnection('model');
+      setModelTestResult(result);
+      setTestResults(prev => ({ ...prev, model: result.success }));
+      if (result.success) {
+        setMessage(result.message || '模型连通性测试成功');
+      } else {
+        setError(result.message || '模型连通性测试失败');
+      }
+    } catch (err: any) {
+      console.error('Model connection test error:', err);
+      setTestResults(prev => ({ ...prev, model: false }));
+      setError(err.message || '模型连通性测试失败');
+    } finally {
+      setTestingModel(false);
+    }
+  };
+
   const handleFetchModels = async () => {
     setLoadingModels(true);
     console.log('开始获取模型列表...');
     try {
-      const models = await configApi.getAvailableModels();
+      // 先落库 AI 配置（尤其 API Key），避免 onBlur 未触发时读到旧值
+      await saveDirtyAiServiceFields();
+
+      const models = await configApi.getAvailableModels({
+        provider: formValues.ai_service_provider,
+        base_url: formValues.ai_service_base_url,
+        model: formValues.ai_service_model,
+      });
       console.log('获取到的模型列表:', models);
       setAvailableModels(models);
       if (models.length > 0) {
         setMessage(`成功获取 ${models.length} 个可用模型`);
+        if (!formValues.ai_service_model) {
+          handleFormChange('ai_service_model', models[0]);
+        }
       } else {
         setError('未获取到模型列表，请检查 AI 服务配置');
       }
     } catch (err: any) {
-      console.error('Fetch models error:', err);
+      console.error('Fetch models error:', {
+        message: err?.message,
+        code: err?.code,
+        trace_id: err?.trace_id,
+        details: err?.details,
+      });
       setError(err.message || '获取模型列表失败');
     } finally {
       setLoadingModels(false);
@@ -309,28 +382,17 @@ const ConfigPage: React.FC = () => {
     );
   }
 
-  return (
-    <Box>
-      <AppBar position="static">
-        <Toolbar>
-          <IconButton
-            edge="start"
-            color="inherit"
-            onClick={() => navigate('/admin/dashboard')}
-            sx={{ mr: 2 }}
-          >
-            <ArrowBack />
-          </IconButton>
-          <Typography variant="h6" component="div" sx={{ flexGrow: 1 }}>
-            配置管理
-          </Typography>
-          <Button color="inherit" onClick={handleInit}>
-            从环境变量初始化
-          </Button>
-        </Toolbar>
-      </AppBar>
+  const actionBar = (
+    <Stack direction="row" spacing={1}>
+      <Button variant="outlined" onClick={handleInit} disabled={saving}>
+        从环境变量初始化
+      </Button>
+    </Stack>
+  );
 
-      <Container maxWidth="lg" sx={{ mt: 4, mb: 4 }}>
+  return (
+    <AdminLayout title="配置中心" subtitle="统一管理连接、模型与系统能力" actions={actionBar}>
+      <Container maxWidth="lg" sx={{ px: 0 }}>
         <Card>
           <Tabs value={tabValue} onChange={(_, v) => setTabValue(v)}>
             <Tab label="Neo4j 配置" />
@@ -452,24 +514,41 @@ const ConfigPage: React.FC = () => {
                   }}
                 />
                 <Box sx={{ display: 'flex', gap: 1, alignItems: 'flex-start' }}>
-                  <TextField
-                    fullWidth
-                    label="模型"
-                    select={availableModels.length > 0}
-                    SelectProps={availableModels.length > 0 ? { native: true } : undefined}
-                    value={formValues.ai_service_model}
-                    onChange={(e) => handleFormChange('ai_service_model', e.target.value)}
-                    onBlur={() => handleSaveField('ai_service' as ConfigCategory, 'model', 'ai_service_model')}
-                    helperText={availableModels.length > 0 ? "从可用模型中选择" : "例如: gpt-3.5-turbo"}
-                  >
-                    {availableModels.length > 0 ? (
-                      availableModels.map((model) => (
-                        <option key={model} value={model}>
-                          {model}
-                        </option>
-                      ))
-                    ) : null}
-                  </TextField>
+                  {availableModels.length > 0 ? (
+                    <Autocomplete
+                      fullWidth
+                      freeSolo
+                      options={availableModels}
+                      value={formValues.ai_service_model}
+                      onChange={(_, value) => {
+                        handleFormChange('ai_service_model', typeof value === 'string' ? value : '');
+                      }}
+                      onInputChange={(_, value, reason) => {
+                        if (reason === 'input') {
+                          handleFormChange('ai_service_model', value || '');
+                        }
+                      }}
+                      ListboxProps={{ style: { maxHeight: 420 } }}
+                      renderInput={(params) => (
+                        <TextField
+                          {...params}
+                          fullWidth
+                          label="模型"
+                          onBlur={() => handleSaveField('ai_service' as ConfigCategory, 'model', 'ai_service_model')}
+                          helperText={`从可用模型中选择（共 ${availableModels.length} 个，可搜索）`}
+                        />
+                      )}
+                    />
+                  ) : (
+                    <TextField
+                      fullWidth
+                      label="模型"
+                      value={formValues.ai_service_model}
+                      onChange={(e) => handleFormChange('ai_service_model', e.target.value)}
+                      onBlur={() => handleSaveField('ai_service' as ConfigCategory, 'model', 'ai_service_model')}
+                      helperText="例如: gpt-3.5-turbo"
+                    />
+                  )}
                   <Button
                     variant="outlined"
                     onClick={handleFetchModels}
@@ -502,6 +581,9 @@ const ConfigPage: React.FC = () => {
                   <Button variant="contained" onClick={() => handleTest('ai_service')}>
                     测试 API
                   </Button>
+                  <Button variant="outlined" onClick={handleModelConnectionTest} disabled={testingModel}>
+                    {testingModel ? '测试中...' : '测试当前模型'}
+                  </Button>
                   {testResults.ai_service !== undefined && (
                     <Chip
                       icon={testResults.ai_service ? <CheckCircle /> : <ErrorIcon />}
@@ -510,7 +592,45 @@ const ConfigPage: React.FC = () => {
                       size="small"
                     />
                   )}
+                  {testResults.model !== undefined && (
+                    <Chip
+                      icon={testResults.model ? <CheckCircle /> : <ErrorIcon />}
+                      label={testResults.model ? '模型可用' : '模型不可用'}
+                      color={testResults.model ? 'success' : 'error'}
+                      size="small"
+                    />
+                  )}
                 </Box>
+                {modelTestResult && (
+                  <Alert severity={modelTestResult.success ? 'success' : 'warning'}>
+                    <Stack spacing={1}>
+                      <Typography variant="subtitle2">{modelTestResult.message}</Typography>
+                      <Typography variant="body2">
+                        Provider: {modelTestResult.provider || '-'} · Model: {modelTestResult.model || '-'} · 延迟: {modelTestResult.latency_ms?.toFixed(1) || '0.0'} ms
+                      </Typography>
+                      {modelTestResult.endpoint && (
+                        <Typography variant="body2" sx={{ wordBreak: 'break-all' }}>
+                          Endpoint: {modelTestResult.endpoint}
+                        </Typography>
+                      )}
+                      {modelTestResult.checked_at && (
+                        <Typography variant="body2" color="text.secondary">
+                          最近测试: {new Date(modelTestResult.checked_at).toLocaleString()}
+                        </Typography>
+                      )}
+                      {(modelTestResult.checks || []).map((item) => (
+                        <Box key={item.name} sx={{ display: 'flex', justifyContent: 'space-between', gap: 2 }}>
+                          <Typography variant="body2">
+                            {item.success ? '通过' : '失败'} · {item.name}
+                          </Typography>
+                          <Typography variant="body2" color="text.secondary" sx={{ textAlign: 'right' }}>
+                            {item.message}{item.latency_ms ? ` · ${item.latency_ms.toFixed(1)} ms` : ''}
+                          </Typography>
+                        </Box>
+                      ))}
+                    </Stack>
+                  </Alert>
+                )}
             </Stack>
           </TabPanel>
 
@@ -592,7 +712,7 @@ const ConfigPage: React.FC = () => {
       >
         <Alert severity="error">{error}</Alert>
       </Snackbar>
-    </Box>
+    </AdminLayout>
   );
 };
 

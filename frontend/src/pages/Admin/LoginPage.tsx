@@ -3,18 +3,18 @@
  */
 import React, { useState } from 'react';
 import {
-  Box,
   Card,
   CardContent,
   TextField,
   Button,
   Typography,
   Alert,
-  Container,
   Link,
+  Stack,
 } from '@mui/material';
 import { useNavigate } from 'react-router-dom';
 import { authApi } from '../../services/adminService';
+import AdminAuthLayout from '../../components/Admin/AdminAuthLayout';
 
 const LoginPage: React.FC = () => {
   const navigate = useNavigate();
@@ -50,38 +50,30 @@ const LoginPage: React.FC = () => {
   };
 
   return (
-    <Container maxWidth="sm">
-      <Box
-        sx={{
-          minHeight: '100vh',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-        }}
-      >
-        <Card sx={{ width: '100%' }}>
-          <CardContent sx={{ p: 4 }}>
-            <Typography variant="h4" gutterBottom align="center">
-              GraphInsight-后台管理
+    <AdminAuthLayout title="GraphInsight 管理控制台" subtitle="企业级知识图谱运营中枢">
+      <Card>
+        <CardContent sx={{ p: 4 }}>
+          <Stack spacing={2}>
+            <Typography variant="h5">欢迎回来</Typography>
+            <Typography variant="body2" color="text.secondary">
+              请使用管理员邮箱登录继续管理
             </Typography>
-            <Typography variant="body2" color="text.secondary" align="center" sx={{ mb: 3 }}>
-              请登录以继续
-            </Typography>
+          </Stack>
 
-            {error && (
-              <Alert severity="error" sx={{ mb: 2 }}>
-                {error}
-              </Alert>
-            )}
+          {error && (
+            <Alert severity="error" sx={{ mt: 3 }}>
+              {error}
+            </Alert>
+          )}
 
-            <form onSubmit={handleLogin}>
+          <form onSubmit={handleLogin}>
+            <Stack spacing={2} sx={{ mt: 3 }}>
               <TextField
                 fullWidth
                 label="邮箱"
                 type="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                margin="normal"
                 required
                 autoFocus
                 placeholder="your@email.com"
@@ -92,7 +84,6 @@ const LoginPage: React.FC = () => {
                 type="password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                margin="normal"
                 required
               />
               <Button
@@ -101,29 +92,21 @@ const LoginPage: React.FC = () => {
                 variant="contained"
                 size="large"
                 disabled={loading}
-                sx={{ mt: 3, mb: 2 }}
+                sx={{ py: 1.2 }}
               >
-                {loading ? '登录中...' : '登录'}
+                {loading ? '登录中...' : '登录控制台'}
               </Button>
-
-              <Box sx={{ textAlign: 'center' }}>
-                <Typography variant="body2" color="text.secondary">
-                  还没有账号？{' '}
-                  <Link
-                    component="button"
-                    variant="body2"
-                    onClick={() => navigate('/admin/register')}
-                    sx={{ cursor: 'pointer' }}
-                  >
-                    立即注册
-                  </Link>
-                </Typography>
-              </Box>
-            </form>
-          </CardContent>
-        </Card>
-      </Box>
-    </Container>
+              <Typography variant="body2" color="text.secondary" align="center">
+                还没有账号？{' '}
+                <Link component="button" variant="body2" onClick={() => navigate('/admin/register')}>
+                  立即注册
+                </Link>
+              </Typography>
+            </Stack>
+          </form>
+        </CardContent>
+      </Card>
+    </AdminAuthLayout>
   );
 };
 

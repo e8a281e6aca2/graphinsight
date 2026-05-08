@@ -370,7 +370,14 @@ export function createRenderer3D(
       return label;
     })
     .linkThreeObjectExtend(true)
-    .linkPositionUpdate((obj: any, { start, end }, link: GraphLink) => {
+    .linkPositionUpdate((
+      obj: any,
+      coords: {
+        start?: { x: number; y: number; z: number };
+        end?: { x: number; y: number; z: number };
+      }
+    ) => {
+      const { start, end } = coords || {};
       if (!obj || !start || !end) return;
       const midX = (start.x + end.x) / 2;
       const midY = (start.y + end.y) / 2;
@@ -560,8 +567,10 @@ export function createRenderer3D(
   }
 
   function computeBounds(targetIds?: string[]) {
-    const sourceNodes = targetIds?.length
-      ? targetIds.map((id) => nodeById.get(id)).filter(Boolean)
+    const sourceNodes: GraphNode[] = targetIds?.length
+      ? targetIds
+        .map((id) => nodeById.get(id))
+        .filter((node): node is GraphNode => Boolean(node))
       : nodes.filter((node) => visibleNodeIds.has(node.id));
     let minX = Infinity;
     let minY = Infinity;
@@ -574,9 +583,9 @@ export function createRenderer3D(
       if (!Number.isFinite(node?.x) || !Number.isFinite(node?.y) || !Number.isFinite(node?.z)) {
         return;
       }
-      const nx = node.x as number;
-      const ny = node.y as number;
-      const nz = node.z as number;
+      const nx = node.x!;
+      const ny = node.y!;
+      const nz = node.z!;
       minX = Math.min(minX, nx);
       minY = Math.min(minY, ny);
       minZ = Math.min(minZ, nz);
@@ -668,7 +677,7 @@ export function createRenderer3D(
     texturePending.add(url);
     textureLoader.load(
       url,
-      (texture) => {
+      (texture: Texture) => {
         texture.colorSpace = SRGBColorSpace;
         textureCache.set(url, texture);
         texturePending.delete(url);
@@ -978,7 +987,7 @@ export function createRenderer3D(
       const isPathHighlighted = pathHighlightEdgeIds.has(edge.id);
       const isSearchHighlighted = searchHighlightEdgeIds.has(edge.id);
       const isActiveRelated = activeHighlightEdgeIds.has(edge.id);
-      return isActiveEdge || isPathHighlighted ? 2 : 0;
+      return isActiveEdge || isPathHighlighted || isSearchHighlighted || isActiveRelated ? 2 : 0;
     });
 
     graph.linkDirectionalParticleWidth?.(style.particleWidth);
@@ -1580,7 +1589,7 @@ export function createRenderer3D(
     });
   }
 
-  async function exportSVG() {
+  async function exportSVG(): Promise<string> {
     throw new Error('3D 模式暂不支持 SVG 导出，请切换到 2D 模式导出。');
   }
 

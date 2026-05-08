@@ -26,6 +26,15 @@ export interface GraphData {
   };
 }
 
+export interface GraphPathInfo {
+  id: string;
+  nodes: string[];
+  edges: string[];
+  length: number;
+  weight: number;
+  label?: string;
+}
+
 export interface QueryHistoryItem {
   id: string;
   cypher: string;
@@ -38,6 +47,11 @@ export interface CitationRef {
   title: string;
   snippet: string;
   location?: string;
+  entityNames?: string[];
+  keywords?: string[];
+  retrievalScore?: number;
+  confidence?: number;
+  confidenceLevel?: string;
 }
 
 export interface FilterState {
@@ -96,6 +110,14 @@ interface GraphStore {
   setWorkspaceTab: (tab: 'document' | 'graph') => void;
   selectedCitation: CitationRef | null;
   setSelectedCitation: (citation: CitationRef | null) => void;
+  highlightAll: boolean;
+  setHighlightAll: (value: boolean) => void;
+  recentUploadedDocIds: string[];
+  setRecentUploadedDocIds: (docIds: string[]) => void;
+
+  // 自动推理链
+  autoPaths: GraphPathInfo[];
+  setAutoPaths: (paths: GraphPathInfo[]) => void;
   
   // 查询统计
   lastQueryStats: {
@@ -158,6 +180,9 @@ export const useGraphStore = create<GraphStore>()(
       isDarkMode: false,
       activeWorkspaceTab: 'document',
       selectedCitation: null,
+      highlightAll: false,
+      recentUploadedDocIds: [],
+      autoPaths: [],
       lastQueryStats: null,
       nodeTypeStyles: {},
       groupingState: {
@@ -209,6 +234,10 @@ export const useGraphStore = create<GraphStore>()(
 
       setWorkspaceTab: (tab) => set({ activeWorkspaceTab: tab }),
       setSelectedCitation: (citation) => set({ selectedCitation: citation }),
+      setHighlightAll: (value) => set({ highlightAll: value }),
+      setRecentUploadedDocIds: (docIds) => set({ recentUploadedDocIds: docIds }),
+
+      setAutoPaths: (paths) => set({ autoPaths: paths }),
       
       setLastQueryStats: (stats) => set({ lastQueryStats: stats }),
       

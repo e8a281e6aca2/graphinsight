@@ -2,7 +2,7 @@
  * 系统监控页面 v3.0
  * 使用标准化 API + 实时图表
  */
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   Box,
   Container,
@@ -10,9 +10,6 @@ import {
   CardContent,
   Typography,
   Chip,
-  AppBar,
-  Toolbar,
-  IconButton,
   Button,
   CircularProgress,
   Alert,
@@ -20,24 +17,43 @@ import {
   Stack,
 } from '@mui/material';
 import { 
-  ArrowBack, 
   Refresh,
+  NotificationsActive,
   Computer,
   Memory,
   Storage,
   Speed,
 } from '@mui/icons-material';
-import { useNavigate } from 'react-router-dom';
 import { monitorApi } from '../../services/adminService';
-import type { HealthStatus, SystemStats } from '../../types/admin';
+import type { AlertCheckResult, HealthStatus, SloSnapshot, SystemStats, PerformanceMetricsData, QAQualityMetrics } from '../../types/admin';
 import SystemResourceChart from '../../components/Admin/Charts/SystemResourceChart';
 import { useSystemMetrics } from '../../hooks/useSystemMetrics';
+import AdminLayout from '../../components/Admin/AdminLayout';
+
+const API_WINDOW_SECONDS = 900;
+const JOB_WINDOW_MINUTES = 60;
+
+const getErrorMessage = (reason: unknown, fallback: string): string => {
+  if (
+    reason &&
+    typeof reason === 'object' &&
+    'message' in reason &&
+    typeof (reason as { message?: unknown }).message === 'string'
+  ) {
+    return (reason as { message: string }).message;
+  }
+  return fallback;
+};
 
 const MonitorPage: React.FC = () => {
-  const navigate = useNavigate();
   const [health, setHealth] = useState<HealthStatus | null>(null);
   const [stats, setStats] = useState<SystemStats | null>(null);
+  const [performance, setPerformance] = useState<PerformanceMetricsData | null>(null);
+  const [qaQuality, setQAQuality] = useState<QAQualityMetrics | null>(null);
+  const [sloSnapshot, setSloSnapshot] = useState<SloSnapshot | null>(null);
+  const [alertResult, setAlertResult] = useState<AlertCheckResult | null>(null);
   const [loading, setLoading] = useState(false);
+  const [checkingAlerts, setCheckingAlerts] = useState(false);
   const [error, setError] = useState('');
   
   // 使用历史数据管理 Hook
@@ -46,38 +62,82 @@ const MonitorPage: React.FC = () => {
     updateInterval: 30000,
   });
 
-  useEffect(() => {
-    loadData();
-    // 每 30 秒自动刷新
-    const interval = setInterval(loadData, 30000);
-    return () => clearInterval(interval);
-  }, []);
-
-  const loadData = async () => {
+  const loadData = useCallback(async () => {
     setLoading(true);
     setError('');
     try {
-      const [healthData, statsData] = await Promise.allSettled([
+      const [healthData, statsData, perfData, qaData, sloData] = await Promise.allSettled([
         monitorApi.getHealth(),
         monitorApi.getStats(),
+        monitorApi.getPerformance({ window_seconds: API_WINDOW_SECONDS }),
+        monitorApi.getQAQuality({ window_seconds: API_WINDOW_SECONDS }),
+        monitorApi.getSloSnapshot({
+          api_window_seconds: API_WINDOW_SECONDS,
+          job_window_minutes: JOB_WINDOW_MINUTES,
+        }),
       ]);
+      const failures: string[] = [];
+      let hasSuccess = false;
       
       if (healthData.status === 'fulfilled') {
         setHealth(healthData.value);
+        hasSuccess = true;
+      } else {
+        const reason = getErrorMessage(healthData.reason, '健康检查接口失败');
+        failures.push(`健康检查：${reason}`);
       }
       
       if (statsData.status === 'fulfilled') {
         setStats(statsData.value);
         // 添加到历史数据
         addDataPoint(statsData.value);
+        hasSuccess = true;
+      } else {
+        const reason = getErrorMessage(statsData.reason, '系统指标接口失败');
+        failures.push(`系统指标：${reason}`);
       }
-    } catch (err: any) {
+
+      if (perfData.status === 'fulfilled') {
+        setPerformance(perfData.value);
+        hasSuccess = true;
+      } else {
+        const reason = getErrorMessage(perfData.reason, '性能指标接口失败');
+        failures.push(`性能指标：${reason}`);
+      }
+
+      if (qaData.status === 'fulfilled') {
+        setQAQuality(qaData.value);
+        hasSuccess = true;
+      } else {
+        const reason = getErrorMessage(qaData.reason, '问答质量接口失败');
+        failures.push(`问答质量：${reason}`);
+      }
+
+      if (sloData.status === 'fulfilled') {
+        setSloSnapshot(sloData.value);
+        hasSuccess = true;
+      } else {
+        const reason = getErrorMessage(sloData.reason, 'SLO 接口失败');
+        failures.push(`SLO：${reason}`);
+      }
+
+      if (failures.length > 0 && !hasSuccess) {
+        setError(failures.join('；'));
+      }
+    } catch (err: unknown) {
       console.error('加载数据失败:', err);
-      setError(err.message || '加载数据失败');
+      setError(getErrorMessage(err, '加载数据失败'));
     } finally {
       setLoading(false);
     }
-  };
+  }, [addDataPoint]);
+
+  useEffect(() => {
+    loadData();
+    // 每 30 秒自动刷新
+    const interval = setInterval(loadData, 30000);
+    return () => clearInterval(interval);
+  }, [loadData]);
 
   const getStatusColor = (status: string) => {
     switch (status.toLowerCase()) {
@@ -108,33 +168,46 @@ const MonitorPage: React.FC = () => {
     return `${hours}小时 ${minutes}分钟`;
   };
 
-  return (
-    <Box>
-      <AppBar position="static">
-        <Toolbar>
-          <IconButton
-            edge="start"
-            color="inherit"
-            onClick={() => navigate('/admin/dashboard')}
-            sx={{ mr: 2 }}
-          >
-            <ArrowBack />
-          </IconButton>
-          <Typography variant="h6" component="div" sx={{ flexGrow: 1 }}>
-            系统监控
-          </Typography>
-          <Button
-            color="inherit"
-            startIcon={<Refresh />}
-            onClick={loadData}
-            disabled={loading}
-          >
-            刷新
-          </Button>
-        </Toolbar>
-      </AppBar>
+  const formatPercent = (value: number) => `${(value * 100).toFixed(2)}%`;
 
-      <Container maxWidth="lg" sx={{ mt: 4, mb: 4 }}>
+  const handleCheckAlerts = async () => {
+    setCheckingAlerts(true);
+    setError('');
+    try {
+      const data = await monitorApi.checkAlerts({
+        send_webhook: true,
+        api_window_seconds: API_WINDOW_SECONDS,
+        job_window_minutes: JOB_WINDOW_MINUTES,
+      });
+      setAlertResult(data);
+      setSloSnapshot(data.snapshot);
+      setPerformance(data.snapshot.api);
+    } catch (err: unknown) {
+      setError(getErrorMessage(err, '告警检查失败'));
+    } finally {
+      setCheckingAlerts(false);
+    }
+  };
+
+  const actionBar = (
+    <Stack direction="row" spacing={1}>
+      <Button variant="outlined" startIcon={<Refresh />} onClick={loadData} disabled={loading}>
+        刷新
+      </Button>
+      <Button
+        variant="contained"
+        startIcon={<NotificationsActive />}
+        onClick={handleCheckAlerts}
+        disabled={checkingAlerts}
+      >
+        检查告警
+      </Button>
+    </Stack>
+  );
+
+  return (
+    <AdminLayout title="系统监控" subtitle="服务状态与资源指标实时看板" actions={actionBar}>
+      <Container maxWidth="lg" sx={{ px: 0 }}>
         {error && (
           <Alert severity="error" sx={{ mb: 3 }}>
             {error}
@@ -148,6 +221,12 @@ const MonitorPage: React.FC = () => {
         )}
 
         <Stack spacing={3}>
+          {!loading && !health && !stats && !error && (
+            <Alert severity="info">
+              暂无监控数据，请检查后端连接状态与权限配置。
+            </Alert>
+          )}
+
           {/* 系统健康状态 */}
           {health && (
             <Box>
@@ -204,19 +283,19 @@ const MonitorPage: React.FC = () => {
                         </CardContent>
                       </Card>
 
-                    {health.openai && (
+                    {health.ai_service && (
                         <Card variant="outlined">
                           <CardContent>
                             <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                              <Typography variant="h6">OpenAI</Typography>
+                              <Typography variant="h6">AI 服务</Typography>
                               <Chip
-                                label={health.openai.configured ? '已配置' : '未配置'}
-                                color={getStatusColor(health.openai.configured ? 'connected' : 'disconnected')}
+                                label={health.ai_service.connected ? '已连接' : '未连接'}
+                                color={getStatusColor(health.ai_service.connected ? 'connected' : 'disconnected')}
                                 size="small"
                               />
                             </Box>
                             <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-                              {health.openai.message}
+                              {health.ai_service.service_name} · {health.ai_service.model || '未指定模型'}
                             </Typography>
                           </CardContent>
                         </Card>
@@ -297,6 +376,168 @@ const MonitorPage: React.FC = () => {
             />
           )}
 
+          {performance && (
+            <Card>
+              <CardContent>
+                <Typography variant="h6" sx={{ mb: 2 }}>
+                  API 性能指标（最近 {Math.round(performance.window_seconds / 60)} 分钟）
+                </Typography>
+                <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: 'repeat(4, 1fr)' }, gap: 2 }}>
+                  <Card variant="outlined">
+                    <CardContent>
+                      <Typography variant="body2" color="text.secondary">错误率</Typography>
+                      <Typography variant="h6">{formatPercent(performance.error_rate)}</Typography>
+                    </CardContent>
+                  </Card>
+                  <Card variant="outlined">
+                    <CardContent>
+                      <Typography variant="body2" color="text.secondary">P95 延迟</Typography>
+                      <Typography variant="h6">{performance.p95_response_time_ms.toFixed(1)} ms</Typography>
+                    </CardContent>
+                  </Card>
+                  <Card variant="outlined">
+                    <CardContent>
+                      <Typography variant="body2" color="text.secondary">RPS</Typography>
+                      <Typography variant="h6">{performance.requests_per_second.toFixed(3)}</Typography>
+                    </CardContent>
+                  </Card>
+                  <Card variant="outlined">
+                    <CardContent>
+                      <Typography variant="body2" color="text.secondary">请求数</Typography>
+                      <Typography variant="h6">{performance.total_requests}</Typography>
+                    </CardContent>
+                  </Card>
+                </Box>
+                {performance.top_paths.length > 0 && (
+                  <Box sx={{ mt: 2 }}>
+                    <Typography variant="subtitle2" sx={{ mb: 1 }}>高频路径</Typography>
+                    <Stack spacing={1}>
+                      {performance.top_paths.slice(0, 5).map((item) => (
+                        <Box key={item.path} sx={{ display: 'flex', justifyContent: 'space-between' }}>
+                          <Typography variant="body2" noWrap sx={{ maxWidth: '70%' }}>{item.path}</Typography>
+                          <Typography variant="body2" color="text.secondary">
+                            {item.total} 次 / 错误率 {formatPercent(item.error_rate)}
+                          </Typography>
+                        </Box>
+                      ))}
+                    </Stack>
+                  </Box>
+                )}
+              </CardContent>
+            </Card>
+          )}
+
+          {qaQuality && (
+            <Card>
+              <CardContent>
+                <Typography variant="h6" sx={{ mb: 2 }}>
+                  问答质量指标（最近 {Math.round(qaQuality.window_seconds / 60)} 分钟）
+                </Typography>
+                <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: 'repeat(4, 1fr)' }, gap: 2 }}>
+                  <Card variant="outlined">
+                    <CardContent>
+                      <Typography variant="body2" color="text.secondary">成功率</Typography>
+                      <Typography variant="h6">{formatPercent(qaQuality.success_rate)}</Typography>
+                    </CardContent>
+                  </Card>
+                  <Card variant="outlined">
+                    <CardContent>
+                      <Typography variant="body2" color="text.secondary">引用率</Typography>
+                      <Typography variant="h6">{formatPercent(qaQuality.citation_rate)}</Typography>
+                    </CardContent>
+                  </Card>
+                  <Card variant="outlined">
+                    <CardContent>
+                      <Typography variant="body2" color="text.secondary">P95 延迟</Typography>
+                      <Typography variant="h6">{qaQuality.p95_latency_ms.toFixed(1)} ms</Typography>
+                    </CardContent>
+                  </Card>
+                  <Card variant="outlined">
+                    <CardContent>
+                      <Typography variant="body2" color="text.secondary">请求数</Typography>
+                      <Typography variant="h6">{qaQuality.total_requests}</Typography>
+                    </CardContent>
+                  </Card>
+                </Box>
+                {qaQuality.by_type.length > 0 && (
+                  <Box sx={{ mt: 2 }}>
+                    <Typography variant="subtitle2" sx={{ mb: 1 }}>链路拆分</Typography>
+                    <Stack spacing={1}>
+                      {qaQuality.by_type.map((item) => (
+                        <Box key={item.qa_type} sx={{ display: 'flex', justifyContent: 'space-between', gap: 2 }}>
+                          <Typography variant="body2">
+                            {item.qa_type === 'deep_research' ? '深度调研' : '文档问答'}
+                          </Typography>
+                          <Typography variant="body2" color="text.secondary">
+                            {item.total} 次 / 引用率 {formatPercent(item.citation_rate)} / P95 {item.p95_latency_ms.toFixed(1)} ms
+                          </Typography>
+                        </Box>
+                      ))}
+                    </Stack>
+                  </Box>
+                )}
+              </CardContent>
+            </Card>
+          )}
+
+          {sloSnapshot && (
+            <Card>
+              <CardContent>
+                <Typography variant="h6" sx={{ mb: 2 }}>
+                  SLO 快照
+                </Typography>
+                <Stack direction={{ xs: 'column', md: 'row' }} spacing={2}>
+                  <Chip
+                    color={sloSnapshot.jobs.success_rate >= 0.99 ? 'success' : 'warning'}
+                    label={`任务成功率: ${formatPercent(sloSnapshot.jobs.success_rate)} (目标 >=99%)`}
+                  />
+                  <Chip
+                    color={sloSnapshot.jobs.timeout_rate <= 0.1 ? 'success' : 'warning'}
+                    label={`任务超时率: ${formatPercent(sloSnapshot.jobs.timeout_rate)} (目标 <=10%)`}
+                  />
+                  <Chip
+                    color={sloSnapshot.api.error_rate <= 0.01 ? 'success' : 'warning'}
+                    label={`API 错误率: ${formatPercent(sloSnapshot.api.error_rate)} (目标 <=1%)`}
+                  />
+                </Stack>
+                <Typography variant="body2" color="text.secondary" sx={{ mt: 2 }}>
+                  任务窗口 {sloSnapshot.jobs.window_minutes} 分钟，统计总任务 {sloSnapshot.jobs.total_jobs}，P95 耗时 {sloSnapshot.jobs.p95_duration_ms.toFixed(1)} ms
+                </Typography>
+              </CardContent>
+            </Card>
+          )}
+
+          {alertResult && (
+            <Card>
+              <CardContent>
+                <Typography variant="h6" sx={{ mb: 2 }}>
+                  最近一次告警检查
+                </Typography>
+                <Typography variant="body2" color="text.secondary">
+                  告警数: {alertResult.alert_count} · Webhook: {alertResult.webhook_configured ? (alertResult.sent ? '已发送' : '未发送') : '未配置'}
+                </Typography>
+                {alertResult.delivery_error && (
+                  <Alert severity="warning" sx={{ mt: 2 }}>
+                    webhook 发送失败：{alertResult.delivery_error}
+                  </Alert>
+                )}
+                {alertResult.alerts.length > 0 ? (
+                  <Stack spacing={1} sx={{ mt: 2 }}>
+                    {alertResult.alerts.map((item, index) => (
+                      <Alert key={`${item.type}-${index}`} severity={item.severity}>
+                        {item.message}
+                      </Alert>
+                    ))}
+                  </Stack>
+                ) : (
+                  <Alert severity="success" sx={{ mt: 2 }}>
+                    当前窗口内无告警。
+                  </Alert>
+                )}
+              </CardContent>
+            </Card>
+          )}
+
           {stats && (
             <Card>
                   <CardContent>
@@ -313,12 +554,17 @@ const MonitorPage: React.FC = () => {
                     <Typography variant="body2" color="text.secondary">
                       监控数据点: {metricsHistory.length} / 30
                     </Typography>
+                    {performance && (
+                      <Typography variant="body2" color="text.secondary">
+                        API P95: {performance.p95_response_time_ms.toFixed(1)}ms / 错误率: {formatPercent(performance.error_rate)}
+                      </Typography>
+                    )}
                   </CardContent>
                 </Card>
           )}
         </Stack>
       </Container>
-    </Box>
+    </AdminLayout>
   );
 };
 

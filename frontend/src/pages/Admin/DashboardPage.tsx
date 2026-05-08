@@ -10,13 +10,10 @@ import {
   CardContent,
   Typography,
   Button,
-  AppBar,
-  Toolbar,
   Chip,
   CircularProgress,
   Alert,
   LinearProgress,
-  IconButton,
   Stack,
 } from '@mui/material';
 import {
@@ -27,7 +24,6 @@ import {
   Refresh as RefreshIcon,
   Computer as ComputerIcon,
   Memory as MemoryIcon,
-  ArrowBack,
 } from '@mui/icons-material';
 import { useNavigate } from 'react-router-dom';
 import { monitorApi, logApi } from '../../services/adminService';
@@ -35,6 +31,7 @@ import type { SystemStats, HealthStatus, LogStats } from '../../types/admin';
 import SystemResourceChart from '../../components/Admin/Charts/SystemResourceChart';
 import LogStatsChart from '../../components/Admin/Charts/LogStatsChart';
 import { useSystemMetrics } from '../../hooks/useSystemMetrics';
+import AdminLayout from '../../components/Admin/AdminLayout';
 
 const DashboardPage: React.FC = () => {
   const navigate = useNavigate();
@@ -79,6 +76,7 @@ const DashboardPage: React.FC = () => {
         monitorApi.getHealth(),
         logApi.getStats(),
       ]);
+      const failures: string[] = [];
       
       console.log('Dashboard - 数据获取结果:', {
         system: systemData.status,
@@ -93,6 +91,7 @@ const DashboardPage: React.FC = () => {
         addDataPoint(systemData.value);
       } else {
         console.error('Dashboard - 系统数据失败:', systemData.reason);
+        failures.push(`系统指标：${(systemData.reason as any)?.message || '请求失败'}`);
       }
       
       if (healthData.status === 'fulfilled') {
@@ -100,6 +99,7 @@ const DashboardPage: React.FC = () => {
         setHealthStatus(healthData.value);
       } else {
         console.error('Dashboard - 健康数据失败:', healthData.reason);
+        failures.push(`健康状态：${(healthData.reason as any)?.message || '请求失败'}`);
       }
       
       if (logData.status === 'fulfilled') {
@@ -107,6 +107,11 @@ const DashboardPage: React.FC = () => {
         setLogStats(logData.value);
       } else {
         console.error('Dashboard - 日志数据失败:', logData.reason);
+        failures.push(`日志统计：${(logData.reason as any)?.message || '请求失败'}`);
+      }
+
+      if (failures.length > 0 && !systemStats && !healthStatus && !logStats) {
+        setError(failures.join('；'));
       }
       
       // 即使部分数据加载失败,也不显示错误,只在控制台记录
@@ -150,54 +155,26 @@ const DashboardPage: React.FC = () => {
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
   };
 
-  return (
-    <Box>
-      <AppBar position="static">
-        <Toolbar>
-          <IconButton
-            edge="start"
-            color="inherit"
-            onClick={() => navigate('/')}
-            sx={{ mr: 2 }}
-          >
-            <ArrowBack />
-          </IconButton>
-          <Typography variant="h6" component="div" sx={{ flexGrow: 1 }}>
-            系统仪表板
-          </Typography>
-          <Button
-            color="inherit"
-            onClick={() => navigate('/admin/config')}
-            sx={{ mr: 2 }}
-          >
-            基础配置
-          </Button>
-          <Button
-            color="inherit"
-            onClick={() => navigate('/admin/analytics')}
-            sx={{ mr: 2 }}
-          >
-            数据分析
-          </Button>
-          <Button
-            color="inherit"
-            onClick={() => navigate('/admin/profile')}
-            sx={{ mr: 2 }}
-          >
-            个人设置
-          </Button>
-          <Button
-            color="inherit"
-            startIcon={<RefreshIcon />}
-            onClick={fetchStats}
-            disabled={loading}
-          >
-            刷新
-          </Button>
-        </Toolbar>
-      </AppBar>
+  const actionBar = (
+    <Stack direction="row" spacing={1}>
+      <Button variant="outlined" onClick={() => navigate('/admin/config')}>
+        配置中心
+      </Button>
+      <Button variant="outlined" onClick={() => navigate('/admin/rbac')}>
+        权限管理
+      </Button>
+      <Button variant="outlined" onClick={() => navigate('/admin/analytics')}>
+        数据分析
+      </Button>
+      <Button variant="contained" startIcon={<RefreshIcon />} onClick={fetchStats} disabled={loading}>
+        刷新
+      </Button>
+    </Stack>
+  );
 
-      <Container maxWidth="lg" sx={{ mt: 4, mb: 4 }}>
+  return (
+    <AdminLayout title="系统仪表板" subtitle="关键指标与服务健康概览" actions={actionBar}>
+      <Container maxWidth="lg" sx={{ pb: 4 }}>
         {error && (
           <Alert severity="error" sx={{ mb: 3 }}>
             {error}
@@ -462,7 +439,7 @@ const DashboardPage: React.FC = () => {
             )}
           </Stack>
       </Container>
-    </Box>
+    </AdminLayout>
   );
 };
 

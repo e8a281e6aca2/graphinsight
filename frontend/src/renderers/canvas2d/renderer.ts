@@ -19,7 +19,7 @@ import type {
 } from '../core/types';
 import { generateVideoThumbnail } from '../../utils/videoThumbnail';
 
-type LinkDatum = RendererEdge & {
+type LinkDatum = Omit<RendererEdge, 'source' | 'target'> & {
   source: RendererNode | string;
   target: RendererNode | string;
 };
@@ -31,8 +31,8 @@ type FilterState = {
   hiddenEdgeIds: Set<string>;
 };
 
-const NODE_LABEL_ZOOM = 0.5;
-const EDGE_LABEL_ZOOM = 0.8;
+const NODE_LABEL_ZOOM = 0.55;
+const EDGE_LABEL_ZOOM = 1.05;
 const DEFAULT_EDGE_COLOR = 'rgba(15, 23, 42, 0.28)';
 const DEFAULT_NODE_STROKE = '#0f172a';
 const ACTIVE_COLOR = '#ff4081';
@@ -49,6 +49,7 @@ export function createRenderer(
   if (!ctx) {
     throw new Error('Canvas 2D context is not available');
   }
+  const context2d: CanvasRenderingContext2D = ctx;
 
   let width = (options.width ?? canvas.clientWidth) || 1;
   let height = (options.height ?? canvas.clientHeight) || 1;
@@ -285,12 +286,24 @@ export function createRenderer(
   }
 
   function updateSimulation() {
+    const estimateLabelPadding = (node: RendererNode) => {
+      const label = (node.label || '').trim();
+      if (!label) return 0;
+      const cjkCount = (label.match(/[\u4e00-\u9fff]/g) || []).length;
+      const latinCount = Math.max(0, label.length - cjkCount);
+      const approxWidth = cjkCount * 10 + latinCount * 6;
+      return Math.min(40, Math.max(0, approxWidth * 0.22));
+    };
+
     if (!simulation) {
       simulation = forceSimulation<RendererNode>()
         .force('link', linkForce)
         .force('charge', forceManyBody().strength(-280))
         .force('center', forceCenter(width / 2, height / 2))
-        .force('collide', forceCollide<RendererNode>().radius((d) => d.radius + 12))
+        .force(
+          'collide',
+          forceCollide<RendererNode>().radius((d) => (d.radius ?? 24) + 12 + estimateLabelPadding(d))
+        )
         .on('tick', scheduleRender);
     }
 
@@ -452,7 +465,6 @@ export function createRenderer(
 
       const visited = new Set<string>();
       const levels = new Map<number, string[]>();
-      const nodesById = new Map(layoutNodes.map((n) => [n.id, n]));
       const roots = [...layoutNodes].sort((a, b) => (b.degree ?? 0) - (a.degree ?? 0));
       let level = 0;
       const queue: Array<{ id: string; level: number }> = [];
@@ -807,7 +819,7 @@ export function createRenderer(
   }
 
   function render() {
-    renderToContext(ctx, { width, height, dpr, transform });
+    renderToContext(context2d, { width, height, dpr, transform });
   }
 
   function updateData(data: RendererData) {
@@ -900,9 +912,10 @@ export function createRenderer(
       });
     } else {
       nodeSizeOverrides = new Map(Object.entries(overrides));
+      const overridesMap = nodeSizeOverrides;
       nodes.forEach((node) => {
         const baseRadius = baseRadiusById.get(node.id) ?? node.radius ?? 24;
-        node.radius = nodeSizeOverrides.get(node.id) ?? baseRadius;
+        node.radius = overridesMap.get(node.id) ?? baseRadius;
       });
     }
     updateSimulation();

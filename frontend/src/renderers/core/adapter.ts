@@ -109,7 +109,17 @@ export function adaptGraphData(
   };
 }
 
-function extractMedia(properties: Record<string, any>) {
+function extractMedia(
+  properties: Record<string, any>
+): {
+  image?: string;
+  video?: string;
+  audio?: string;
+  mediaType?: RendererNode['mediaType'];
+  isVideo: boolean;
+  originalVideoUrl?: string;
+  videoThumbnailUrl?: string;
+} {
   let imageUrl: string | null = null;
   const imageKeys = ['images', 'image', 'imageUrl', '图片', '图像', '照片'];
   for (const key of imageKeys) {
@@ -181,7 +191,7 @@ function extractMedia(properties: Record<string, any>) {
       : audioUrl
     : undefined;
 
-  const mediaType = proxiedImage && (proxiedVideo || proxiedAudio)
+  const mediaType: RendererNode['mediaType'] = proxiedImage && (proxiedVideo || proxiedAudio)
     ? 'mixed'
     : proxiedVideo
       ? 'video'

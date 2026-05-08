@@ -46,6 +46,7 @@ export function GraphCanvas({ rendererRef: externalRendererRef, onGroupingUpdate
   const [navigationOpen, setNavigationOpen] = useState(false);
   const [viewMode, setViewMode] = useState<'2d' | '3d'>('2d');
   const [rendererError, setRendererError] = useState<string | null>(null);
+  const SAFE_FIT_PADDING = 120;
 
   useEffect(() => {
     if (viewMode === '3d' && navigationOpen) {
@@ -61,6 +62,8 @@ export function GraphCanvas({ rendererRef: externalRendererRef, onGroupingUpdate
 
   const graphData = useGraphStore((state) => state.graphData);
   const setGraphData = useGraphStore((state) => state.setGraphData);
+  const setAutoPaths = useGraphStore((state) => state.setAutoPaths);
+  const highlightAll = useGraphStore((state) => state.highlightAll);
   const selectedNodeId = useGraphStore((state) => state.selectedNodeId);
   const setSelectedNodeId = useGraphStore((state) => state.setSelectedNodeId);
   const activeFilters = useGraphStore((state) => state.activeFilters);
@@ -518,7 +521,7 @@ export function GraphCanvas({ rendererRef: externalRendererRef, onGroupingUpdate
     if (!rendererRef.current || !rendererData || rendererData.nodes.length === 0) return;
 
     const timer = window.setTimeout(() => {
-      rendererRef.current?.fitTo(undefined, 50);
+      rendererRef.current?.fitTo(undefined, SAFE_FIT_PADDING);
     }, 200);
 
     return () => window.clearTimeout(timer);
@@ -526,11 +529,33 @@ export function GraphCanvas({ rendererRef: externalRendererRef, onGroupingUpdate
 
   useEffect(() => {
     if (!rendererRef.current) return;
+    if (highlightAll && rendererDataRef.current) {
+      const nodeIds = rendererDataRef.current.nodes.map((node: any) => node.id);
+      const edgeIds = rendererDataRef.current.edges.map((edge: any) => edge.id);
+      rendererRef.current.setSearchHighlight({ nodeIds, edgeIds });
+      if (activeWorkspaceTab === 'graph') {
+        rendererRef.current.fitTo(nodeIds, SAFE_FIT_PADDING);
+      }
+      rendererRef.current.setPathHighlight({ nodeIds: [], edgeIds: [] });
+      return;
+    }
     if (!selectedCitation || !rendererDataRef.current) {
       rendererRef.current.clearSearchHighlight();
+      rendererRef.current.setPathHighlight({ nodeIds: [], edgeIds: [] });
+      setAutoPaths([]);
       return;
     }
 
+    const citationEntityNames = new Set(
+      (selectedCitation.entityNames || [])
+        .map((name) => (name || '').trim().toLowerCase())
+        .filter(Boolean)
+    );
+    const citationKeywords = new Set(
+      (selectedCitation.keywords || [])
+        .map((item) => (item || '').trim().toLowerCase())
+        .filter(Boolean)
+    );
     const docId = selectedCitation.id.split('-')[0];
     const matches = rendererDataRef.current.nodes
       .filter((node: any) => {
@@ -543,10 +568,39 @@ export function GraphCanvas({ rendererRef: externalRendererRef, onGroupingUpdate
       .map((node: any) => node.id);
 
     const entityMatches = new Set<string>();
+    const keywordNodeMatches = new Set<string>();
+    rendererDataRef.current.nodes.forEach((node: any) => {
+      const props = node.properties || {};
+      const nodeType = String(node.type || '').toLowerCase();
+      const candidateLabel = String(props.name || props.title || node.label || '').trim().toLowerCase();
+      if (citationKeywords.size && candidateLabel) {
+        for (const keyword of citationKeywords) {
+          if (candidateLabel.includes(keyword) || keyword.includes(candidateLabel)) {
+            keywordNodeMatches.add(node.id);
+            break;
+          }
+        }
+      }
+      if (nodeType !== 'entity') return;
+      const candidateName = String(props.name || node.label || '').trim().toLowerCase();
+      if (candidateName && citationEntityNames.has(candidateName)) {
+        entityMatches.add(node.id);
+        return;
+      }
+      if (citationKeywords.size) {
+        for (const keyword of citationKeywords) {
+          if (candidateName && (candidateName.includes(keyword) || keyword.includes(candidateName))) {
+            entityMatches.add(node.id);
+            break;
+          }
+        }
+      }
+    });
+
     if (rendererRef.current && matches.length > 0) {
-      matches.forEach((id) => {
+      matches.forEach((id: string) => {
         const neighbors = rendererRef.current?.getNeighbors(id) || [];
-        neighbors.forEach((neighborId) => {
+        neighbors.forEach((neighborId: string) => {
           const node = rendererRef.current?.getNodeById(neighborId);
           if (node?.type === 'Entity') {
             entityMatches.add(neighborId);
@@ -555,16 +609,90 @@ export function GraphCanvas({ rendererRef: externalRendererRef, onGroupingUpdate
       });
     }
 
-    const highlightIds = Array.from(new Set([...matches, ...entityMatches]));
+    const highlightIds = Array.from(new Set([...matches, ...entityMatches, ...keywordNodeMatches]));
+    const highlightIdSet = new Set(highlightIds);
+    const highlightEdgeIds = rendererDataRef.current.edges
+      .filter((edge: any) => {
+        const source = String(edge.source || '');
+        const target = String(edge.target || '');
+        return highlightIdSet.has(source) && highlightIdSet.has(target);
+      })
+      .map((edge: any) => edge.id);
+
     if (highlightIds.length > 0) {
-      rendererRef.current.setSearchHighlight({ nodeIds: highlightIds });
+      rendererRef.current.setSearchHighlight({ nodeIds: highlightIds, edgeIds: highlightEdgeIds });
       if (activeWorkspaceTab === 'graph') {
-        rendererRef.current.fitTo(highlightIds, 80);
+        rendererRef.current.fitTo(highlightIds, SAFE_FIT_PADDING);
       }
     } else {
       rendererRef.current.clearSearchHighlight();
     }
-  }, [selectedCitation, activeWorkspaceTab, rendererRef, viewMode, rendererKey]);
+
+    const adjacency = new Map<string, Array<{ id: string; edgeId: string }>>();
+    rendererDataRef.current.edges.forEach((edge: any) => {
+      const source = String(edge.source || '');
+      const target = String(edge.target || '');
+      if (!source || !target) return;
+      if (!adjacency.has(source)) adjacency.set(source, []);
+      if (!adjacency.has(target)) adjacency.set(target, []);
+      adjacency.get(source)?.push({ id: target, edgeId: edge.id });
+      adjacency.get(target)?.push({ id: source, edgeId: edge.id });
+    });
+
+    const findShortestPath = (start: string, goal: string, maxLen = 6) => {
+      if (start === goal) return null;
+      const queue: Array<{ node: string; path: string[]; edges: string[] }> = [
+        { node: start, path: [start], edges: [] },
+      ];
+      const visited = new Set<string>([start]);
+      while (queue.length) {
+        const current = queue.shift()!;
+        if (current.path.length > maxLen) continue;
+        const neighbors = adjacency.get(current.node) || [];
+        for (const next of neighbors) {
+          if (visited.has(next.id)) continue;
+          const nextPath = [...current.path, next.id];
+          const nextEdges = [...current.edges, next.edgeId];
+          if (next.id === goal) {
+            return { nodes: nextPath, edges: nextEdges };
+          }
+          visited.add(next.id);
+          queue.push({ node: next.id, path: nextPath, edges: nextEdges });
+        }
+      }
+      return null;
+    };
+
+    const candidateNodes = Array.from(new Set([...entityMatches, ...keywordNodeMatches])).slice(0, 8);
+    const autoPaths: Array<{ id: string; nodes: string[]; edges: string[]; length: number; weight: number }> = [];
+    for (let i = 0; i < candidateNodes.length; i += 1) {
+      for (let j = i + 1; j < candidateNodes.length; j += 1) {
+        const pathFound = findShortestPath(candidateNodes[i], candidateNodes[j]);
+        if (pathFound) {
+          autoPaths.push({
+            id: `auto_path_${candidateNodes[i]}_${candidateNodes[j]}`,
+            nodes: pathFound.nodes,
+            edges: pathFound.edges,
+            length: pathFound.nodes.length,
+            weight: pathFound.edges.length,
+          });
+        }
+        if (autoPaths.length >= 3) break;
+      }
+      if (autoPaths.length >= 3) break;
+    }
+
+    setAutoPaths(autoPaths);
+    if (autoPaths.length > 0) {
+      const primary = autoPaths[0];
+      rendererRef.current.setPathHighlight({ nodeIds: primary.nodes, edgeIds: primary.edges });
+      if (activeWorkspaceTab === 'graph') {
+        rendererRef.current.fitTo(primary.nodes, 90);
+      }
+    } else {
+      rendererRef.current.setPathHighlight({ nodeIds: [], edgeIds: [] });
+    }
+  }, [selectedCitation, activeWorkspaceTab, rendererRef, viewMode, rendererKey, setAutoPaths, highlightAll]);
 
   useEffect(() => {
     const element = containerRef.current;

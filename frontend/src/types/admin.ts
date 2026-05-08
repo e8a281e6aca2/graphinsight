@@ -15,6 +15,7 @@ export interface ApiResponse<T = any> {
   message: string;
   data?: T;
   timestamp: string;
+  trace_id?: string;
 }
 
 /**
@@ -101,7 +102,7 @@ export interface ChangePasswordRequest {
 /**
  * 配置分类类型
  */
-export type ConfigCategory = 'neo4j' | 'openai' | 'ai_service' | 'nl2cypher';
+export type ConfigCategory = 'neo4j' | 'ai_service' | 'nl2cypher';
 
 /**
  * 配置项
@@ -190,6 +191,25 @@ export interface Neo4jConfig {
   database: string;
 }
 
+export interface ConnectionTestCheck {
+  name: string;
+  success: boolean;
+  message: string;
+  latency_ms?: number;
+}
+
+export interface ConnectionTestResult {
+  success: boolean;
+  message: string;
+  provider?: string | null;
+  model?: string | null;
+  base_url?: string | null;
+  endpoint?: string | null;
+  latency_ms?: number;
+  checked_at?: string;
+  checks?: ConnectionTestCheck[];
+}
+
 // ============================================================
 // 监控相关类型
 // ============================================================
@@ -206,6 +226,138 @@ export interface SystemStats {
   disk_used_gb: number;
   disk_total_gb: number;
   uptime_seconds: number;
+  timestamp: string;
+}
+
+export interface ApiPathMetric {
+  path: string;
+  total: number;
+  failed: number;
+  error_rate: number;
+}
+
+export interface PerformanceMetricsData {
+  avg_response_time_ms: number;
+  p50_response_time_ms: number;
+  p95_response_time_ms: number;
+  p99_response_time_ms: number;
+  requests_per_second: number;
+  error_rate: number;
+  total_requests: number;
+  failed_requests: number;
+  window_seconds: number;
+  top_paths: ApiPathMetric[];
+  timestamp: string;
+}
+
+export interface JobSloMetrics {
+  window_minutes: number;
+  total_jobs: number;
+  succeeded_jobs: number;
+  failed_jobs: number;
+  cancelled_jobs: number;
+  running_jobs: number;
+  pending_jobs: number;
+  timeout_failed_jobs: number;
+  success_rate: number;
+  timeout_rate: number;
+  p95_duration_ms: number;
+  p99_duration_ms: number;
+  timestamp: string;
+}
+
+export interface QATypeMetric {
+  qa_type: string;
+  total: number;
+  failed: number;
+  success_rate: number;
+  citation_rate: number;
+  avg_citations: number;
+  p95_latency_ms: number;
+}
+
+export interface QAQualityMetrics {
+  window_seconds: number;
+  total_requests: number;
+  failed_requests: number;
+  success_rate: number;
+  failure_rate: number;
+  citation_rate: number;
+  avg_citations: number;
+  avg_latency_ms: number;
+  p50_latency_ms: number;
+  p95_latency_ms: number;
+  p99_latency_ms: number;
+  by_type: QATypeMetric[];
+  timestamp: string;
+}
+
+export type QATraceType = 'docqa' | 'deep_research';
+export type QATraceStatus = 'success' | 'failed';
+
+export interface QATraceItem {
+  id: number;
+  trace_id?: string;
+  qa_type: QATraceType;
+  status: QATraceStatus;
+  question: string;
+  operator_id?: number;
+  model?: string;
+  top_k?: number;
+  latency_ms?: number;
+  retrieval_count: number;
+  citation_count: number;
+  answer_preview?: string;
+  error_message?: string;
+  created_at: string;
+}
+
+export interface QATraceDetail extends QATraceItem {
+  retrieval_snapshot?: any;
+  generation_snapshot?: any;
+  response_snapshot?: any;
+}
+
+export interface QATraceQueryParams {
+  qa_type?: QATraceType;
+  status?: QATraceStatus;
+  trace_id?: string;
+  operator_id?: number;
+  keyword?: string;
+  page?: number;
+  page_size?: number;
+}
+
+export interface SloTargetItem {
+  value: number | string;
+  target: string;
+}
+
+export interface SloSnapshot {
+  api: PerformanceMetricsData;
+  jobs: JobSloMetrics;
+  slo: {
+    api_error_rate: SloTargetItem;
+    job_success_rate: SloTargetItem;
+    job_timeout_rate: SloTargetItem;
+    job_p95_duration_ms: SloTargetItem;
+  };
+  timestamp: string;
+}
+
+export interface AlertItem {
+  type: string;
+  severity: 'info' | 'warning' | 'error';
+  message: string;
+}
+
+export interface AlertCheckResult {
+  alerts: AlertItem[];
+  alert_count: number;
+  sent: boolean;
+  delivery_error?: string;
+  webhook_configured: boolean;
+  snapshot: SloSnapshot;
   timestamp: string;
 }
 
@@ -280,6 +432,9 @@ export interface HealthStatus {
 export interface LogItem {
   id: number;
   user_id?: number;
+  operator_id?: number;
+  tenant_id?: string;
+  trace_id?: string;
   username?: string;
   action: string;
   resource?: string;
@@ -318,6 +473,7 @@ export interface LogQueryParams {
   action?: string;
   resource?: string;
   status?: 'success' | 'failed';
+  trace_id?: string;
   start_date?: string;
   end_date?: string;
   ip_address?: string;
@@ -336,6 +492,186 @@ export interface LogStats {
   action_stats: Record<string, number>;
   user_stats: Record<string, number>;
   hourly_stats: Record<string, number>;
+}
+
+// ============================================================
+// RBAC 相关类型
+// ============================================================
+
+export type ScopeType = 'global' | 'tenant' | 'project' | 'kb';
+
+export interface RoleItem {
+  id: number;
+  name: string;
+  description?: string;
+  is_system: boolean;
+  created_at: string;
+  updated_at?: string;
+}
+
+export interface PermissionItem {
+  id: number;
+  code: string;
+  resource_type: string;
+  action: string;
+  description?: string;
+  created_at: string;
+}
+
+export interface BindingItem {
+  id: number;
+  user_id: number;
+  username?: string;
+  email?: string;
+  role_id: number;
+  role_name: string;
+  scope_type: ScopeType;
+  tenant_id?: string;
+  project_id?: string;
+  kb_id?: string;
+  expires_at?: string;
+  created_by?: number;
+  created_at: string;
+}
+
+export interface BindingCreateRequest {
+  user_id: number;
+  role_name: string;
+  scope_type: ScopeType;
+  tenant_id?: string;
+  project_id?: string;
+  kb_id?: string;
+  expires_at?: string;
+}
+
+export interface AdminUserItem {
+  id: number;
+  username: string;
+  email?: string;
+  full_name?: string;
+  phone?: string;
+  department?: string;
+  avatar?: string;
+  is_active: boolean;
+  last_login?: string;
+  last_login_ip?: string;
+  login_count: number;
+  created_at: string;
+  updated_at?: string;
+}
+
+export interface AdminUserCreateRequest {
+  username: string;
+  email: string;
+  password: string;
+  full_name?: string;
+  phone?: string;
+  department?: string;
+}
+
+export interface AdminUserUpdateRequest {
+  email?: string;
+  full_name?: string;
+  phone?: string;
+  department?: string;
+  avatar?: string;
+  is_active?: boolean;
+}
+
+export interface AdminUserResetPasswordRequest {
+  new_password: string;
+}
+
+export interface AdminUserBatchStatusRequest {
+  user_ids: number[];
+  is_active: boolean;
+}
+
+export interface AdminUserBatchDeleteRequest {
+  user_ids: number[];
+  soft_delete?: boolean;
+}
+
+export interface AdminUserBatchResetPasswordRequest {
+  user_ids: number[];
+  new_password: string;
+}
+
+export interface AdminUserBatchStatusResult {
+  updated_count: number;
+  updated_ids: number[];
+  not_found_ids: number[];
+  skipped_self_ids: number[];
+}
+
+export interface AdminUserBatchDeleteResult {
+  deleted_count: number;
+  deleted_ids: number[];
+  not_found_ids: number[];
+  skipped_self_ids: number[];
+}
+
+export interface AdminUserBatchResetPasswordResult {
+  reset_count: number;
+  reset_ids: number[];
+  not_found_ids: number[];
+  skipped_self_ids: number[];
+}
+
+// ============================================================
+// 任务中心相关类型
+// ============================================================
+
+export type JobType = 'build_graph' | 'clear_kb' | 'reindex';
+export type JobStatus = 'pending' | 'running' | 'succeeded' | 'failed' | 'cancelled';
+
+export interface JobCreateRequest {
+  tenant_id?: string;
+  project_id?: string;
+  kb_id?: string;
+  payload?: Record<string, unknown>;
+  max_retries?: number;
+}
+
+export interface JobItem {
+  id: number;
+  job_type: JobType;
+  status: JobStatus;
+  tenant_id?: string;
+  project_id?: string;
+  kb_id?: string;
+  payload: Record<string, unknown>;
+  result?: Record<string, unknown>;
+  error_message?: string;
+  retry_count: number;
+  max_retries: number;
+  requested_by?: number;
+  trace_id?: string;
+  started_at?: string;
+  finished_at?: string;
+  created_at: string;
+  updated_at?: string;
+}
+
+export interface JobQueryParams {
+  job_type?: JobType;
+  status?: JobStatus;
+  tenant_id?: string;
+  project_id?: string;
+  kb_id?: string;
+  page?: number;
+  page_size?: number;
+}
+
+export interface JobLogItem {
+  id: number;
+  action: string;
+  status: 'success' | 'failed';
+  error_message?: string;
+  trace_id?: string;
+  operator_id?: number;
+  created_at: string;
+  details?: Record<string, unknown>;
 }
 
 // ============================================================

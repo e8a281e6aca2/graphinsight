@@ -1,16 +1,64 @@
 import { Box, Chip, Divider, Typography, Button } from '@mui/material';
-import { Description as DescriptionIcon, LocalLibrary as LibraryIcon } from '@mui/icons-material';
+import {
+  Description as DescriptionIcon,
+  LocalLibrary as LibraryIcon,
+  DeleteOutline as DeleteOutlineIcon,
+  DeleteSweep as DeleteSweepIcon,
+  RestoreFromTrash as RestoreFromTrashIcon,
+} from '@mui/icons-material';
 import { useGraphStore } from '../../store/graphStore';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { listDocuments, uploadDocuments, type DocumentItem } from '../../services/documents';
+import {
+  listDocuments,
+  uploadDocuments,
+  deleteDocument,
+  clearDocuments,
+  listDeletedDocuments,
+  restoreDocument,
+  type DocumentItem,
+  type DeletedDocumentItem,
+  type DocumentVerificationSnapshot,
+} from '../../services/documents';
+
+function buildGraphSummary(graph?: { documents: number; chunks: number; relations: number; orphan_entities: number }) {
+  if (!graph) return '';
+  return `图谱清理：文档 ${graph.documents} · 片段 ${graph.chunks} · 关系 ${graph.relations}`;
+}
+
+function buildVerificationSummary(verification?: DocumentVerificationSnapshot) {
+  if (!verification?.after) return '';
+  const graph = verification.after.graph;
+  if (!graph) {
+    return `校验：文档剩余 ${verification.after.active_documents}`;
+  }
+  return `校验：文档剩余 ${verification.after.active_documents} · 图文档 ${graph.documents ?? 0} · 图关系 ${graph.relations ?? 0}`;
+}
+
+function formatRemainingTime(remainingMs?: number | null) {
+  if (!remainingMs || remainingMs <= 0) return '即将过期';
+  const totalMinutes = Math.max(1, Math.floor(remainingMs / 60000));
+  const days = Math.floor(totalMinutes / (24 * 60));
+  const hours = Math.floor((totalMinutes % (24 * 60)) / 60);
+  const minutes = totalMinutes % 60;
+  if (days > 0) return `${days}天${hours}小时`;
+  if (hours > 0) return `${hours}小时${minutes}分钟`;
+  return `${minutes}分钟`;
+}
 
 export function DocumentPanel() {
   const selectedCitation = useGraphStore((state) => state.selectedCitation);
+  const setSelectedCitation = useGraphStore((state) => state.setSelectedCitation);
+  const setGraphData = useGraphStore((state) => state.setGraphData);
+  const setRecentUploadedDocIds = useGraphStore((state) => state.setRecentUploadedDocIds);
   const citationRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [documents, setDocuments] = useState<DocumentItem[]>([]);
+  const [deletedDocuments, setDeletedDocuments] = useState<DeletedDocumentItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [restoringId, setRestoringId] = useState<string | null>(null);
+  const [clearingAll, setClearingAll] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [uploadSummary, setUploadSummary] = useState<string | null>(null);
 
@@ -24,8 +72,12 @@ export function DocumentPanel() {
     setLoading(true);
     setError(null);
     try {
-      const items = await listDocuments();
+      const [items, deletedItems] = await Promise.all([
+        listDocuments(),
+        listDeletedDocuments(),
+      ]);
       setDocuments(items);
+      setDeletedDocuments(deletedItems);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       setError(message);
@@ -48,6 +100,11 @@ export function DocumentPanel() {
         const result = await uploadDocuments(files);
         const uploaded = result?.uploaded?.length || 0;
         const skipped = result?.skipped?.length || 0;
+        setRecentUploadedDocIds(
+          (result?.uploaded || [])
+            .map((item) => item.doc_id || item.id)
+            .filter((item): item is string => Boolean(item))
+        );
         setUploadSummary(`上传成功 ${uploaded} · 跳过 ${skipped}`);
         await refreshDocuments();
       } catch (err) {
@@ -57,7 +114,7 @@ export function DocumentPanel() {
         setUploading(false);
       }
     },
-    [refreshDocuments]
+    [refreshDocuments, setRecentUploadedDocIds]
   );
 
   const handleDrop = (event: React.DragEvent<HTMLDivElement>) => {
@@ -71,6 +128,119 @@ export function DocumentPanel() {
     handleUpload(files);
     event.target.value = '';
   };
+
+  const handleDeleteOne = useCallback(
+    async (item: DocumentItem) => {
+      setDeletingId(item.id);
+      setError(null);
+      try {
+        const preview = await deleteDocument(item.id, {
+          purgeGraph: true,
+          softDelete: true,
+          dryRun: true,
+          verifyAfter: false,
+        });
+        const previewText = preview.candidate_file?.exists
+          ? `将软删除文档「${item.name}」并清理图谱。`
+          : `文件不存在，将仅清理图谱数据。`;
+        const graphText = buildGraphSummary(preview.graph);
+        const confirmed = window.confirm([previewText, graphText].filter(Boolean).join('\n'));
+        if (!confirmed) return;
+
+        const result = await deleteDocument(item.id, {
+          purgeGraph: true,
+          softDelete: true,
+          dryRun: false,
+          verifyAfter: true,
+        });
+        const graphSummary = buildGraphSummary(result?.graph);
+        const verificationSummary = buildVerificationSummary(result?.verification);
+        setUploadSummary(
+          [result?.file_action === 'soft_deleted' ? `已移入回收站 ${item.name}` : `已删除 ${item.name}`, graphSummary, verificationSummary]
+            .filter(Boolean)
+            .join('。')
+        );
+        if (selectedCitation?.title === item.name) {
+          setSelectedCitation(null);
+        }
+        await refreshDocuments();
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        setError(message);
+      } finally {
+        setDeletingId(null);
+      }
+    },
+    [refreshDocuments, selectedCitation?.title, setSelectedCitation]
+  );
+
+  const handleClearAll = useCallback(async () => {
+    setClearingAll(true);
+    setError(null);
+    try {
+      const preview = await clearDocuments({
+        purgeGraph: true,
+        softDelete: true,
+        dryRun: true,
+        verifyAfter: false,
+      });
+      const confirmed = window.confirm(
+        `即将软删除 ${preview?.candidate_files || 0} 个文档并清理图谱，删除内容可在回收站恢复。\n确认继续？`
+      );
+      if (!confirmed) return;
+
+      const result = await clearDocuments({
+        purgeGraph: true,
+        softDelete: true,
+        dryRun: false,
+        verifyAfter: true,
+      });
+      const graphSummary = buildGraphSummary(result?.graph);
+      const verificationSummary = buildVerificationSummary(result?.verification);
+      setUploadSummary(
+        [`已处理 ${result?.removed_files || 0} 个文件（软删除）`, graphSummary, verificationSummary]
+          .filter(Boolean)
+          .join('。')
+      );
+      setSelectedCitation(null);
+      setGraphData({
+        nodes: [],
+        edges: [],
+        stats: { nodeCount: 0, edgeCount: 0, executionTime: 0 },
+      });
+      await refreshDocuments();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setError(message);
+    } finally {
+      setClearingAll(false);
+    }
+  }, [refreshDocuments, setGraphData, setSelectedCitation]);
+
+  const handleRestore = useCallback(
+    async (item: DeletedDocumentItem) => {
+      const confirmed = window.confirm(`确认恢复文档「${item.name}」？恢复后可重新建图。`);
+      if (!confirmed) return;
+      setRestoringId(item.doc_id);
+      setError(null);
+      try {
+        const result = await restoreDocument(item.doc_id);
+        const verificationSummary = buildVerificationSummary(result?.verification);
+        setUploadSummary(
+          [`已恢复 ${result.restored_name}`, verificationSummary, result.note]
+            .filter(Boolean)
+            .join('。')
+        );
+        await refreshDocuments();
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        setError(message);
+      } finally {
+        setRestoringId(null);
+      }
+    },
+    [refreshDocuments]
+  );
 
   return (
     <Box
@@ -137,6 +307,17 @@ export function DocumentPanel() {
               onClick={() => fileInputRef.current?.click()}
             >
               {uploading ? '上传中...' : '选择文件'}
+            </Button>
+            <Button
+              variant="text"
+              color="error"
+              size="small"
+              startIcon={<DeleteSweepIcon fontSize="small" />}
+              disabled={clearingAll}
+              onClick={handleClearAll}
+              sx={{ ml: 1 }}
+            >
+              {clearingAll ? '清空中...' : '清空知识库'}
             </Button>
             <input
               ref={fileInputRef}
@@ -237,9 +418,69 @@ export function DocumentPanel() {
                 color="success"
                 variant="outlined"
               />
+              <Button
+                size="small"
+                color="error"
+                variant="text"
+                startIcon={<DeleteOutlineIcon fontSize="small" />}
+                disabled={deletingId === item.id}
+                onClick={() => {
+                  handleDeleteOne(item);
+                }}
+              >
+                {deletingId === item.id ? '删除中...' : '删除'}
+              </Button>
             </Box>
             );
           })}
+        </Box>
+
+        <Box sx={{ mt: 3 }}>
+          <Typography variant="subtitle2" sx={{ mb: 1 }}>
+            回收站（{deletedDocuments.length}）
+          </Typography>
+          <Box sx={{ display: 'grid', gap: 1.2 }}>
+            {deletedDocuments.length === 0 && (
+              <Typography variant="body2" color="text.secondary">
+                暂无可恢复文档。
+              </Typography>
+            )}
+            {deletedDocuments.map((item) => {
+              const sizeKb = Math.max(1, Math.round(item.size / 1024));
+              return (
+                <Box
+                  key={item.doc_id}
+                  sx={(theme) => ({
+                    p: 1.5,
+                    borderRadius: 2,
+                    border: `1px solid ${theme.palette.divider}`,
+                    bgcolor: theme.palette.mode === 'dark' ? 'rgba(148, 163, 184, 0.08)' : 'rgba(148, 163, 184, 0.08)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 1.5,
+                  })}
+                >
+                  <Box sx={{ flex: 1 }}>
+                    <Typography variant="subtitle2">{item.name}</Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      {item.ext.toUpperCase().replace('.', '')} · {sizeKb} KB · 剩余 {formatRemainingTime(item.remaining_ms)}
+                    </Typography>
+                  </Box>
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    startIcon={<RestoreFromTrashIcon fontSize="small" />}
+                    disabled={restoringId === item.doc_id}
+                    onClick={() => {
+                      handleRestore(item);
+                    }}
+                  >
+                    {restoringId === item.doc_id ? '恢复中...' : '恢复'}
+                  </Button>
+                </Box>
+              );
+            })}
+          </Box>
         </Box>
       </Box>
     </Box>

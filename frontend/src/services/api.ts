@@ -13,7 +13,13 @@ export const api = axios.create({
 // 请求拦截器
 api.interceptors.request.use(
   (config) => {
-    // 可以在这里添加认证 token 等
+    const token =
+      typeof window !== 'undefined'
+        ? window.localStorage.getItem('admin_token')
+        : null;
+    if (token) {
+      config.headers.Authorization = `Bearer ${token}`;
+    }
     return config;
   },
   (error) => {

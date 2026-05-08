@@ -6,10 +6,11 @@ import type * as Monaco from 'monaco-editor';
 import { useGraphStore } from '../../store/graphStore';
 import { useCypher } from '../../hooks/useCypher';
 
-const DEFAULT_QUERY = `// 示例查询：获取所有节点及其关系
-MATCH (n)-[r]->(m)
-RETURN n, r, m
-LIMIT 50`;
+const DEFAULT_QUERY = `// 示例查询：优先查看文档建图产出的实体关系
+MATCH (e1:Entity)-[r]->(e2:Entity)
+WHERE r.source = 'document_ingest'
+RETURN e1, r, e2
+LIMIT 80`;
 
 export interface CypherEditorRef {
   setValue: (value: string) => void;
@@ -22,6 +23,10 @@ export const CypherEditor = forwardRef<CypherEditorRef>((_props, ref) => {
 
   const isDarkMode = useGraphStore((state) => state.isDarkMode);
   const { execute, isExecuting, error, clearError } = useCypher();
+
+  const handleExecute = async () => {
+    await execute(query);
+  };
 
   // 暴露方法给父组件
   useImperativeHandle(ref, () => ({
@@ -41,16 +46,11 @@ export const CypherEditor = forwardRef<CypherEditorRef>((_props, ref) => {
 
     // 添加 Ctrl+Enter 快捷键
     editor.addCommand(
-      // eslint-disable-next-line no-bitwise
       monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter,
       () => {
         handleExecute();
       }
     );
-  };
-
-  const handleExecute = async () => {
-    await execute(query);
   };
 
   return (

@@ -9,6 +9,8 @@ export function useCypher() {
   const setGraphData = useGraphStore((state) => state.setGraphData);
   const setLastQueryStats = useGraphStore((state) => state.setLastQueryStats);
   const addQueryToHistory = useGraphStore((state) => state.addQueryToHistory);
+  const setHighlightAll = useGraphStore((state) => state.setHighlightAll);
+  const setSelectedCitation = useGraphStore((state) => state.setSelectedCitation);
 
   const execute = async (cypher: string) => {
     if (!cypher.trim()) {
@@ -28,6 +30,9 @@ export function useCypher() {
       // 更新图数据
       setGraphData(result);
       console.log('💾 useCypher - Graph data updated in store');
+      // 查询面板：全量高亮，避免只亮少量节点
+      setHighlightAll(true);
+      setSelectedCitation(null);
 
       // 更新统计信息
       if (result.stats) {

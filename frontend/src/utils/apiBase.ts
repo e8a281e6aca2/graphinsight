@@ -22,7 +22,7 @@ const envIsAuto = !envBase || envBase === 'auto' || envBase === 'same-origin';
 
 const normalizedEnv = envIsAuto ? '' : normalizeBase(envBase);
 const cleanedEnv = normalizedEnv.endsWith('/api') ? normalizedEnv.slice(0, -4) : normalizedEnv;
-const resolvedBase = cleanedEnv || runtimeOrigin || 'http://localhost:8000';
+const resolvedBase = cleanedEnv || runtimeOrigin || 'http://localhost:8081';
 
 export const API_BASE_URL = normalizeBase(resolvedBase);
 

@@ -9,27 +9,22 @@ import {
   Card,
   CardContent,
   Typography,
-  AppBar,
-  Toolbar,
-  IconButton,
   Button,
   CircularProgress,
   Alert,
   Stack,
 } from '@mui/material';
 import { 
-  ArrowBack, 
   Refresh,
   Analytics as AnalyticsIcon,
 } from '@mui/icons-material';
-import { useNavigate } from 'react-router-dom';
 import { logApi } from '../../services/adminService';
 import OperationTypeChart from '../../components/Admin/Charts/OperationTypeChart';
 import LogStatsChart from '../../components/Admin/Charts/LogStatsChart';
 import type { LogStats } from '../../types/admin';
+import AdminLayout from '../../components/Admin/AdminLayout';
 
 const AnalyticsPage: React.FC = () => {
-  const navigate = useNavigate();
   const [logStats, setLogStats] = useState<LogStats | null>(null);
   const [operationStats, setOperationStats] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
@@ -64,33 +59,15 @@ const AnalyticsPage: React.FC = () => {
     }
   };
 
-  return (
-    <Box>
-      <AppBar position="static">
-        <Toolbar>
-          <IconButton
-            edge="start"
-            color="inherit"
-            onClick={() => navigate('/admin/dashboard')}
-            sx={{ mr: 2 }}
-          >
-            <ArrowBack />
-          </IconButton>
-          <Typography variant="h6" component="div" sx={{ flexGrow: 1 }}>
-            数据分析
-          </Typography>
-          <Button
-            color="inherit"
-            startIcon={<Refresh />}
-            onClick={loadData}
-            disabled={loading}
-          >
-            刷新
-          </Button>
-        </Toolbar>
-      </AppBar>
+  const actionBar = (
+    <Button variant="outlined" startIcon={<Refresh />} onClick={loadData} disabled={loading}>
+      刷新
+    </Button>
+  );
 
-      <Container maxWidth="lg" sx={{ mt: 4, mb: 4 }}>
+  return (
+    <AdminLayout title="数据分析" subtitle="行为趋势与风险洞察" actions={actionBar}>
+      <Container maxWidth="lg" sx={{ px: 0 }}>
         {error && (
           <Alert severity="error" sx={{ mb: 3 }}>
             {error}
@@ -171,7 +148,7 @@ const AnalyticsPage: React.FC = () => {
           </Stack>
         )}
       </Container>
-    </Box>
+    </AdminLayout>
   );
 };
 

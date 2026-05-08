@@ -16,9 +16,6 @@ import {
   TableHead,
   TableRow,
   TablePagination,
-  AppBar,
-  Toolbar,
-  IconButton,
   Chip,
   CircularProgress,
   Alert,
@@ -26,13 +23,12 @@ import {
   MenuItem,
   Button,
 } from '@mui/material';
-import { ArrowBack, Refresh, FilterList } from '@mui/icons-material';
-import { useNavigate } from 'react-router-dom';
+import { Refresh, FilterList } from '@mui/icons-material';
 import { logApi } from '../../services/adminService';
 import type { LogItem } from '../../types/admin';
+import AdminLayout from '../../components/Admin/AdminLayout';
 
 const LogsPage: React.FC = () => {
-  const navigate = useNavigate();
   const [logs, setLogs] = useState<LogItem[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(0);
@@ -41,10 +37,11 @@ const LogsPage: React.FC = () => {
   const [error, setError] = useState('');
   const [action, setAction] = useState<string>('');
   const [status, setStatus] = useState<'success' | 'failed' | ''>('');
+  const [traceId, setTraceId] = useState('');
 
   useEffect(() => {
     loadLogs();
-  }, [page, rowsPerPage, action, status]);
+  }, [page, rowsPerPage, action, status, traceId]);
 
   const loadLogs = async () => {
     setLoading(true);
@@ -55,9 +52,10 @@ const LogsPage: React.FC = () => {
         page_size: rowsPerPage,
         action: action || undefined,
         status: status || undefined,
+        trace_id: traceId.trim() || undefined,
       });
-      setLogs(response.logs);
-      setTotal(response.total);
+      setLogs(Array.isArray(response.logs) ? response.logs : []);
+      setTotal(Number(response.total || 0));
     } catch (err: any) {
       console.error('加载日志失败:', err);
       setError(err.message || '加载日志失败');
@@ -71,25 +69,15 @@ const LogsPage: React.FC = () => {
     return date.toLocaleString('zh-CN');
   };
 
-  return (
-    <Box>
-      <AppBar position="static">
-        <Toolbar>
-          <IconButton
-            edge="start"
-            color="inherit"
-            onClick={() => navigate('/admin/dashboard')}
-            sx={{ mr: 2 }}
-          >
-            <ArrowBack />
-          </IconButton>
-          <Typography variant="h6" component="div" sx={{ flexGrow: 1 }}>
-            操作日志
-          </Typography>
-        </Toolbar>
-      </AppBar>
+  const actionBar = (
+    <Button variant="outlined" startIcon={<Refresh />} onClick={loadLogs} disabled={loading}>
+      刷新
+    </Button>
+  );
 
-      <Container maxWidth="lg" sx={{ mt: 4, mb: 4 }}>
+  return (
+    <AdminLayout title="日志审计" subtitle="关键操作与风险留痕" actions={actionBar}>
+      <Container maxWidth="lg" sx={{ px: 0 }}>
         {error && (
           <Alert severity="error" sx={{ mb: 3 }}>
             {error}
@@ -133,6 +121,17 @@ const LogsPage: React.FC = () => {
                 <MenuItem value="success">成功</MenuItem>
                 <MenuItem value="failed">失败</MenuItem>
               </TextField>
+              <TextField
+                label="Trace ID"
+                value={traceId}
+                onChange={(e) => {
+                  setTraceId(e.target.value);
+                  setPage(0);
+                }}
+                size="small"
+                sx={{ minWidth: 260 }}
+                placeholder="按 trace_id 精确查询"
+              />
 
               <Button
                 variant="outlined"
@@ -165,12 +164,13 @@ const LogsPage: React.FC = () => {
                         <TableCell>状态</TableCell>
                         <TableCell>详情</TableCell>
                         <TableCell>IP 地址</TableCell>
+                        <TableCell>Trace ID</TableCell>
                       </TableRow>
                     </TableHead>
                     <TableBody>
                       {logs.length === 0 ? (
                         <TableRow>
-                          <TableCell colSpan={7} align="center">
+                          <TableCell colSpan={8} align="center">
                             <Typography color="text.secondary">暂无日志</Typography>
                           </TableCell>
                         </TableRow>
@@ -196,6 +196,11 @@ const LogsPage: React.FC = () => {
                               </Typography>
                             </TableCell>
                             <TableCell>{log.ip_address || '-'}</TableCell>
+                            <TableCell>
+                              <Typography variant="body2" noWrap sx={{ maxWidth: 220 }}>
+                                {log.trace_id || '-'}
+                              </Typography>
+                            </TableCell>
                           </TableRow>
                         ))
                       )}
@@ -220,7 +225,7 @@ const LogsPage: React.FC = () => {
           </CardContent>
         </Card>
       </Container>
-    </Box>
+    </AdminLayout>
   );
 };
 
