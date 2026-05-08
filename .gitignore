@@ -45,6 +45,8 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
+frontend/playwright-report/
+frontend/test-results/
 
 # IDE
 .vscode/
@@ -70,9 +72,13 @@ backend/media/*
 *.temp
 *.bak
 *.cache
+tmp_*.ps1
+%TEMP%*
 
 # OS files
 Thumbs.db
 desktop.ini
-docs/
+docs/*
+docs/study/
 .claude/
+.codex/

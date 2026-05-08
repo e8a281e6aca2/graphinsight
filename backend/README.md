@@ -2,6 +2,37 @@
 
 多模态知识图谱可视化平台后端服务
 
+## 当前角色
+
+当前执行口径下，`backend/` 是 GraphInsight 的 Python 能力层，而不是默认公共 API 前门。
+
+它主要负责：
+
+1. 文档解析与切分
+2. 实体/关系抽取
+3. `docqa`、`deep-research`、`nl2cypher` 等 AI 能力
+4. 被 Go 网关编排调用的上游服务
+
+本地默认入口：
+
+1. Go 外部网关：`http://127.0.0.1:8081`
+2. Python 能力层：`http://127.0.0.1:8001`
+
+前端与外部调用默认应优先经过 Go，而不是直接打 Python。
+
+## 环境模式
+
+当前后端联调建议区分两种模式：
+
+1. 本机混合模式：Neo4j 用 Desktop 或 Docker，Python / Go 跑宿主机
+2. Docker 联调模式：Neo4j 用 Docker，Python / Go 仍跑宿主机
+
+详细说明见：
+
+1. [DEVELOPMENT_ENVIRONMENT_MODES.md](/mnt/c/Users/AxTlz/projects/GraphInsight/docs/DEVELOPMENT_ENVIRONMENT_MODES.md)
+2. [NEO4J_RUNTIME_SWITCHING.md](/mnt/c/Users/AxTlz/projects/GraphInsight/docs/NEO4J_RUNTIME_SWITCHING.md)
+3. [DELIVERY_RUNTIME_STRATEGY.md](/mnt/c/Users/AxTlz/projects/GraphInsight/docs/DELIVERY_RUNTIME_STRATEGY.md)
+
 ## 技术栈
 
 - **FastAPI**: 现代 Python Web 框架
@@ -51,7 +82,7 @@ cp .env.example .env
 # 默认配置：
 # NEO4J_URI=bolt://localhost:7687
 # NEO4J_USER=neo4j
-# NEO4J_PASSWORD=password
+# NEO4J_PASSWORD=<your-local-dev-password>
 ```
 
 ### 4. 初始化测试数据
@@ -78,13 +109,19 @@ start.bat
 python main.py
 
 # 方式 3: 使用 uvicorn
-uvicorn main:app --reload --host 0.0.0.0 --port 8000
+uvicorn main:app --reload --host 0.0.0.0 --port 8001
 ```
 
 服务启动后，访问：
-- API 根路径: http://localhost:8000
-- Swagger UI: http://localhost:8000/docs
-- ReDoc: http://localhost:8000/redoc
+- API 根路径: http://localhost:8001
+- Swagger UI: http://localhost:8001/docs
+- ReDoc: http://localhost:8001/redoc
+
+如果同时联调前端，建议顺序为：
+
+1. 启动 Python `8001`
+2. 启动 Go `8081`
+3. 启动前端 `5173`
 
 ### 6. 测试 API
 
@@ -92,7 +129,40 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 python test_api.py
 ```
 
+### 7. 发布前后端校验
+
+Windows PowerShell:
+
+```powershell
+$env:ADMIN_EMAIL="yh@qs.al"
+$env:ADMIN_PASSWORD="***"
+powershell -ExecutionPolicy Bypass -File backend/tests/run_backend_preflight.ps1
+```
+
+也可以改为提供已有 token：
+
+```powershell
+$env:ADMIN_TOKEN="***"
+powershell -ExecutionPolicy Bypass -File backend/tests/run_backend_preflight.ps1
+```
+
+脚本会自动：
+
+1. 检查 Python 能力层 `http://127.0.0.1:8001/health`
+2. 检查 Go 外部网关 `http://127.0.0.1:8081/health`
+3. 如未启动则依次拉起 Python 与 Go
+4. 先执行 `go-backend/scripts/smoke_orchestrated_routes.py`
+5. 再执行 `backend/tests/run_backend_smoke_suite.py`
+6. 自动停止本次脚本拉起的进程
+
+说明：
+
+1. 当前这个 preflight 已以 Go 作为默认外部验证入口。
+2. Python 仍作为 Go 的内部上游能力层参与联调。
+
 ## API 端点
+
+以下接口仍可用于能力调试与上游联调，但默认对外入口应以 Go 为准。
 
 ### 1. 健康检查
 

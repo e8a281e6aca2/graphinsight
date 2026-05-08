@@ -16,6 +16,49 @@
 * **深度洞察挖掘**：通过路径查找、社群发现等功能，帮助用户从图谱中发现深层规律和潜在价值。
 * **自定义配置**：提供灵活的配置选项，满足不同行业和数据的可视化需求。
 
+## 当前开发入口
+
+当前项目执行口径为：
+
+1. Go 负责默认外部 API 入口与业务编排
+2. Python 负责 AI 能力、文档解析与模型相关执行
+
+本地联调默认地址：
+
+1. Go 网关：`http://127.0.0.1:8081`
+2. Python 能力层：`http://127.0.0.1:8001`
+3. 前端开发服务：`http://127.0.0.1:5173`
+
+建议启动顺序：
+
+1. 先启动 Python `8001`
+2. 再启动 Go `8081`
+3. 最后启动前端 `5173`
+
+说明：
+
+1. 前端默认应通过 Go 访问 `/api/*`
+2. Python 不再作为默认公共入口使用
+3. 管理后台与业务链路会逐步继续向 Go 收口
+
+## 开发环境模式
+
+当前建议把开发环境分成两种模式理解：
+
+1. 本机混合模式：Python / Go / 前端跑宿主机，Neo4j 可用 Desktop 或 Docker
+2. Docker 联调模式：Neo4j 跑 Docker，Python / Go / 前端仍跑宿主机
+
+说明：
+
+1. 当前仓库已提供面向开发联调的 `docker-compose.dev.yml`，用于启动 Neo4j
+2. 当前仓库内还没有现成的全栈 `docker-compose.yml`
+3. 所以现在的 Docker 模式不是“前后端全容器化”
+4. 详细说明见 [docs/DEVELOPMENT_ENVIRONMENT_MODES.md](/mnt/c/Users/AxTlz/projects/GraphInsight/docs/DEVELOPMENT_ENVIRONMENT_MODES.md)
+5. Neo4j 实例切换能力说明见 [docs/NEO4J_RUNTIME_SWITCHING.md](/mnt/c/Users/AxTlz/projects/GraphInsight/docs/NEO4J_RUNTIME_SWITCHING.md)
+6. Go/Python 后端迁移当前完成度见 [docs/GO_PYTHON_MIGRATION_STATUS.md](/mnt/c/Users/AxTlz/projects/GraphInsight/docs/GO_PYTHON_MIGRATION_STATUS.md)
+7. 开发期与交付期运行策略见 [docs/DELIVERY_RUNTIME_STRATEGY.md](/mnt/c/Users/AxTlz/projects/GraphInsight/docs/DELIVERY_RUNTIME_STRATEGY.md)
+8. 前端 E2E 推荐运行方式见 [docs/FRONTEND_E2E_RUNTIME_GUIDE.md](/mnt/c/Users/AxTlz/projects/GraphInsight/docs/FRONTEND_E2E_RUNTIME_GUIDE.md)
+
 ---
 
 

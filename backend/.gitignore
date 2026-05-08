@@ -54,6 +54,17 @@ app.log*
 media/*
 !media/README.md
 
+# Uploaded documents used for graph build
+documents/**/*.pdf
+documents/**/*.docx
+documents/**/*.txt
+documents/**/*.md
+documents/**/*.markdown
+documents/**/*.csv
+documents/**/*.json
+documents/**/*.log
+documents/.gitkeep
+
 # Temporary files
 *.tmp
 *.temp
