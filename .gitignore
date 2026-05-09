@@ -78,7 +78,6 @@ tmp_*.ps1
 # OS files
 Thumbs.db
 desktop.ini
-docs/*
-docs/study/
+docs/
 .claude/
 .codex/

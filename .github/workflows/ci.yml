@@ -1,0 +1,103 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      run_frontend_e2e:
+        description: Run the full frontend DocQA E2E flow against an externally reachable Go gateway.
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  go-backend:
+    name: Go backend tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: go-backend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22.x'
+          cache-dependency-path: go-backend/go.sum
+
+      - name: Test
+        run: go test ./...
+
+  frontend-build:
+    name: Frontend build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.22.2'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+  frontend-e2e:
+    name: Frontend DocQA E2E
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_frontend_e2e }}
+    defaults:
+      run:
+        working-directory: frontend
+    env:
+      VITE_API_BASE_URL: ${{ secrets.GRAPHINSIGHT_E2E_API_BASE_URL }}
+      ADMIN_EMAIL: ${{ secrets.GRAPHINSIGHT_E2E_ADMIN_EMAIL }}
+      ADMIN_PASSWORD: ${{ secrets.GRAPHINSIGHT_E2E_ADMIN_PASSWORD }}
+      ADMIN_TOKEN: ${{ secrets.GRAPHINSIGHT_E2E_ADMIN_TOKEN }}
+      E2E_CHECK_UI_LOGIN: '0'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.22.2'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright browser
+        run: npx playwright install --with-deps chromium
+
+      - name: Validate E2E configuration
+        shell: bash
+        run: |
+          if [[ -z "$VITE_API_BASE_URL" ]]; then
+            echo "GRAPHINSIGHT_E2E_API_BASE_URL is required for frontend E2E."
+            exit 1
+          fi
+          if [[ -z "$ADMIN_TOKEN" && -z "$ADMIN_PASSWORD" ]]; then
+            echo "GRAPHINSIGHT_E2E_ADMIN_TOKEN or GRAPHINSIGHT_E2E_ADMIN_PASSWORD is required for frontend E2E."
+            exit 1
+          fi
+
+      - name: Run frontend E2E
+        run: npm run e2e
