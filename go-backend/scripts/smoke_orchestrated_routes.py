@@ -39,7 +39,16 @@ class StepResult:
     detail: str
 
 
-def _request(
+def _json_or_raw(text: str) -> Any:
+    if not text:
+        return {}
+    try:
+        return json.loads(text)
+    except Exception:
+        return {"raw": text}
+
+
+def _request_with_headers(
     *,
     base_url: str,
     method: str,
@@ -48,7 +57,7 @@ def _request(
     token: str = "",
     timeout: float = 20.0,
     headers: Optional[Dict[str, str]] = None,
-) -> tuple[int, Any]:
+) -> tuple[int, Any, Dict[str, str]]:
     url = base_url.rstrip("/") + path
     body = None
     req_headers: Dict[str, str] = {"Accept": "application/json"}
@@ -64,13 +73,32 @@ def _request(
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             text = resp.read().decode("utf-8", errors="replace")
-            return resp.status, json.loads(text) if text else {}
+            return resp.status, _json_or_raw(text), {k.lower(): v for k, v in resp.headers.items()}
     except urllib.error.HTTPError as exc:
         text = exc.read().decode("utf-8", errors="replace")
-        try:
-            return exc.code, json.loads(text) if text else {}
-        except Exception:
-            return exc.code, {"raw": text}
+        return exc.code, _json_or_raw(text), {k.lower(): v for k, v in exc.headers.items()}
+
+
+def _request(
+    *,
+    base_url: str,
+    method: str,
+    path: str,
+    payload: Optional[Dict[str, Any]] = None,
+    token: str = "",
+    timeout: float = 20.0,
+    headers: Optional[Dict[str, str]] = None,
+) -> tuple[int, Any]:
+    status, body, _ = _request_with_headers(
+        base_url=base_url,
+        method=method,
+        path=path,
+        payload=payload,
+        token=token,
+        timeout=timeout,
+        headers=headers,
+    )
+    return status, body
 
 
 def _login(base_url: str, username: str, password: str, timeout: float) -> str:
@@ -97,7 +125,7 @@ def _request_upload(
     timeout: float,
     filename: str,
     content: bytes,
-) -> tuple[int, Any]:
+) -> tuple[int, Any, Dict[str, str]]:
     boundary = "----GraphInsightSmoke" + uuid.uuid4().hex
     url = base_url.rstrip("/") + "/api/documents/upload"
 
@@ -120,19 +148,20 @@ def _request_upload(
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             text = resp.read().decode("utf-8", errors="replace")
-            return resp.status, json.loads(text) if text else {}
+            return resp.status, _json_or_raw(text), {k.lower(): v for k, v in resp.headers.items()}
     except urllib.error.HTTPError as exc:
         text = exc.read().decode("utf-8", errors="replace")
-        try:
-            return exc.code, json.loads(text) if text else {}
-        except Exception:
-            return exc.code, {"raw": text}
+        return exc.code, _json_or_raw(text), {k.lower(): v for k, v in exc.headers.items()}
 
 
 def _envelope_code(payload: Any) -> Any:
     if isinstance(payload, dict):
         return payload.get("code")
     return None
+
+
+def _route_owner(headers: Dict[str, str]) -> str:
+    return headers.get("x-graphinsight-route-owner", "")
 
 
 def _as_json(payload: Any) -> str:
@@ -165,7 +194,7 @@ def main() -> int:
     results: list[StepResult] = []
 
     # 1) Health
-    status, health = _request(
+    status, health, health_headers = _request_with_headers(
         base_url=args.go_base_url,
         method="GET",
         path="/health",
@@ -177,38 +206,68 @@ def main() -> int:
     else:
         orch = (health or {}).get("data", {}).get("orchestrator", {}) if isinstance(health, dict) else {}
         connected = bool(orch.get("connected"))
-        if args.require_orchestrator_connected and not connected:
+        owner = _route_owner(health_headers)
+        if owner != "go-native":
+            results.append(StepResult("health", False, status, f"route_owner={owner or '<missing>'}, expected=go-native"))
+        elif args.require_orchestrator_connected and not connected:
             results.append(StepResult("health", False, status, f"orchestrator not connected: {_as_json(orch)}"))
         else:
-            results.append(StepResult("health", True, status, f"orchestrator={_as_json(orch)}"))
+            results.append(StepResult("health", True, status, f"route_owner={owner}, orchestrator={_as_json(orch)}"))
 
     # 2) Documents list (orchestrated)
-    status, docs = _request(
+    status, docs, docs_headers = _request_with_headers(
         base_url=args.go_base_url,
         method="GET",
         path="/api/documents",
         token=token,
         timeout=args.timeout,
     )
-    ok_docs = status == 200 and isinstance(docs, dict)
-    detail_docs = f"envelope_code={_envelope_code(docs)}"
+    docs_owner = _route_owner(docs_headers)
+    ok_docs = status == 200 and isinstance(docs, dict) and docs_owner == "go-orchestrator"
+    detail_docs = f"route_owner={docs_owner or '<missing>'}, envelope_code={_envelope_code(docs)}"
     results.append(StepResult("documents.list", ok_docs, status, detail_docs))
 
     # 3) DocQA health (orchestrated)
-    status, qa_health = _request(
+    status, qa_health, qa_headers = _request_with_headers(
         base_url=args.go_base_url,
         method="GET",
         path="/api/docqa/health?probe_llm=false",
         token=token,
         timeout=args.timeout,
     )
-    ok_qa = status in {200, 500} and isinstance(qa_health, dict)
-    detail_qa = f"envelope_code={_envelope_code(qa_health)}"
+    qa_owner = _route_owner(qa_headers)
+    ok_qa = status in {200, 500} and isinstance(qa_health, dict) and qa_owner == "go-orchestrator"
+    detail_qa = f"route_owner={qa_owner or '<missing>'}, envelope_code={_envelope_code(qa_health)}"
     results.append(StepResult("docqa.health", ok_qa, status, detail_qa))
 
-    # 4) Optional graph build trigger (orchestrated)
+    # 4) NL2Cypher read-only contract checks (orchestrated)
+    status, nl_examples, nl_examples_headers = _request_with_headers(
+        base_url=args.go_base_url,
+        method="GET",
+        path="/api/nl2cypher/examples",
+        token=token,
+        timeout=args.timeout,
+    )
+    nl_examples_owner = _route_owner(nl_examples_headers)
+    ok_nl_examples = status == 200 and isinstance(nl_examples, dict) and nl_examples_owner == "go-orchestrator"
+    detail_nl_examples = f"route_owner={nl_examples_owner or '<missing>'}, success={nl_examples.get('success') if isinstance(nl_examples, dict) else None}"
+    results.append(StepResult("nl2cypher.examples", ok_nl_examples, status, detail_nl_examples))
+
+    status, nl_status, nl_status_headers = _request_with_headers(
+        base_url=args.go_base_url,
+        method="GET",
+        path="/api/nl2cypher/status",
+        token=token,
+        timeout=args.timeout,
+    )
+    nl_status_owner = _route_owner(nl_status_headers)
+    ok_nl_status = status == 200 and isinstance(nl_status, dict) and nl_status_owner == "go-orchestrator"
+    detail_nl_status = f"route_owner={nl_status_owner or '<missing>'}, enabled={nl_status.get('enabled') if isinstance(nl_status, dict) else None}"
+    results.append(StepResult("nl2cypher.status", ok_nl_status, status, detail_nl_status))
+
+    # 5) Optional graph build trigger (orchestrated)
     if args.with_build:
-        status, build = _request(
+        status, build, build_headers = _request_with_headers(
             base_url=args.go_base_url,
             method="POST",
             path="/api/graph/build",
@@ -216,21 +275,23 @@ def main() -> int:
             token=token,
             timeout=max(args.timeout, 60.0),
         )
-        ok_build = status == 200 and isinstance(build, dict)
-        detail_build = f"envelope_code={_envelope_code(build)}"
+        build_owner = _route_owner(build_headers)
+        ok_build = status == 200 and isinstance(build, dict) and build_owner == "go-orchestrator"
+        detail_build = f"route_owner={build_owner or '<missing>'}, envelope_code={_envelope_code(build)}"
         results.append(StepResult("graph.build", ok_build, status, detail_build))
 
-    # 5) Optional upload (orchestrated stream)
+    # 6) Optional upload (orchestrated stream)
     if args.with_upload:
-        status, upload = _request_upload(
+        status, upload, upload_headers = _request_upload(
             base_url=args.go_base_url,
             token=token,
             timeout=args.timeout,
             filename="smoke_upload.txt",
             content=b"GraphInsight smoke upload test\n",
         )
-        ok_upload = status == 200 and isinstance(upload, dict)
-        detail_upload = f"envelope_code={_envelope_code(upload)}"
+        upload_owner = _route_owner(upload_headers)
+        ok_upload = status == 200 and isinstance(upload, dict) and upload_owner == "go-orchestrator"
+        detail_upload = f"route_owner={upload_owner or '<missing>'}, envelope_code={_envelope_code(upload)}"
         results.append(StepResult("documents.upload", ok_upload, status, detail_upload))
 
     print("Smoke results:")
