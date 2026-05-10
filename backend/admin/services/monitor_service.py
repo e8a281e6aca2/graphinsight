@@ -7,7 +7,7 @@ import os
 import time
 import urllib.request
 from datetime import datetime
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 
@@ -41,12 +41,38 @@ class MonitorService:
         self.start_time = _start_time
         self.api_metrics = get_api_observability()
         self.qa_metrics = get_qa_observability()
+        try:
+            self.cache_ttl_seconds = max(0.0, float(os.getenv("MONITOR_CACHE_TTL_SECONDS", "5")))
+        except ValueError:
+            self.cache_ttl_seconds = 5.0
+        self._cache: Dict[str, tuple[float, Any]] = {}
+
+    def _get_cached(self, key: str) -> Optional[Any]:
+        if self.cache_ttl_seconds <= 0:
+            return None
+        cached = self._cache.get(key)
+        if not cached:
+            return None
+        expires_at, value = cached
+        if expires_at <= time.time():
+            self._cache.pop(key, None)
+            return None
+        return value
+
+    def _set_cached(self, key: str, value: Any) -> Any:
+        if self.cache_ttl_seconds > 0:
+            self._cache[key] = (time.time() + self.cache_ttl_seconds, value)
+        return value
     
     def get_system_stats(self) -> SystemStats:
         """获取系统统计信息"""
+        cached = self._get_cached("system_stats")
+        if cached is not None:
+            return cached
+
         if not PSUTIL_AVAILABLE:
             logger.warning("psutil 未安装，返回模拟数据")
-            return SystemStats(
+            return self._set_cached("system_stats", SystemStats(
                 cpu_percent=0.0,
                 memory_percent=0.0,
                 memory_used_mb=0.0,
@@ -56,11 +82,11 @@ class MonitorService:
                 disk_total_gb=0.0,
                 uptime_seconds=round(time.time() - self.start_time, 2),
                 timestamp=datetime.utcnow()
-            )
+            ))
         
         try:
             # CPU 使用率
-            cpu_percent = psutil.cpu_percent(interval=0.1)
+            cpu_percent = psutil.cpu_percent(interval=None)
             
             # 内存信息
             memory = psutil.virtual_memory()
@@ -77,7 +103,7 @@ class MonitorService:
             # 运行时间
             uptime_seconds = time.time() - self.start_time
             
-            return SystemStats(
+            return self._set_cached("system_stats", SystemStats(
                 cpu_percent=round(cpu_percent, 2),
                 memory_percent=round(memory_percent, 2),
                 memory_used_mb=round(memory_used_mb, 2),
@@ -87,7 +113,7 @@ class MonitorService:
                 disk_total_gb=round(disk_total_gb, 2),
                 uptime_seconds=round(uptime_seconds, 2),
                 timestamp=datetime.utcnow()
-            )
+            ))
         except Exception as e:
             logger.error(f"获取系统统计失败: {str(e)}", exc_info=True)
             raise SystemException("获取系统统计失败")
@@ -129,6 +155,10 @@ class MonitorService:
     
     def check_neo4j_status(self, db: Session) -> Neo4jStatus:
         """检查 Neo4j 状态"""
+        cached = self._get_cached("neo4j_status")
+        if cached is not None:
+            return cached
+
         try:
             from services.neo4j_service import get_neo4j_service
             from .config_service import config_service
@@ -144,44 +174,36 @@ class MonitorService:
                 
                 # 直接使用driver执行简单查询
                 with neo4j_service.driver.session() as session:
-                    # 获取节点数量
-                    result = session.run("MATCH (n) RETURN count(n) as count")
-                    record = result.single()
-                    nodes_count = record["count"] if record else 0
-                    
-                    # 获取关系数量
-                    result2 = session.run("MATCH ()-[r]->() RETURN count(r) as count")
-                    record2 = result2.single()
-                    relationships_count = record2["count"] if record2 else 0
+                    session.run("RETURN 1 AS ok").single()
                 
-                return Neo4jStatus(
+                return self._set_cached("neo4j_status", Neo4jStatus(
                     connected=True,
                     uri=uri,
                     database=database,
-                    nodes_count=nodes_count,
-                    relationships_count=relationships_count,
+                    nodes_count=None,
+                    relationships_count=None,
                     error=None
-                )
+                ))
             except Exception as e:
                 logger.error(f"Neo4j 查询失败: {str(e)}")
-                return Neo4jStatus(
+                return self._set_cached("neo4j_status", Neo4jStatus(
                     connected=False,
                     uri=uri,
                     database=database,
                     nodes_count=None,
                     relationships_count=None,
                     error=str(e)
-                )
+                ))
         except Exception as e:
             logger.error(f"Neo4j 检查失败: {str(e)}")
-            return Neo4jStatus(
+            return self._set_cached("neo4j_status", Neo4jStatus(
                 connected=False,
                 uri="unknown",
                 database="unknown",
                 nodes_count=None,
                 relationships_count=None,
                 error=str(e)
-            )
+            ))
     
     def check_ai_service_status(self, db: Session) -> AIServiceStatus:
         """检查AI服务状态"""
@@ -272,6 +294,10 @@ class MonitorService:
     
     def get_health_status(self, db: Session) -> HealthStatus:
         """获取健康状态"""
+        cached = self._get_cached("health_status")
+        if cached is not None:
+            return cached
+
         try:
             # 检查数据库
             database_status = self.check_database_status(db)
@@ -305,7 +331,7 @@ class MonitorService:
             else:
                 status = "unhealthy"
             
-            return HealthStatus(
+            return self._set_cached("health_status", HealthStatus(
                 status=status,
                 timestamp=datetime.utcnow(),
                 database=database_status,
@@ -313,7 +339,7 @@ class MonitorService:
                 ai_service=ai_service_status,
                 system=system_stats,
                 checks=checks
-            )
+            ))
         except Exception as e:
             logger.error(f"获取健康状态失败: {str(e)}", exc_info=True)
             raise SystemException("获取健康状态失败")
@@ -356,6 +382,11 @@ class MonitorService:
 
     def get_job_slo_metrics(self, db: Session, window_minutes: int = 60) -> Dict:
         """获取任务中心 SLO 指标"""
+        cache_key = f"job_slo:{window_minutes}"
+        cached = self._get_cached(cache_key)
+        if cached is not None:
+            return cached
+
         start_time = datetime.utcnow().timestamp() - max(window_minutes, 1) * 60
         rows = (
             db.query(AdminJob)
@@ -399,7 +430,7 @@ class MonitorService:
 
         success_rate = round((succeeded / total), 6) if total > 0 else 0.0
         timeout_rate = round((timeout_failed / total), 6) if total > 0 else 0.0
-        return {
+        return self._set_cached(cache_key, {
             "window_minutes": window_minutes,
             "total_jobs": total,
             "succeeded_jobs": succeeded,
@@ -413,7 +444,7 @@ class MonitorService:
             "p95_duration_ms": percentile(durations, 0.95),
             "p99_duration_ms": percentile(durations, 0.99),
             "timestamp": datetime.utcnow().isoformat() + "Z",
-        }
+        })
 
     def get_unified_metrics_snapshot(
         self,

@@ -31,10 +31,12 @@ import type { SystemStats, HealthStatus, LogStats } from '../../types/admin';
 import SystemResourceChart from '../../components/Admin/Charts/SystemResourceChart';
 import LogStatsChart from '../../components/Admin/Charts/LogStatsChart';
 import { useSystemMetrics } from '../../hooks/useSystemMetrics';
+import { usePageVisible } from '../../hooks/usePageVisible';
 import AdminLayout from '../../components/Admin/AdminLayout';
 
 const DashboardPage: React.FC = () => {
   const navigate = useNavigate();
+  const pageVisible = usePageVisible();
   const [systemStats, setSystemStats] = useState<SystemStats | null>(null);
   const [healthStatus, setHealthStatus] = useState<HealthStatus | null>(null);
   const [logStats, setLogStats] = useState<LogStats | null>(null);
@@ -50,9 +52,12 @@ const DashboardPage: React.FC = () => {
   useEffect(() => {
     fetchStats();
     // 每 30 秒自动刷新
-    const interval = setInterval(fetchStats, 30000);
-    return () => clearInterval(interval);
-  }, []);
+    if (!pageVisible) {
+      return undefined;
+    }
+    const interval = window.setInterval(fetchStats, 30000);
+    return () => window.clearInterval(interval);
+  }, [pageVisible]);
 
   const fetchStats = async () => {
     try {

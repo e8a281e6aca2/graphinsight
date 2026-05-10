@@ -35,6 +35,7 @@ import { Close, Refresh, RestartAlt, StopCircle } from '@mui/icons-material';
 import { jobsApi } from '../../services/adminService';
 import type { JobItem, JobLogItem, JobStatus, JobType } from '../../types/admin';
 import AdminLayout from '../../components/Admin/AdminLayout';
+import { usePageVisible } from '../../hooks/usePageVisible';
 
 type JobTypeFilter = JobType | '';
 type JobStatusFilter = JobStatus | '';
@@ -72,6 +73,7 @@ const formatDate = (value?: string) => {
 };
 
 const JobsPage: React.FC = () => {
+  const pageVisible = usePageVisible();
   const [jobs, setJobs] = useState<JobItem[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(0);
@@ -131,12 +133,12 @@ const JobsPage: React.FC = () => {
   }, [loadJobs]);
 
   useEffect(() => {
-    if (!hasRunningJobs) return undefined;
+    if (!hasRunningJobs || !pageVisible) return undefined;
     const timer = window.setInterval(() => {
       void loadJobs(false);
     }, 3000);
     return () => window.clearInterval(timer);
-  }, [hasRunningJobs, loadJobs]);
+  }, [hasRunningJobs, loadJobs, pageVisible]);
 
   const handleCreateBuildGraph = async () => {
     try {

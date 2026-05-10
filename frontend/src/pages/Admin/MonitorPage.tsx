@@ -28,6 +28,7 @@ import { monitorApi } from '../../services/adminService';
 import type { AlertCheckResult, HealthStatus, SloSnapshot, SystemStats, PerformanceMetricsData, QAQualityMetrics } from '../../types/admin';
 import SystemResourceChart from '../../components/Admin/Charts/SystemResourceChart';
 import { useSystemMetrics } from '../../hooks/useSystemMetrics';
+import { usePageVisible } from '../../hooks/usePageVisible';
 import AdminLayout from '../../components/Admin/AdminLayout';
 
 const API_WINDOW_SECONDS = 900;
@@ -46,6 +47,7 @@ const getErrorMessage = (reason: unknown, fallback: string): string => {
 };
 
 const MonitorPage: React.FC = () => {
+  const pageVisible = usePageVisible();
   const [health, setHealth] = useState<HealthStatus | null>(null);
   const [stats, setStats] = useState<SystemStats | null>(null);
   const [performance, setPerformance] = useState<PerformanceMetricsData | null>(null);
@@ -135,9 +137,12 @@ const MonitorPage: React.FC = () => {
   useEffect(() => {
     loadData();
     // 每 30 秒自动刷新
-    const interval = setInterval(loadData, 30000);
-    return () => clearInterval(interval);
-  }, [loadData]);
+    if (!pageVisible) {
+      return undefined;
+    }
+    const interval = window.setInterval(loadData, 30000);
+    return () => window.clearInterval(interval);
+  }, [loadData, pageVisible]);
 
   const getStatusColor = (status: string) => {
     switch (status.toLowerCase()) {
