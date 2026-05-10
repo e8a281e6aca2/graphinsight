@@ -49,6 +49,7 @@ jobs:
       - name: Compile smoke and perf scripts
         run: |
           python -m py_compile \
+            backend/tests/issue_admin_token.py \
             backend/tests/run_perf_probe.py \
             go-backend/scripts/smoke_orchestrated_routes.py
 

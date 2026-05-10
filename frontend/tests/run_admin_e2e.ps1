@@ -5,6 +5,7 @@ param(
     [string]$AdminPassword = $(if ($env:E2E_ADMIN_PASSWORD) { $env:E2E_ADMIN_PASSWORD } else { $env:ADMIN_PASSWORD }),
     [string]$AdminToken = $(if ($env:E2E_ADMIN_TOKEN) { $env:E2E_ADMIN_TOKEN } else { $env:ADMIN_TOKEN }),
     [string]$CheckUiLogin = $(if ($env:E2E_CHECK_UI_LOGIN) { $env:E2E_CHECK_UI_LOGIN } else { "0" }),
+    [string]$RequireBackendDependencies = $(if ($env:E2E_REQUIRE_BACKEND_DEPENDENCIES) { $env:E2E_REQUIRE_BACKEND_DEPENDENCIES } else { "1" }),
     [string]$NodeVersion = "22.22.2",
     [string]$NodeExe = $(if ($env:NODE_EXE) { $env:NODE_EXE } else { "" }),
     [string]$NpmCmd = $(if ($env:NPM_CMD) { $env:NPM_CMD } else { "" })
@@ -14,14 +15,39 @@ $ErrorActionPreference = "Stop"
 
 $RepoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $FrontendRoot = Join-Path $RepoRoot "frontend"
+$BackendRoot = Join-Path $RepoRoot "backend"
+$BackendPythonExe = Join-Path $BackendRoot "venv\Scripts\python.exe"
+$IssueAdminTokenScript = Join-Path $BackendRoot "tests\issue_admin_token.py"
 
-function Test-Health {
+function Test-BackendReady {
     param([string]$Url)
     try {
         $resp = Invoke-RestMethod -Method Get -Uri "$Url/health" -TimeoutSec 5
-        return ($resp.code -eq 200)
+        if ($resp.code -ne 200) {
+            return $false
+        }
+        if ($RequireBackendDependencies -ne "1") {
+            return $true
+        }
+        $data = $resp.data
+        return (
+            $data -and
+            $data.neo4j -and $data.neo4j.connected -eq $true -and
+            $data.python_backend -and $data.python_backend.connected -eq $true -and
+            $data.orchestrator -and $data.orchestrator.connected -eq $true
+        )
     } catch {
         return $false
+    }
+}
+
+function Show-BackendHealth {
+    param([string]$Url)
+    try {
+        $resp = Invoke-RestMethod -Method Get -Uri "$Url/health" -TimeoutSec 5
+        $resp | ConvertTo-Json -Depth 8
+    } catch {
+        Write-Host $_.Exception.Message
     }
 }
 
@@ -126,13 +152,34 @@ function Resolve-AdminToken {
     throw "ADMIN_LOGIN_PREFLIGHT_FAIL missing token in login response"
 }
 
-if (-not $AdminPassword -and -not $AdminToken) {
-    Write-Host "Missing ADMIN_PASSWORD or ADMIN_TOKEN for frontend E2E."
-    exit 1
+function Resolve-LocalAdminToken {
+    param([string]$Email)
+
+    if (-not (Test-Path $BackendPythonExe) -or -not (Test-Path $IssueAdminTokenScript)) {
+        return $null
+    }
+
+    $args = @($IssueAdminTokenScript)
+    if ($Email) {
+        $args += "--email"
+        $args += $Email
+    }
+
+    try {
+        $output = & $BackendPythonExe @args 2>$null
+        if ($LASTEXITCODE -eq 0 -and $output) {
+            return [string]($output | Select-Object -Last 1)
+        }
+    } catch {
+        return $null
+    }
+
+    return $null
 }
 
-if (-not (Test-Health -Url $AdminBaseUrl)) {
-    Write-Host "BACKEND_HEALTH_FAIL url=$AdminBaseUrl"
+if (-not (Test-BackendReady -Url $AdminBaseUrl)) {
+    Write-Host "BACKEND_HEALTH_FAIL url=$AdminBaseUrl require_dependencies=$RequireBackendDependencies"
+    Show-BackendHealth -Url $AdminBaseUrl
     Write-Host "Please start Python capability backend and Go gateway first, then rerun frontend E2E."
     exit 1
 }
@@ -157,6 +204,16 @@ $env:E2E_CHECK_UI_LOGIN = $CheckUiLogin
 
 if (-not $AdminToken -and $AdminPassword) {
     $AdminToken = Resolve-AdminToken -BaseUrl $AdminBaseUrl -Email $AdminEmail -Password $AdminPassword
+}
+if (-not $AdminToken) {
+    $AdminToken = Resolve-LocalAdminToken -Email $AdminEmail
+    if ($AdminToken) {
+        Write-Host "ADMIN_TOKEN_READY source=local"
+    }
+}
+if (-not $AdminToken) {
+    Write-Host "Missing ADMIN_PASSWORD or ADMIN_TOKEN for frontend E2E, and local token issue failed."
+    exit 1
 }
 if ($AdminToken) { $env:ADMIN_TOKEN = $AdminToken }
 
