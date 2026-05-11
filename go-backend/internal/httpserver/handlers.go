@@ -399,6 +399,7 @@ func registerAdminOwnedProxyRoutes(
 	mux.HandleFunc("/api/v1/admin/monitor/performance", buildAdminMonitorHandler(logger, proxyClient, proxyInitErr, guard))
 	mux.HandleFunc("/api/v1/admin/monitor/qa", buildAdminMonitorHandler(logger, proxyClient, proxyInitErr, guard))
 	mux.HandleFunc("/api/v1/admin/monitor/slo", buildAdminMonitorHandler(logger, proxyClient, proxyInitErr, guard))
+	mux.HandleFunc("/api/v1/admin/monitor/log-severity", buildAdminMonitorHandler(logger, proxyClient, proxyInitErr, guard))
 	mux.HandleFunc("/api/v1/admin/monitor/alerts/check", buildAdminMonitorHandler(logger, proxyClient, proxyInitErr, guard))
 	mux.HandleFunc("/api/v1/admin/monitor/health/simple", buildAdminMonitorHandler(logger, proxyClient, proxyInitErr, guard))
 
@@ -487,7 +488,8 @@ func buildAdminMonitorHandler(
 			"/api/v1/admin/monitor/health",
 			"/api/v1/admin/monitor/performance",
 			"/api/v1/admin/monitor/qa",
-			"/api/v1/admin/monitor/slo":
+			"/api/v1/admin/monitor/slo",
+			"/api/v1/admin/monitor/log-severity":
 		default:
 			WriteJSON(w, http.StatusNotFound, "资源不存在", map[string]string{"error_code": "NOT_FOUND"})
 			return

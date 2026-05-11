@@ -6,6 +6,7 @@ param(
     [string]$AdminToken = $(if ($env:E2E_ADMIN_TOKEN) { $env:E2E_ADMIN_TOKEN } else { $env:ADMIN_TOKEN }),
     [string]$CheckUiLogin = $(if ($env:E2E_CHECK_UI_LOGIN) { $env:E2E_CHECK_UI_LOGIN } else { "0" }),
     [string]$RequireBackendDependencies = $(if ($env:E2E_REQUIRE_BACKEND_DEPENDENCIES) { $env:E2E_REQUIRE_BACKEND_DEPENDENCIES } else { "1" }),
+    [string]$E2ESpec = $(if ($env:E2E_SPEC) { $env:E2E_SPEC } else { "" }),
     [string]$NodeVersion = "22.22.2",
     [string]$NodeExe = $(if ($env:NODE_EXE) { $env:NODE_EXE } else { "" }),
     [string]$NpmCmd = $(if ($env:NPM_CMD) { $env:NPM_CMD } else { "" })
@@ -219,10 +220,16 @@ if ($AdminToken) { $env:ADMIN_TOKEN = $AdminToken }
 
 Push-Location $FrontendRoot
 try {
+    $npmArgs = @("run", "e2e")
+    if ($E2ESpec) {
+        $npmArgs += "--"
+        $npmArgs += $E2ESpec
+    }
     if ($nodeTools.Npm -eq "npm.cmd") {
-        & npm.cmd run e2e
+        & npm.cmd @npmArgs
     } else {
-        & cmd.exe /c "`"$($nodeTools.Npm)`" run e2e"
+        $escapedArgs = ($npmArgs | ForEach-Object { "`"$_`"" }) -join " "
+        & cmd.exe /c "`"$($nodeTools.Npm)`" $escapedArgs"
     }
     exit $LASTEXITCODE
 } finally {

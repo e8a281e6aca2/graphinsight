@@ -12,6 +12,7 @@ ADMIN_PASSWORD="${E2E_ADMIN_PASSWORD:-${ADMIN_PASSWORD:-}}"
 ADMIN_TOKEN="${E2E_ADMIN_TOKEN:-${ADMIN_TOKEN:-}}"
 E2E_CHECK_UI_LOGIN="${E2E_CHECK_UI_LOGIN:-0}"
 E2E_REQUIRE_BACKEND_DEPENDENCIES="${E2E_REQUIRE_BACKEND_DEPENDENCIES:-1}"
+E2E_SPEC="${E2E_SPEC:-}"
 PLAYWRIGHT_CACHE_ROOT="${XDG_CACHE_HOME:-$HOME/.cache}/graphinsight-playwright-libs"
 PLAYWRIGHT_LIB_DIR="$PLAYWRIGHT_CACHE_ROOT/root/usr/lib/x86_64-linux-gnu"
 
@@ -194,4 +195,8 @@ if [[ -z "$ADMIN_TOKEN" ]]; then
 fi
 export ADMIN_TOKEN
 
-npm run e2e
+if [[ -n "$E2E_SPEC" ]]; then
+  npm run e2e -- "$E2E_SPEC"
+else
+  npm run e2e
+fi

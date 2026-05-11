@@ -186,6 +186,27 @@ async def get_slo_snapshot(
         )
 
 
+@router.get(
+    "/log-severity",
+    summary="日志分级指标",
+    description="获取 error/warn/info 日志分级统计与告警路由策略",
+)
+async def get_log_severity_metrics(
+    window_minutes: int = Query(default=60, ge=5, le=10080),
+    current_user: AdminUser = Depends(require_admin_permission("monitor:read", resource="monitor")),
+    db: Session = Depends(get_db),
+):
+    try:
+        data = monitor_service.get_log_severity_metrics(db, window_minutes=window_minutes)
+        return success_response(data=data, message="获取成功")
+    except Exception as e:
+        logger.error(f"获取日志分级指标异常: {str(e)}", exc_info=True)
+        return error_response(
+            message="获取日志分级指标失败",
+            code=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+
 @router.post(
     "/alerts/check",
     summary="检查并发送告警",

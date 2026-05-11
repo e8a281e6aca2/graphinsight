@@ -18,7 +18,8 @@ except ImportError:
     PSUTIL_AVAILABLE = False
 
 from ..database import engine
-from ..models import AdminJob
+from ..models import AdminJob, AdminLog
+from ..crud.log import classify_log_severity
 from ..schemas.monitor import (
     SystemStats,
     HealthStatus,
@@ -446,6 +447,91 @@ class MonitorService:
             "timestamp": datetime.utcnow().isoformat() + "Z",
         })
 
+    def get_log_severity_metrics(self, db: Session, window_minutes: int = 60) -> Dict:
+        """获取日志分级与告警路由指标。"""
+        cache_key = f"log_severity:{window_minutes}"
+        cached = self._get_cached(cache_key)
+        if cached is not None:
+            return cached
+
+        start_time = datetime.utcnow().timestamp() - max(window_minutes, 1) * 60
+        rows = (
+            db.query(AdminLog)
+            .filter(AdminLog.created_at >= datetime.utcfromtimestamp(start_time))
+            .order_by(AdminLog.created_at.desc())
+            .all()
+        )
+        total = len(rows)
+        severity_counts = {"info": 0, "warn": 0, "error": 0}
+        status_counts: Dict[str, int] = {}
+        action_counts: Dict[str, int] = {}
+        resource_counts: Dict[str, int] = {}
+        routed_alerts: list[Dict[str, Any]] = []
+
+        for row in rows:
+            severity = classify_log_severity(
+                status=row.status,
+                action=row.action,
+                error_message=row.error_message,
+            )
+            severity_counts[severity] = severity_counts.get(severity, 0) + 1
+            status_key = str(row.status or "unknown")
+            action_key = str(row.action or "unknown")
+            resource_key = str(row.resource or "unknown")
+            status_counts[status_key] = status_counts.get(status_key, 0) + 1
+            action_counts[action_key] = action_counts.get(action_key, 0) + 1
+            resource_counts[resource_key] = resource_counts.get(resource_key, 0) + 1
+            if severity in {"warn", "error"}:
+                routed_alerts.append(
+                    {
+                        "id": row.id,
+                        "severity": severity,
+                        "action": row.action,
+                        "resource": row.resource,
+                        "resource_id": row.resource_id,
+                        "status": row.status,
+                        "trace_id": row.trace_id,
+                        "created_at": row.created_at.isoformat() if row.created_at else None,
+                        "message": row.error_message,
+                    }
+                )
+
+        def top_items(values: Dict[str, int], limit: int = 8) -> list[Dict[str, Any]]:
+            return [
+                {"name": name, "count": count}
+                for name, count in sorted(values.items(), key=lambda item: item[1], reverse=True)[:limit]
+            ]
+
+        error_count = int(severity_counts.get("error", 0))
+        warn_count = int(severity_counts.get("warn", 0))
+        failed_count = int(status_counts.get("failed", 0))
+        return self._set_cached(cache_key, {
+            "window_minutes": window_minutes,
+            "total_logs": total,
+            "failed_logs": failed_count,
+            "severity_counts": severity_counts,
+            "status_counts": status_counts,
+            "error_rate": round(error_count / total, 6) if total else 0.0,
+            "warn_rate": round(warn_count / total, 6) if total else 0.0,
+            "failed_rate": round(failed_count / total, 6) if total else 0.0,
+            "top_actions": top_items(action_counts),
+            "top_resources": top_items(resource_counts),
+            "alert_routes": {
+                "error": {
+                    "policy": "page_or_webhook",
+                    "count": error_count,
+                    "threshold_env": "ALERT_LOG_ERROR_RATE_THRESHOLD",
+                },
+                "warn": {
+                    "policy": "webhook_or_digest",
+                    "count": warn_count,
+                    "threshold_env": "ALERT_LOG_WARN_RATE_THRESHOLD",
+                },
+            },
+            "recent_alerts": routed_alerts[:20],
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+        })
+
     def get_unified_metrics_snapshot(
         self,
         db: Session,
@@ -458,6 +544,7 @@ class MonitorService:
         api_metrics = self.get_performance_metrics(window_seconds=api_window_seconds)
         qa_metrics = self.get_qa_quality_metrics(window_seconds=qa_window_seconds)
         job_metrics = self.get_job_slo_metrics(db, window_minutes=job_window_minutes)
+        log_metrics = self.get_log_severity_metrics(db, window_minutes=job_window_minutes)
 
         summary = {
             "api_error_rate": api_metrics["error_rate"],
@@ -466,6 +553,8 @@ class MonitorService:
             "qa_citation_rate": qa_metrics["citation_rate"],
             "job_success_rate": job_metrics["success_rate"],
             "job_timeout_rate": job_metrics["timeout_rate"],
+            "log_error_rate": log_metrics["error_rate"],
+            "log_warn_rate": log_metrics["warn_rate"],
         }
 
         return {
@@ -473,16 +562,19 @@ class MonitorService:
             "api": api_metrics,
             "qa": qa_metrics,
             "jobs": job_metrics,
+            "logs": log_metrics,
             "timestamp": datetime.utcnow().isoformat() + "Z",
         }
 
     def get_slo_snapshot(self, db: Session, *, api_window_seconds: int = 900, job_window_minutes: int = 60) -> Dict:
         api_metrics = self.get_performance_metrics(window_seconds=api_window_seconds)
         job_metrics = self.get_job_slo_metrics(db, window_minutes=job_window_minutes)
+        log_metrics = self.get_log_severity_metrics(db, window_minutes=job_window_minutes)
 
         return {
             "api": api_metrics,
             "jobs": job_metrics,
+            "logs": log_metrics,
             "slo": {
                 "api_error_rate": {
                     "value": api_metrics["error_rate"],
@@ -499,6 +591,14 @@ class MonitorService:
                 "job_p95_duration_ms": {
                     "value": job_metrics["p95_duration_ms"],
                     "target": "track",
+                },
+                "log_error_rate": {
+                    "value": log_metrics["error_rate"],
+                    "target": "<=0.02",
+                },
+                "log_warn_rate": {
+                    "value": log_metrics["warn_rate"],
+                    "target": "<=0.10",
                 },
             },
             "timestamp": datetime.utcnow().isoformat() + "Z",
@@ -519,10 +619,14 @@ class MonitorService:
         )
         api_error_threshold = float(os.getenv("ALERT_API_ERROR_RATE_THRESHOLD", "0.05"))
         timeout_threshold = float(os.getenv("ALERT_JOB_TIMEOUT_RATE_THRESHOLD", "0.10"))
+        log_error_threshold = float(os.getenv("ALERT_LOG_ERROR_RATE_THRESHOLD", "0.02"))
+        log_warn_threshold = float(os.getenv("ALERT_LOG_WARN_RATE_THRESHOLD", "0.10"))
 
         alerts = []
         api_error_rate = float(snapshot["api"]["error_rate"])
         job_timeout_rate = float(snapshot["jobs"]["timeout_rate"])
+        log_error_rate = float(snapshot["logs"]["error_rate"])
+        log_warn_rate = float(snapshot["logs"]["warn_rate"])
 
         if api_error_rate > api_error_threshold:
             alerts.append(
@@ -538,6 +642,24 @@ class MonitorService:
                     "type": "job_timeout_rate_high",
                     "severity": "warning",
                     "message": f"任务超时率过高: {job_timeout_rate:.4f} > {timeout_threshold:.4f}",
+                }
+            )
+        if log_error_rate > log_error_threshold:
+            alerts.append(
+                {
+                    "type": "log_error_rate_high",
+                    "severity": "error",
+                    "message": f"错误日志占比过高: {log_error_rate:.4f} > {log_error_threshold:.4f}",
+                    "route": "page_or_webhook",
+                }
+            )
+        if log_warn_rate > log_warn_threshold:
+            alerts.append(
+                {
+                    "type": "log_warn_rate_high",
+                    "severity": "warning",
+                    "message": f"警告日志占比过高: {log_warn_rate:.4f} > {log_warn_threshold:.4f}",
+                    "route": "webhook_or_digest",
                 }
             )
 
