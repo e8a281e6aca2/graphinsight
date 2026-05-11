@@ -27,7 +27,7 @@ import {
 import { Refresh, Search } from '@mui/icons-material';
 import AdminLayout from '../../components/Admin/AdminLayout';
 import { qaTracesApi } from '../../services/adminService';
-import type { QATraceDetail, QATraceItem, QATraceStatus, QATraceType } from '../../types/admin';
+import type { QACostSummary, QATraceDetail, QATraceItem, QATraceStatus, QATraceType } from '../../types/admin';
 
 type QATraceTypeFilter = QATraceType | '';
 type QATraceStatusFilter = QATraceStatus | '';
@@ -39,6 +39,10 @@ const formatDate = (value?: string) => {
 };
 
 const qaTypeLabel = (value: string) => (value === 'deep_research' ? '深度调研' : '文档问答');
+
+const formatPercent = (value: number) => `${(Number(value || 0) * 100).toFixed(1)}%`;
+
+const formatCost = (value: number, currency: string) => `${currency || 'USD'} ${Number(value || 0).toFixed(6)}`;
 
 const QATracesPage: React.FC = () => {
   const [items, setItems] = useState<QATraceItem[]>([]);
@@ -53,6 +57,7 @@ const QATracesPage: React.FC = () => {
   const [error, setError] = useState('');
   const [detailOpen, setDetailOpen] = useState(false);
   const [detail, setDetail] = useState<QATraceDetail | null>(null);
+  const [costSummary, setCostSummary] = useState<QACostSummary | null>(null);
 
   const loadTraces = useCallback(async () => {
     setLoading(true);
@@ -68,6 +73,12 @@ const QATracesPage: React.FC = () => {
       });
       setItems(Array.isArray(data.items) ? data.items : []);
       setTotal(Number(data.total || 0));
+      const costData = await qaTracesApi.getCostSummary({
+        qa_type: qaType || undefined,
+        status: status || undefined,
+        window_hours: 24,
+      });
+      setCostSummary(costData);
     } catch (err: any) {
       setError(err.message || '问答追踪加载失败');
     } finally {
@@ -100,6 +111,42 @@ const QATracesPage: React.FC = () => {
     <AdminLayout title="问答追踪" subtitle="问题、检索证据、模型响应与引用链路" actions={actionBar}>
       <Container maxWidth="lg" sx={{ px: 0 }}>
         {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
+
+        {costSummary && (
+          <Card sx={{ mb: 2 }}>
+            <CardContent>
+              <Stack direction={{ xs: 'column', md: 'row' }} spacing={2} alignItems={{ md: 'center' }}>
+                <Box sx={{ flex: 1 }}>
+                  <Typography variant="subtitle2" color="text.secondary">24h 模型成本估算</Typography>
+                  <Typography variant="h5">
+                    {formatCost(costSummary.estimated_cost, costSummary.currency)}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    价格来源: {costSummary.pricing_source}，未配置价格时成本按 0 估算
+                  </Typography>
+                </Box>
+                <Box>
+                  <Typography variant="subtitle2" color="text.secondary">调用</Typography>
+                  <Typography variant="h6">{costSummary.total_calls}</Typography>
+                </Box>
+                <Box>
+                  <Typography variant="subtitle2" color="text.secondary">Token</Typography>
+                  <Typography variant="h6">{costSummary.total_tokens}</Typography>
+                </Box>
+                <Box>
+                  <Typography variant="subtitle2" color="text.secondary">成功率</Typography>
+                  <Typography variant="h6">{formatPercent(costSummary.success_rate)}</Typography>
+                </Box>
+                <Box>
+                  <Typography variant="subtitle2" color="text.secondary">Top 模型</Typography>
+                  <Typography variant="body2">
+                    {costSummary.models[0]?.model || '-'} · {costSummary.models[0]?.total_tokens || 0} tokens
+                  </Typography>
+                </Box>
+              </Stack>
+            </CardContent>
+          </Card>
+        )}
 
         <Card sx={{ mb: 2 }}>
           <CardContent>
@@ -235,4 +282,3 @@ const QATracesPage: React.FC = () => {
 };
 
 export default QATracesPage;
-

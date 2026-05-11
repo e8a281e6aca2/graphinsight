@@ -328,6 +328,33 @@ export interface QATraceQueryParams {
   page_size?: number;
 }
 
+export interface QACostModelBreakdown {
+  model: string;
+  qa_type: string;
+  calls: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  estimated_cost: number;
+  avg_latency_ms: number;
+  success_rate: number;
+}
+
+export interface QACostSummary {
+  window_hours: number;
+  total_calls: number;
+  success_calls: number;
+  failed_calls: number;
+  success_rate: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  estimated_cost: number;
+  currency: string;
+  pricing_source: string;
+  models: QACostModelBreakdown[];
+}
+
 export interface SloTargetItem {
   value: number | string;
   target: string;

@@ -49,6 +49,7 @@ CASES: list[SmokeCase] = [
     SmokeCase("jobs_api", "check_jobs_api.py", 120, "任务创建、查询、取消与重试"),
     SmokeCase("reindex_obs", "check_job_reindex_and_observability.py", 180, "reindex 与监控联调"),
     SmokeCase("qa_traces", "check_qa_traces_api.py", 240, "问答与问答追踪联调"),
+    SmokeCase("qa_cost_unit", "check_qa_cost_summary_unit.py", 60, "QA trace cost aggregation unit check"),
     SmokeCase("docqa_full_chain", "check_docqa_full_chain.py", 360, "上传、建图、问答、追踪与删除全链路"),
 ]
 

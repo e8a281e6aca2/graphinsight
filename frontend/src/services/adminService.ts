@@ -43,9 +43,12 @@ import type {
   JobItem,
   JobLogItem,
   JobQueryParams,
+  QACostSummary,
   QATraceDetail,
   QATraceItem,
   QATraceQueryParams,
+  QATraceStatus,
+  QATraceType,
 } from '../types/admin';
 import { API_BASE_URL } from '../utils/apiBase';
 
@@ -961,6 +964,22 @@ export const qaTracesApi = {
     try {
       const response = await apiClient.get<ApiResponse<QATraceDetail>>(
         `/api/v1/admin/qa-traces/${traceIdOrPk}`
+      );
+      return extractApiData(response);
+    } catch (error) {
+      handleApiError(error);
+    }
+  },
+
+  async getCostSummary(params?: {
+    qa_type?: QATraceType;
+    status?: QATraceStatus;
+    window_hours?: number;
+  }): Promise<QACostSummary> {
+    try {
+      const response = await apiClient.get<ApiResponse<QACostSummary>>(
+        '/api/v1/admin/qa-traces/cost-summary',
+        { params }
       );
       return extractApiData(response);
     } catch (error) {

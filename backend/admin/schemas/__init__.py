@@ -41,6 +41,9 @@ from .jobs import (
     JobQuery,
 )
 from .qa_traces import (
+    QACostModelBreakdown,
+    QACostSummary,
+    QACostSummaryQuery,
     QATraceCreate,
     QATraceDetail,
     QATraceItem,
@@ -81,6 +84,9 @@ __all__ = [
     "JobItem",
     "JobQuery",
     # QA traces
+    "QACostModelBreakdown",
+    "QACostSummary",
+    "QACostSummaryQuery",
     "QATraceCreate",
     "QATraceDetail",
     "QATraceItem",

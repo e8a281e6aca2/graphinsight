@@ -81,6 +81,7 @@ class DocQAService:
                 },
             ]
             parsed = self._request_llm_json(messages)
+            usage = parsed.get("_usage") if isinstance(parsed, dict) else None
             answer = parsed.get("answer") or "已生成答案。"
             used_ids = [str(item) for item in (parsed.get("used_chunk_ids") or [])]
             trace["generation"] = {
@@ -89,6 +90,7 @@ class DocQAService:
                 "base_url": settings.llm_base_url or "default",
                 "used_chunk_ids": used_ids,
                 "context_chunk_ids": [str(item.get("id")) for item in citations[: self.max_context]],
+                "usage": usage,
             }
             if used_ids:
                 filtered = [c for c in citations if c["id"] in set(used_ids)]
@@ -311,6 +313,7 @@ class DocQAService:
 
         try:
             llm_result = self._generate_deep_report(normalized_question, sub_questions, top_citations)
+            usage = llm_result.get("_usage") if isinstance(llm_result, dict) else None
             used_ids = [str(item) for item in llm_result.get("used_chunk_ids") or []]
             if used_ids:
                 used_set = set(used_ids)
@@ -324,6 +327,7 @@ class DocQAService:
                 "base_url": settings.llm_base_url or "default",
                 "used_chunk_ids": used_ids,
                 "sub_questions": sub_questions,
+                "usage": usage,
             }
 
             summary = (llm_result.get("summary") or "").strip()
@@ -614,12 +618,14 @@ class DocQAService:
         for idx, payload in enumerate(request_payloads, start=1):
             try:
                 response = self._client.chat.completions.create(**payload)
+                usage = self._extract_usage(response)
                 content = self._extract_message_content(response)
                 parsed = self._parse_json(content)
                 if parsed:
+                    parsed["_usage"] = usage
                     return parsed
                 if content.strip():
-                    return {"answer": content.strip(), "used_chunk_ids": []}
+                    return {"answer": content.strip(), "used_chunk_ids": [], "_usage": usage}
             except Exception as exc:  # noqa: BLE001
                 attempt_errors.append(f"attempt_{idx}: {exc}")
                 continue
@@ -648,6 +654,36 @@ class DocQAService:
                         parts.append(text)
             return "\n".join(parts)
         return str(content or "")
+
+    @staticmethod
+    def _extract_usage(response: Any) -> Dict[str, Any]:
+        usage = getattr(response, "usage", None)
+        if usage is None and isinstance(response, dict):
+            usage = response.get("usage")
+        if usage is None:
+            return {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+                "source": "missing",
+            }
+
+        def read_int(name: str) -> int:
+            value = usage.get(name) if isinstance(usage, dict) else getattr(usage, name, 0)
+            try:
+                return max(0, int(value or 0))
+            except Exception:
+                return 0
+
+        prompt_tokens = read_int("prompt_tokens")
+        completion_tokens = read_int("completion_tokens")
+        total_tokens = read_int("total_tokens") or (prompt_tokens + completion_tokens)
+        return {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": total_tokens,
+            "source": "llm_response",
+        }
 
     @staticmethod
     def _fallback_answer(_question: str, citations: List[Dict[str, Any]]) -> str:

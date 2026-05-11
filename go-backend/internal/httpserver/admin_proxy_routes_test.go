@@ -358,6 +358,46 @@ func TestAdminQATracesDetailProxyRouteUsesReadPermission(t *testing.T) {
 	}
 }
 
+func TestAdminQATracesCostSummaryProxyRouteUsesReadPermission(t *testing.T) {
+	t.Parallel()
+
+	authzClient := newAuthzClientForTest(
+		t,
+		http.StatusOK,
+		`{"code":200,"data":{"allowed":true,"reason":"ok","user":{"id":15,"username":"qacost","email":"qacost@example.com"},"scope":{}}}`,
+	)
+	proxyClient := newProxyClientForTest(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("x-authz-permission") != "monitor:read" {
+			t.Fatalf("expected monitor:read permission, got %s", r.Header.Get("x-authz-permission"))
+		}
+		if r.Method != http.MethodGet {
+			t.Fatalf("expected GET method, got %s", r.Method)
+		}
+		if r.URL.Path != "/api/v1/admin/qa-traces/cost-summary" {
+			t.Fatalf("unexpected upstream path: %s", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"code":200,"message":"ok"}`))
+	})
+
+	mux := http.NewServeMux()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	guard := newBusinessPermissionGuard(config.Config{RBACEnforceBusinessAPI: true}, logger, authzClient, nil)
+	registerAdminOwnedProxyRoutes(mux, logger, proxyClient, nil, guard)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/qa-traces/cost-summary?window_hours=24", nil)
+	req.Header.Set("Authorization", "Bearer token")
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if rec.Header().Get(routeOwnerHeader) != "go-admin-proxy" {
+		t.Fatalf("unexpected route owner: %s", rec.Header().Get(routeOwnerHeader))
+	}
+}
+
 func TestAdminConfigWriteProxyRouteUsesWritePermission(t *testing.T) {
 	t.Parallel()
 

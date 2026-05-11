@@ -61,3 +61,35 @@ class QATraceQuery(BaseModel):
     page: int = 1
     page_size: int = 20
 
+
+class QACostSummaryQuery(BaseModel):
+    qa_type: Optional[str] = None
+    status: Optional[str] = None
+    window_hours: int = Field(default=24, ge=1, le=24 * 90)
+
+
+class QACostModelBreakdown(BaseModel):
+    model: str
+    qa_type: str
+    calls: int
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+    estimated_cost: float
+    avg_latency_ms: float
+    success_rate: float
+
+
+class QACostSummary(BaseModel):
+    window_hours: int
+    total_calls: int
+    success_calls: int
+    failed_calls: int
+    success_rate: float
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+    estimated_cost: float
+    currency: str
+    pricing_source: str
+    models: list[QACostModelBreakdown]

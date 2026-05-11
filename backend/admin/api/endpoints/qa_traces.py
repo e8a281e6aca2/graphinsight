@@ -1,13 +1,11 @@
-"""
-问答链路追踪 API
-"""
+"""QA trace admin API."""
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.orm import Session
 
 from ...database import get_db
-from ...schemas.qa_traces import QATraceQuery
+from ...schemas.qa_traces import QACostSummaryQuery, QATraceQuery
 from ...services import qa_trace_service
 from ..deps import require_admin_permission
 from core import error_response, paginated_response, success_response, get_logger
@@ -16,12 +14,12 @@ logger = get_logger()
 
 router = APIRouter(
     prefix="/admin/qa-traces",
-    tags=["问答链路追踪"],
+    tags=["qa-traces"],
     dependencies=[Depends(require_admin_permission("monitor:read", resource="qa_trace"))],
 )
 
 
-@router.get("", summary="问答链路追踪列表")
+@router.get("", summary="List QA traces")
 async def list_qa_traces(
     qa_type: str | None = Query(default=None),
     status_value: str | None = Query(default=None, alias="status"),
@@ -48,14 +46,34 @@ async def list_qa_traces(
             total=total,
             page=page,
             page_size=page_size,
-            message="获取成功",
+            message="ok",
         )
     except Exception as exc:  # noqa: BLE001
-        logger.error(f"获取问答链路追踪列表异常: {exc}", exc_info=True)
-        return error_response(message="获取问答链路追踪列表失败", code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        logger.error(f"List QA traces failed: {exc}", exc_info=True)
+        return error_response(message="List QA traces failed", code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
-@router.get("/{trace_id_or_pk}", summary="问答链路追踪详情")
+@router.get("/cost-summary", summary="QA model cost summary")
+async def get_qa_cost_summary(
+    qa_type: str | None = Query(default=None),
+    status_value: str | None = Query(default=None, alias="status"),
+    window_hours: int = Query(default=24, ge=1, le=24 * 90),
+    db: Session = Depends(get_db),
+):
+    try:
+        query = QACostSummaryQuery(
+            qa_type=qa_type,
+            status=status_value,
+            window_hours=window_hours,
+        )
+        item = qa_trace_service.get_cost_summary(db, query)
+        return success_response(data=item.model_dump(), message="ok")
+    except Exception as exc:  # noqa: BLE001
+        logger.error(f"Get QA model cost summary failed: {exc}", exc_info=True)
+        return error_response(message="Get QA model cost summary failed", code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@router.get("/{trace_id_or_pk}", summary="Get QA trace detail")
 async def get_qa_trace(
     trace_id_or_pk: str,
     db: Session = Depends(get_db),
@@ -63,9 +81,8 @@ async def get_qa_trace(
     try:
         item = qa_trace_service.get_trace(db, trace_id_or_pk)
         if not item:
-            return error_response(message="问答链路追踪不存在", code=status.HTTP_404_NOT_FOUND)
-        return success_response(data=item.model_dump(), message="获取成功")
+            return error_response(message="QA trace not found", code=status.HTTP_404_NOT_FOUND)
+        return success_response(data=item.model_dump(), message="ok")
     except Exception as exc:  # noqa: BLE001
-        logger.error(f"获取问答链路追踪详情异常: {exc}", exc_info=True)
-        return error_response(message="获取问答链路追踪详情失败", code=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
+        logger.error(f"Get QA trace detail failed: {exc}", exc_info=True)
+        return error_response(message="Get QA trace detail failed", code=status.HTTP_500_INTERNAL_SERVER_ERROR)
