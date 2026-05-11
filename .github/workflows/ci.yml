@@ -13,6 +13,34 @@ on:
         required: false
         default: false
         type: boolean
+      frontend_e2e_spec:
+        description: Playwright spec to run when frontend E2E is enabled.
+        required: false
+        default: business-docqa-flow.spec.ts
+        type: string
+      run_perf_probe:
+        description: Run performance probe against an externally reachable Go gateway.
+        required: false
+        default: false
+        type: boolean
+      perf_probe_preset:
+        description: Performance probe preset.
+        required: false
+        default: release
+        type: choice
+        options:
+          - readonly
+          - release
+      perf_probe_requests:
+        description: Request count per perf probe case.
+        required: false
+        default: '20'
+        type: string
+      perf_probe_concurrency:
+        description: Perf probe concurrency.
+        required: false
+        default: '4'
+        type: string
 
 jobs:
   go-backend:
@@ -89,6 +117,7 @@ jobs:
       ADMIN_PASSWORD: ${{ secrets.GRAPHINSIGHT_E2E_ADMIN_PASSWORD }}
       ADMIN_TOKEN: ${{ secrets.GRAPHINSIGHT_E2E_ADMIN_TOKEN }}
       E2E_CHECK_UI_LOGIN: '0'
+      FRONTEND_E2E_SPEC: ${{ inputs.frontend_e2e_spec }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -119,4 +148,71 @@ jobs:
           fi
 
       - name: Run frontend E2E
-        run: npm run e2e
+        shell: bash
+        run: |
+          if [[ -n "$FRONTEND_E2E_SPEC" ]]; then
+            npm run e2e -- "$FRONTEND_E2E_SPEC"
+          else
+            npm run e2e
+          fi
+
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-e2e-report
+          path: frontend/playwright-report
+          if-no-files-found: ignore
+
+  perf-probe:
+    name: Performance probe
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_perf_probe }}
+    env:
+      GO_BASE_URL: ${{ secrets.GRAPHINSIGHT_E2E_API_BASE_URL }}
+      ADMIN_EMAIL: ${{ secrets.GRAPHINSIGHT_E2E_ADMIN_EMAIL }}
+      ADMIN_PASSWORD: ${{ secrets.GRAPHINSIGHT_E2E_ADMIN_PASSWORD }}
+      ADMIN_TOKEN: ${{ secrets.GRAPHINSIGHT_E2E_ADMIN_TOKEN }}
+      PERF_PROBE_PRESET: ${{ inputs.perf_probe_preset }}
+      PERF_PROBE_REQUESTS: ${{ inputs.perf_probe_requests }}
+      PERF_PROBE_CONCURRENCY: ${{ inputs.perf_probe_concurrency }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Validate performance probe configuration
+        shell: bash
+        run: |
+          if [[ -z "$GO_BASE_URL" ]]; then
+            echo "GRAPHINSIGHT_E2E_API_BASE_URL is required for performance probe."
+            exit 1
+          fi
+          if [[ -z "$ADMIN_TOKEN" && -z "$ADMIN_PASSWORD" ]]; then
+            echo "GRAPHINSIGHT_E2E_ADMIN_TOKEN or GRAPHINSIGHT_E2E_ADMIN_PASSWORD is required for performance probe."
+            exit 1
+          fi
+
+      - name: Run performance probe
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          python backend/tests/run_perf_probe.py \
+            --preset "$PERF_PROBE_PRESET" \
+            --requests "$PERF_PROBE_REQUESTS" \
+            --concurrency "$PERF_PROBE_CONCURRENCY" \
+            --max-error-rate 0 \
+            --output-json artifacts/perf-probe.json \
+            --output-markdown artifacts/perf-probe.md
+
+      - name: Upload performance report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-probe-report
+          path: artifacts/perf-probe.*
+          if-no-files-found: error

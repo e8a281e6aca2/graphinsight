@@ -24,6 +24,7 @@ from typing import Any, Optional
 
 
 DEFAULT_CASES = ["health", "docqa-health", "nl2cypher-status"]
+RELEASE_CASES = ["health", "query", "docqa-health", "nl2cypher-status", "docqa", "graph-build"]
 
 
 @dataclass(frozen=True)
@@ -183,7 +184,12 @@ def _build_cases(args: argparse.Namespace) -> list[ProbeCase]:
         "docqa": ProbeCase("docqa", "POST", "/api/docqa", payload_docqa, "go-orchestrator"),
         "graph-build": ProbeCase("graph-build", "POST", "/api/graph/build", payload_build, "go-orchestrator"),
     }
-    selected = args.case or DEFAULT_CASES
+    if args.case:
+        selected = args.case
+    elif args.preset == "release":
+        selected = RELEASE_CASES
+    else:
+        selected = DEFAULT_CASES
     return [catalog[name] for name in selected]
 
 
@@ -201,6 +207,9 @@ def _write_markdown_report(path: str, report: dict[str, Any]) -> None:
         f"- base_url: `{report['base_url']}`",
         f"- requests_per_case: `{report['requests_per_case']}`",
         f"- concurrency: `{report['concurrency']}`",
+        f"- preset: `{report['preset']}`",
+        f"- max_error_rate: `{report['thresholds']['max_error_rate']}`",
+        f"- max_p95_ms: `{report['thresholds']['max_p95_ms']}`",
         "",
         "| case | total | success | failed | error_rate | p50_ms | p95_ms | p99_ms | max_ms | owners |",
         "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
@@ -233,6 +242,12 @@ def main() -> int:
     parser.add_argument("--token", default=os.getenv("ADMIN_TOKEN", ""))
     parser.add_argument("--admin-email", default=os.getenv("ADMIN_EMAIL", "yh@qs.al"))
     parser.add_argument("--admin-password", default=os.getenv("ADMIN_PASSWORD", ""))
+    parser.add_argument(
+        "--preset",
+        choices=["readonly", "release"],
+        default=os.getenv("PERF_PROBE_PRESET", "readonly"),
+        help="readonly runs safe health/status checks; release also runs query/docqa/graph-build cases",
+    )
     parser.add_argument("--case", action="append", choices=["health", "query", "docqa-health", "nl2cypher-status", "docqa", "graph-build"])
     parser.add_argument("--requests", type=int, default=20, help="Request count per case")
     parser.add_argument("--concurrency", type=int, default=4)
@@ -265,9 +280,14 @@ def main() -> int:
     report: dict[str, Any] = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "base_url": args.base_url.rstrip("/"),
+        "preset": args.preset,
         "requests_per_case": args.requests,
         "concurrency": args.concurrency,
         "route_owner_check": not args.skip_route_owner_check,
+        "thresholds": {
+            "max_error_rate": args.max_error_rate,
+            "max_p95_ms": args.max_p95_ms,
+        },
         "cases": [],
     }
 
