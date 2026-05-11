@@ -18,11 +18,17 @@ type Config struct {
 	Neo4jUser     string
 	Neo4jPassword string
 	Neo4jDatabase string
+	// Neo4jConfigSource controls where the Go gateway loads Neo4j settings from:
+	// env, admin, or auto.
+	Neo4jConfigSource         string
+	Neo4jConfigResolvedSource string
+	Neo4jConfigResolutionErr  string
 
 	PythonBackendBaseURL        string
 	PythonBackendTimeoutSeconds int
 	GraphBuildTimeoutSeconds    int
 	PythonBackendForwardAuth    bool
+	AdminConfigToken            string
 
 	HTTPWriteTimeoutSeconds int
 
@@ -50,11 +56,16 @@ func Load() Config {
 		Neo4jUser:     envOrDefault("NEO4J_USER", envOrDefault("NEO4J_USERNAME", "neo4j")),
 		Neo4jPassword: envOrDefault("NEO4J_PASSWORD", "password"),
 		Neo4jDatabase: envOrDefault("NEO4J_DATABASE", "neo4j"),
+		Neo4jConfigSource: strings.ToLower(
+			envOrDefault("NEO4J_CONFIG_SOURCE", "env"),
+		),
+		Neo4jConfigResolvedSource: "env",
 
 		PythonBackendBaseURL:          envOrDefault("PYTHON_BACKEND_BASE_URL", "http://127.0.0.1:8001"),
 		PythonBackendTimeoutSeconds:   envIntOrDefault("PYTHON_BACKEND_TIMEOUT_SECONDS", 60),
 		GraphBuildTimeoutSeconds:      envIntOrDefault("GRAPH_BUILD_TIMEOUT_SECONDS", 300),
 		PythonBackendForwardAuth:      envBoolOrDefault("PYTHON_BACKEND_FORWARD_AUTH", true),
+		AdminConfigToken:              envOrDefault("GO_ADMIN_CONFIG_TOKEN", envOrDefault("ADMIN_TOKEN", "")),
 		HTTPWriteTimeoutSeconds:       envIntOrDefault("HTTP_WRITE_TIMEOUT_SECONDS", 300),
 		OrchestratorRetryMax:          envIntOrDefault("ORCHESTRATOR_RETRY_MAX", 2),
 		OrchestratorRetryBackoffMS:    envIntOrDefault("ORCHESTRATOR_RETRY_BACKOFF_MS", 200),

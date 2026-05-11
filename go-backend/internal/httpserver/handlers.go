@@ -52,9 +52,21 @@ func registerRoutes(
 			"version": cfg.Version,
 		}
 		if graphInitErr != nil {
-			data["neo4j"] = map[string]interface{}{"connected": false, "error": graphInitErr.Error()}
+			data["neo4j"] = map[string]interface{}{
+				"connected":        false,
+				"error":            graphInitErr.Error(),
+				"config_mode":      cfg.Neo4jConfigSource,
+				"config_source":    cfg.Neo4jConfigResolvedSource,
+				"resolution_error": cfg.Neo4jConfigResolutionErr,
+			}
 		} else {
-			data["neo4j"] = map[string]interface{}{"connected": true, "uri": cfg.Neo4jURI, "database": cfg.Neo4jDatabase}
+			data["neo4j"] = map[string]interface{}{
+				"connected":     true,
+				"uri":           cfg.Neo4jURI,
+				"database":      cfg.Neo4jDatabase,
+				"config_mode":   cfg.Neo4jConfigSource,
+				"config_source": cfg.Neo4jConfigResolvedSource,
+			}
 		}
 		if proxyInitErr != nil {
 			data["python_backend"] = map[string]interface{}{"connected": false, "error": proxyInitErr.Error(), "base_url": cfg.PythonBackendBaseURL}

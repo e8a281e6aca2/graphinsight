@@ -24,6 +24,9 @@ type Service struct {
 var ErrNodeNotFound = errors.New("node not found")
 
 func NewService(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Service, error) {
+	if cfg.Neo4jConfigSource == "admin" && strings.TrimSpace(cfg.Neo4jConfigResolutionErr) != "" {
+		return nil, fmt.Errorf("resolve neo4j admin config failed: %s", cfg.Neo4jConfigResolutionErr)
+	}
 	driver, err := neo4j.NewDriverWithContext(cfg.Neo4jURI, neo4j.BasicAuth(cfg.Neo4jUser, cfg.Neo4jPassword, ""))
 	if err != nil {
 		return nil, fmt.Errorf("create neo4j driver failed: %w", err)

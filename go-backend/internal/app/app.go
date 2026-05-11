@@ -16,6 +16,19 @@ import (
 func Run() error {
 	cfg := config.Load()
 	log := logger.New(cfg.LogLevel)
+	resolveTimeout := time.Duration(cfg.PythonBackendTimeoutSeconds) * time.Second
+	if resolveTimeout <= 0 {
+		resolveTimeout = 30 * time.Second
+	}
+	resolveCtx, resolveCancel := context.WithTimeout(context.Background(), resolveTimeout)
+	defer resolveCancel()
+	resolvedCfg, err := config.ResolveNeo4jConfig(resolveCtx, cfg)
+	if err != nil {
+		log.Warn("resolve neo4j config failed", "mode", cfg.Neo4jConfigSource, "error", err.Error())
+	} else if resolvedCfg.Neo4jConfigResolvedSource != "env" {
+		log.Info("resolved neo4j config", "mode", resolvedCfg.Neo4jConfigSource, "source", resolvedCfg.Neo4jConfigResolvedSource)
+	}
+	cfg = resolvedCfg
 	server := httpserver.New(cfg, log)
 
 	errCh := make(chan error, 1)
