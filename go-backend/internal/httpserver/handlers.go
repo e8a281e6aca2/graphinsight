@@ -425,6 +425,15 @@ func registerAdminOwnedProxyRoutes(
 
 	mux.HandleFunc("/api/v1/admin/profile", buildAdminProfileHandler(logger, proxyClient, proxyInitErr, guard))
 	mux.HandleFunc("/api/v1/admin/profile/", buildAdminProfileHandler(logger, proxyClient, proxyInitErr, guard))
+
+	mux.HandleFunc("/api/v1/admin", buildUnknownAdminHandler())
+	mux.HandleFunc("/api/v1/admin/", buildUnknownAdminHandler())
+}
+
+func buildUnknownAdminHandler() http.HandlerFunc {
+	return withRouteOwner("go-admin-proxy", func(w http.ResponseWriter, r *http.Request) {
+		WriteJSON(w, http.StatusNotFound, "Not found", map[string]string{"error_code": "NOT_FOUND"})
+	})
 }
 
 func buildAdminJobsHandler(

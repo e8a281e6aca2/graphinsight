@@ -58,31 +58,27 @@ func TestAdminMonitorProxyRouteMarksOwnerAndForwards(t *testing.T) {
 	}
 }
 
-func TestUnknownAdminRouteFallsBackToLegacyPythonProxyOwner(t *testing.T) {
+func TestUnknownAdminRouteIsOwnedByGoAdminProxy(t *testing.T) {
 	t.Parallel()
 
-	var gotPath string
 	proxyClient := newProxyClientForTest(t, func(w http.ResponseWriter, r *http.Request) {
-		gotPath = r.URL.Path
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"code":200,"message":"legacy"}`))
+		t.Fatalf("proxy should not be called for unknown admin route")
 	})
 
 	mux := http.NewServeMux()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	guard := newBusinessPermissionGuard(config.Config{RBACEnforceBusinessAPI: false}, logger, nil, nil)
+	registerAdminOwnedProxyRoutes(mux, logger, proxyClient, nil, guard)
 	registerLegacyPythonProxyRoutes(mux, logger, proxyClient, nil)
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/unknown-module", nil)
 	mux.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", rec.Code)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", rec.Code)
 	}
-	if gotPath != "/api/v1/admin/unknown-module" {
-		t.Fatalf("unexpected upstream path: %s", gotPath)
-	}
-	if rec.Header().Get(routeOwnerHeader) != "python-proxy" {
+	if rec.Header().Get(routeOwnerHeader) != "go-admin-proxy" {
 		t.Fatalf("unexpected route owner: %s", rec.Header().Get(routeOwnerHeader))
 	}
 }
