@@ -23,6 +23,11 @@ type Service struct {
 
 var ErrNodeNotFound = errors.New("node not found")
 
+const (
+	defaultQueryTimeout = 20 * time.Second
+	schemaQueryTimeout  = 5 * time.Second
+)
+
 func NewService(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Service, error) {
 	if cfg.Neo4jConfigSource == "admin" && strings.TrimSpace(cfg.Neo4jConfigResolutionErr) != "" {
 		return nil, fmt.Errorf("resolve neo4j admin config failed: %s", cfg.Neo4jConfigResolutionErr)
@@ -45,6 +50,32 @@ func (s *Service) Close(ctx context.Context) error {
 	return s.driver.Close(ctx)
 }
 
+func (s *Service) CheckHealth(ctx context.Context) error {
+	if s == nil || s.driver == nil {
+		return errors.New("neo4j driver is not initialized")
+	}
+	session := s.driver.NewSession(ctx, neo4j.SessionConfig{DatabaseName: s.database})
+	defer func() { _ = session.Close(ctx) }()
+
+	result, err := session.Run(
+		ctx,
+		"RETURN 1 AS ok",
+		nil,
+		neo4j.WithTxTimeout(2*time.Second),
+		neo4j.WithTxMetadata(map[string]any{"app": "graphinsight", "operation": "health"}),
+	)
+	if err != nil {
+		return err
+	}
+	if !result.Next(ctx) {
+		if err := result.Err(); err != nil {
+			return err
+		}
+		return errors.New("neo4j health probe returned no rows")
+	}
+	return result.Err()
+}
+
 func (s *Service) ExecuteQuery(ctx context.Context, cypher string, parameters map[string]interface{}) (QueryResponse, error) {
 	if strings.TrimSpace(cypher) == "" {
 		return QueryResponse{}, fmt.Errorf("cypher is empty")
@@ -57,7 +88,13 @@ func (s *Service) ExecuteQuery(ctx context.Context, cypher string, parameters ma
 	session := s.driver.NewSession(ctx, neo4j.SessionConfig{DatabaseName: s.database})
 	defer func() { _ = session.Close(ctx) }()
 
-	result, err := session.Run(ctx, cypher, parameters)
+	result, err := session.Run(
+		ctx,
+		cypher,
+		parameters,
+		neo4j.WithTxTimeout(defaultQueryTimeout),
+		neo4j.WithTxMetadata(map[string]any{"app": "graphinsight", "operation": "query"}),
+	)
 	if err != nil {
 		return QueryResponse{}, err
 	}
@@ -91,6 +128,192 @@ func (s *Service) ExecuteQuery(ctx context.Context, cypher string, parameters ma
 			ExecutionTime: float64(int(elapsed*1000)) / 1000,
 		},
 	}, nil
+}
+
+func (s *Service) DiscoverSchema(ctx context.Context) (GraphSchemaResponse, error) {
+	start := time.Now()
+	session := s.driver.NewSession(ctx, neo4j.SessionConfig{DatabaseName: s.database})
+	defer func() { _ = session.Close(ctx) }()
+
+	labels, err := s.discoverLabels(ctx, session)
+	if err != nil && s.logger != nil {
+		s.logger.Warn("schema label discovery failed", "error", err.Error())
+	}
+	relationships, err := s.discoverRelationships(ctx, session)
+	if err != nil && s.logger != nil {
+		s.logger.Warn("schema relationship discovery failed", "error", err.Error())
+	}
+	patterns, err := s.discoverPatterns(ctx, session)
+	if err != nil && s.logger != nil {
+		s.logger.Warn("schema pattern discovery failed", "error", err.Error())
+	}
+	nodeProperties, err := s.discoverNodeProperties(ctx, session)
+	if err != nil && s.logger != nil {
+		s.logger.Warn("schema node property discovery failed", "error", err.Error())
+	}
+	relProperties, err := s.discoverRelProperties(ctx, session)
+	if err != nil && s.logger != nil {
+		s.logger.Warn("schema relationship property discovery failed", "error", err.Error())
+	}
+	nodeCount, edgeCount, err := s.discoverCounts(ctx, session)
+	if err != nil && s.logger != nil {
+		s.logger.Warn("schema count discovery failed", "error", err.Error())
+	}
+
+	elapsed := time.Since(start).Seconds()
+	return GraphSchemaResponse{
+		Labels:         labels,
+		Relationships:  relationships,
+		Patterns:       patterns,
+		NodeProperties: nodeProperties,
+		RelProperties:  relProperties,
+		SampleQuery:    buildSampleQuery(labels, patterns),
+		Stats: GraphSchemaStats{
+			NodeCount:     nodeCount,
+			EdgeCount:     edgeCount,
+			ExecutionTime: float64(int(elapsed*1000)) / 1000,
+		},
+	}, nil
+}
+
+func (s *Service) discoverLabels(ctx context.Context, session neo4j.SessionWithContext) ([]GraphLabelSummary, error) {
+	result, err := session.Run(ctx, `
+CALL db.labels() YIELD label
+RETURN label, 0 AS count
+ORDER BY label ASC
+LIMIT 50
+`, nil, schemaTxOptions("schema.labels")...)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]GraphLabelSummary, 0, 16)
+	for result.Next(ctx) {
+		record := result.Record()
+		items = append(items, GraphLabelSummary{
+			Label: stringFromRecord(record, "label"),
+			Count: int64FromRecord(record, "count"),
+		})
+	}
+	return items, result.Err()
+}
+
+func (s *Service) discoverRelationships(ctx context.Context, session neo4j.SessionWithContext) ([]GraphRelationshipSummary, error) {
+	result, err := session.Run(ctx, `
+CALL db.relationshipTypes() YIELD relationshipType
+RETURN relationshipType AS type, 0 AS count
+ORDER BY relationshipType ASC
+LIMIT 50
+`, nil, schemaTxOptions("schema.relationshipTypes")...)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]GraphRelationshipSummary, 0, 16)
+	for result.Next(ctx) {
+		record := result.Record()
+		items = append(items, GraphRelationshipSummary{
+			Type:  stringFromRecord(record, "type"),
+			Count: int64FromRecord(record, "count"),
+		})
+	}
+	return items, result.Err()
+}
+
+func (s *Service) discoverPatterns(ctx context.Context, session neo4j.SessionWithContext) ([]GraphPatternSummary, error) {
+	result, err := session.Run(ctx, `
+MATCH (a)
+WITH a LIMIT 200
+MATCH (a)-[r]->(b)
+RETURN labels(a) AS source_labels, type(r) AS relationship, labels(b) AS target_labels, count(*) AS count
+ORDER BY count DESC
+LIMIT 50
+`, nil, schemaTxOptions("schema.patterns")...)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]GraphPatternSummary, 0, 16)
+	for result.Next(ctx) {
+		record := result.Record()
+		items = append(items, GraphPatternSummary{
+			SourceLabels: stringsFromRecord(record, "source_labels"),
+			Relationship: stringFromRecord(record, "relationship"),
+			TargetLabels: stringsFromRecord(record, "target_labels"),
+			Count:        int64FromRecord(record, "count"),
+		})
+	}
+	return items, result.Err()
+}
+
+func (s *Service) discoverNodeProperties(ctx context.Context, session neo4j.SessionWithContext) ([]GraphPropertySummary, error) {
+	result, err := session.Run(ctx, `
+MATCH (n)
+WITH n LIMIT 200
+UNWIND labels(n) AS label
+UNWIND keys(n) AS key
+RETURN label, key, count(*) AS count
+ORDER BY count DESC
+LIMIT 100
+`, nil, schemaTxOptions("schema.nodeProperties")...)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]GraphPropertySummary, 0, 32)
+	for result.Next(ctx) {
+		record := result.Record()
+		items = append(items, GraphPropertySummary{
+			Owner: stringFromRecord(record, "label"),
+			Key:   stringFromRecord(record, "key"),
+			Count: int64FromRecord(record, "count"),
+		})
+	}
+	return items, result.Err()
+}
+
+func (s *Service) discoverRelProperties(ctx context.Context, session neo4j.SessionWithContext) ([]GraphPropertySummary, error) {
+	result, err := session.Run(ctx, `
+MATCH (a)
+WITH a LIMIT 200
+MATCH (a)-[r]->()
+UNWIND keys(r) AS key
+RETURN type(r) AS type, key, count(*) AS count
+ORDER BY count DESC
+LIMIT 100
+`, nil, schemaTxOptions("schema.relProperties")...)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]GraphPropertySummary, 0, 32)
+	for result.Next(ctx) {
+		record := result.Record()
+		items = append(items, GraphPropertySummary{
+			Owner: stringFromRecord(record, "type"),
+			Key:   stringFromRecord(record, "key"),
+			Count: int64FromRecord(record, "count"),
+		})
+	}
+	return items, result.Err()
+}
+
+func (s *Service) discoverCounts(ctx context.Context, session neo4j.SessionWithContext) (int64, int64, error) {
+	result, err := session.Run(ctx, `
+MATCH (n)
+WITH n LIMIT 1000
+OPTIONAL MATCH (n)-[r]-()
+RETURN count(DISTINCT n) AS node_count, count(DISTINCT r) AS edge_count
+`, nil, schemaTxOptions("schema.countSample")...)
+	if err != nil {
+		return 0, 0, err
+	}
+	if !result.Next(ctx) {
+		if err := result.Err(); err != nil {
+			return 0, 0, err
+		}
+		return 0, 0, nil
+	}
+	record := result.Record()
+	if err := result.Err(); err != nil {
+		return 0, 0, err
+	}
+	return int64FromRecord(record, "node_count"), int64FromRecord(record, "edge_count"), nil
 }
 
 func (s *Service) ExpandNode(ctx context.Context, req ExpandRequest) (QueryResponse, error) {
@@ -205,6 +428,123 @@ LIMIT 1
 	}, nil
 }
 
+func buildSampleQuery(labels []GraphLabelSummary, patterns []GraphPatternSummary) string {
+	for _, item := range labels {
+		if strings.EqualFold(strings.TrimSpace(item.Label), "CausalFactView") ||
+			strings.EqualFold(strings.TrimSpace(item.Label), "TemporalFactView") {
+			return `// 当前图谱的论文事实视图查询
+MATCH p=(a)-[:FACT_SOURCE|FACT_TARGET]-(f)-[:FACT_SOURCE|FACT_TARGET]-(b)
+WHERE f.view_scope = 'paper_wheat_four_type_fact_view'
+RETURN p
+LIMIT 200`
+		}
+	}
+	if len(patterns) > 0 {
+		pattern := patterns[0]
+		source := firstNonEmpty(pattern.SourceLabels)
+		target := firstNonEmpty(pattern.TargetLabels)
+		relationship := strings.TrimSpace(pattern.Relationship)
+		if source != "" && target != "" && relationship != "" {
+			return fmt.Sprintf(`// 自动发现：按当前图数据库最常见的关系模式查询
+MATCH (n:%s)-[r:%s]->(m:%s)
+RETURN n, r, m
+LIMIT 80`, quoteCypherName(source), quoteCypherName(relationship), quoteCypherName(target))
+		}
+	}
+	if len(labels) > 0 && strings.TrimSpace(labels[0].Label) != "" {
+		return fmt.Sprintf(`// 自动发现：当前图数据库暂未发现关系，先查看节点
+MATCH (n:%s)
+RETURN n
+LIMIT 80`, quoteCypherName(labels[0].Label))
+	}
+	return `// 当前图数据库暂未发现节点，先执行一个通用探测查询
+MATCH (n)
+RETURN n
+LIMIT 80`
+}
+
+func quoteCypherName(value string) string {
+	return "`" + strings.ReplaceAll(strings.TrimSpace(value), "`", "``") + "`"
+}
+
+func schemaTxOptions(operation string) []func(*neo4j.TransactionConfig) {
+	return []func(*neo4j.TransactionConfig){
+		neo4j.WithTxTimeout(schemaQueryTimeout),
+		neo4j.WithTxMetadata(map[string]any{"app": "graphinsight", "operation": operation}),
+	}
+}
+
+func firstNonEmpty(items []string) string {
+	for _, item := range items {
+		if strings.TrimSpace(item) != "" {
+			return strings.TrimSpace(item)
+		}
+	}
+	return ""
+}
+
+func stringFromRecord(record *neo4j.Record, key string) string {
+	value, ok := record.Get(key)
+	if !ok || value == nil {
+		return ""
+	}
+	if text, ok := value.(string); ok {
+		return text
+	}
+	return fmt.Sprintf("%v", value)
+}
+
+func stringsFromRecord(record *neo4j.Record, key string) []string {
+	value, ok := record.Get(key)
+	if !ok || value == nil {
+		return []string{}
+	}
+	switch v := value.(type) {
+	case []string:
+		return append([]string(nil), v...)
+	case []interface{}:
+		items := make([]string, 0, len(v))
+		for _, item := range v {
+			if item == nil {
+				continue
+			}
+			items = append(items, fmt.Sprintf("%v", item))
+		}
+		return items
+	default:
+		return []string{fmt.Sprintf("%v", value)}
+	}
+}
+
+func int64FromRecord(record *neo4j.Record, key string) int64 {
+	value, ok := record.Get(key)
+	if !ok || value == nil {
+		return 0
+	}
+	switch v := value.(type) {
+	case int:
+		return int64(v)
+	case int8:
+		return int64(v)
+	case int16:
+		return int64(v)
+	case int32:
+		return int64(v)
+	case int64:
+		return v
+	case float32:
+		return int64(v)
+	case float64:
+		return int64(v)
+	default:
+		parsed, err := strconv.ParseInt(fmt.Sprintf("%v", value), 10, 64)
+		if err != nil {
+			return 0
+		}
+		return parsed
+	}
+}
+
 func ClassifyQueryError(err error) (int, map[string]interface{}) {
 	if err == nil {
 		return 200, map[string]interface{}{}
@@ -231,6 +571,20 @@ func ClassifyQueryError(err error) (int, map[string]interface{}) {
 			"error":   "Invalid node id",
 			"code":    "INVALID_NODE_ID",
 			"message": "nodeId is required",
+		}
+	}
+	if strings.Contains(lower, "dbms.memory.transaction.total.max") || strings.Contains(lower, "memorypooloutofmemory") || strings.Contains(lower, "memory pool") {
+		return 503, map[string]interface{}{
+			"error":   "Database transaction memory exhausted",
+			"code":    "DATABASE_MEMORY_EXHAUSTED",
+			"message": "Neo4j transaction memory is exhausted. Restart Neo4j or terminate the heavy query, then retry with a narrower Cypher query.",
+		}
+	}
+	if strings.Contains(lower, "transaction timed out") || strings.Contains(lower, "transaction timeout") || strings.Contains(lower, "terminated due to timeout") {
+		return 503, map[string]interface{}{
+			"error":   "Query timeout",
+			"code":    "QUERY_TIMEOUT",
+			"message": "Cypher query timed out. Narrow the query with labels, relationship types, indexed properties, or a lower LIMIT.",
 		}
 	}
 	if strings.Contains(lower, "unable to retrieve routing information") || strings.Contains(lower, "service unavailable") || strings.Contains(lower, "connection") || strings.Contains(lower, "connectivity") {

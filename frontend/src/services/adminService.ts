@@ -64,8 +64,6 @@ const apiClient = axios.create({
   },
 });
 
-console.info('[AdminAPI] baseURL =', API_BASE_URL);
-
 // 请求拦截器 - 添加 token
 apiClient.interceptors.request.use(
   (config) => {
@@ -98,9 +96,15 @@ apiClient.interceptors.response.use(
 interface ApiError {
   message: string;
   code?: number;
-  details?: any;
+  details?: unknown;
   trace_id?: string;
 }
+
+type ApiErrorEnvelope = ApiResponse<unknown> & {
+  error?: unknown;
+};
+
+type ConfigValueMap = Record<string, unknown>;
 
 function extractApiData<T>(response: { data: ApiResponse<T> }): T {
   const payload = response.data;
@@ -113,7 +117,7 @@ function extractApiData<T>(response: { data: ApiResponse<T> }): T {
         ? `${payload.message || '请求失败'} [trace_id: ${payload.trace_id}]`
         : (payload.message || '请求失败'),
       code: payload.code,
-      details: (payload as any).error,
+      details: (payload as ApiErrorEnvelope).error,
       trace_id: payload.trace_id,
     } as ApiError;
   }
@@ -128,22 +132,23 @@ function extractApiData<T>(response: { data: ApiResponse<T> }): T {
   return payload.data;
 }
 
-function handleApiError(error: any): never {
+function handleApiError(error: unknown): never {
   console.error('API 错误处理:', error);
 
   if (error && typeof error === 'object' && !axios.isAxiosError(error) && 'message' in error) {
+    const businessError = error as Partial<ApiError>;
     const normalized = {
-      message: String((error as any).message || '未知错误'),
-      code: (error as any).code,
-      trace_id: (error as any).trace_id,
-      details: (error as any).details,
+      message: String(businessError.message || '未知错误'),
+      code: businessError.code,
+      trace_id: businessError.trace_id,
+      details: businessError.details,
     };
     console.error('标准化业务错误:', normalized);
     throw error as ApiError;
   }
-  
+
   if (axios.isAxiosError(error)) {
-    const axiosError = error as AxiosError<ApiResponse>;
+    const axiosError = error as AxiosError<ApiErrorEnvelope>;
     const traceId =
       axiosError.response?.data?.trace_id ||
       (axiosError.response?.headers?.['x-trace-id'] as string | undefined);
@@ -169,7 +174,7 @@ function handleApiError(error: any): never {
     });
     throw apiError;
   }
-  
+
   const unknownError = { message: '未知错误', details: error };
   console.error('未知错误:', unknownError);
   throw unknownError;
@@ -185,26 +190,24 @@ export const authApi = {
    */
   async register(data: { email: string; password: string }): Promise<{ user: UserInfo; message: string }> {
     try {
-      console.log('发送注册请求:', data);
       const response = await apiClient.post<ApiResponse<{ user: UserInfo; message: string }>>(
         '/api/v1/admin/auth/register',
         data
       );
-      console.log('注册响应:', response.data);
 
       if (typeof response.data?.code === 'number' && response.data.code >= 400) {
         throw {
           message: response.data.message || '注册失败',
           code: response.data.code,
-          details: (response.data as any).error,
+          details: (response.data as ApiErrorEnvelope).error,
         };
       }
-      
+
       // 确保返回有效数据
       if (!response.data.data) {
         throw new Error('注册响应数据格式错误');
       }
-      
+
       return response.data.data;
     } catch (error) {
       console.error('注册 API 错误:', error);
@@ -226,15 +229,15 @@ export const authApi = {
         throw {
           message: response.data.message || '登录失败',
           code: response.data.code,
-          details: (response.data as any).error,
+          details: (response.data as ApiErrorEnvelope).error,
         };
       }
-      
+
       // 保存 token
       if (response.data.data?.token) {
         localStorage.setItem('admin_token', response.data.data.token);
       }
-      
+
       return response.data.data!;
     } catch (error) {
       handleApiError(error);
@@ -296,25 +299,26 @@ export const configApi = {
     try {
       // 并行获取各个分类的配置
       const [neo4jResp, aiServiceResp, nl2cypherResp] = await Promise.all([
-        apiClient.get<ApiResponse<Record<string, any>>>('/api/v1/admin/config/neo4j/all'),
-        apiClient.get<ApiResponse<Record<string, any>>>('/api/v1/admin/config/ai-service/all'),
-        apiClient.get<ApiResponse<Record<string, any>>>('/api/v1/admin/config/nl2cypher/all'),
+        apiClient.get<ApiResponse<ConfigValueMap>>('/api/v1/admin/config/neo4j/all'),
+        apiClient.get<ApiResponse<ConfigValueMap>>('/api/v1/admin/config/ai-service/all'),
+        apiClient.get<ApiResponse<ConfigValueMap>>('/api/v1/admin/config/nl2cypher/all'),
       ]);
       const neo4j = extractApiData(neo4jResp);
       const aiService = extractApiData(aiServiceResp);
       const nl2cypher = extractApiData(nl2cypherResp);
 
       // 转换为 ConfigItem 格式
-      const convertToConfigItems = (data: Record<string, any>, category: string): Record<string, ConfigItem> => {
+      const convertToConfigItems = (data: ConfigValueMap, category: string): Record<string, ConfigItem> => {
         const result: Record<string, ConfigItem> = {};
         for (const [key, value] of Object.entries(data)) {
+          const isSensitive = key.includes('password') || key.includes('key');
           result[key] = {
             id: 0, // 从 /all 端点获取的数据没有 id
             key,
-            value: String(value ?? ''),
+            value: isSensitive ? '' : String(value ?? ''),
             category,
             description: '',
-            is_sensitive: key.includes('password') || key.includes('key'),
+            is_sensitive: isSensitive,
             is_encrypted: false,
             updated_at: new Date().toISOString(),
             version: 1,
@@ -407,27 +411,22 @@ export const configApi = {
     model?: string;
   }): Promise<string[]> {
     try {
-      console.log('调用 API: /api/v1/admin/config/openai/models');
       const response = await apiClient.get<ApiResponse<{ models: string[] }>>(
         '/api/v1/admin/config/openai/models',
         { params }
       );
-      console.log('API 完整响应:', JSON.stringify(response.data, null, 2));
-      console.log('response.data.data:', response.data.data);
-      console.log('response.data.data?.models:', response.data.data?.models);
-      
+
       // 尝试多种方式获取 models
       let models: string[] = [];
       const data = extractApiData(response);
-      if ((data as any)?.models) {
-        models = (data as any).models;
+      if (data && typeof data === 'object' && 'models' in data && Array.isArray(data.models)) {
+        models = data.models.filter((item): item is string => typeof item === 'string');
       } else if (Array.isArray(data)) {
-        models = data as unknown as string[];
-      } else if ((response.data as any).models) {
-        models = (response.data as any).models;
+        models = data.filter((item): item is string => typeof item === 'string');
+      } else if ('models' in response.data && Array.isArray(response.data.models)) {
+        models = response.data.models.filter((item): item is string => typeof item === 'string');
       }
-      
-      console.log('最终解析出的模型列表:', models);
+
       return models;
     } catch (error) {
       console.error('获取模型列表 API 错误:', error);

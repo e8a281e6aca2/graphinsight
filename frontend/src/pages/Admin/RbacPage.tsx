@@ -35,6 +35,7 @@ import type {
   ScopeType,
 } from '../../types/admin';
 import AdminLayout from '../../components/Admin/AdminLayout';
+import { getErrorMessage } from '../../utils/errorMessage';
 
 const scopeOptions: ScopeType[] = ['global', 'tenant', 'project', 'kb'];
 
@@ -76,8 +77,8 @@ const RbacPage: React.FC = () => {
       setRoles(roleData || []);
       setUsers(userData?.items || []);
       setError('');
-    } catch (err: any) {
-      setError(err.message || '加载权限数据失败');
+    } catch (err: unknown) {
+      setError(getErrorMessage(err, '加载权限数据失败'));
     } finally {
       setLoading(false);
     }
@@ -89,8 +90,8 @@ const RbacPage: React.FC = () => {
       const data = await rbacApi.getBindings(userId ? { user_id: userId } : undefined);
       setBindings(data || []);
       setError('');
-    } catch (err: any) {
-      setError(err.message || '加载绑定失败');
+    } catch (err: unknown) {
+      setError(getErrorMessage(err, '加载绑定失败'));
     } finally {
       setLoading(false);
     }
@@ -129,8 +130,8 @@ const RbacPage: React.FC = () => {
       await rbacApi.createBinding(payload);
       setMessage('绑定创建成功');
       await loadBindings(Number(selectedUserId));
-    } catch (err: any) {
-      setError(err.message || '绑定创建失败');
+    } catch (err: unknown) {
+      setError(getErrorMessage(err, '绑定创建失败'));
     } finally {
       setSaving(false);
     }
@@ -146,8 +147,8 @@ const RbacPage: React.FC = () => {
       } else {
         await loadBindings();
       }
-    } catch (err: any) {
-      setError(err.message || '删除绑定失败');
+    } catch (err: unknown) {
+      setError(getErrorMessage(err, '删除绑定失败'));
     } finally {
       setSaving(false);
     }

@@ -194,13 +194,13 @@ async def health_check():
         from services.neo4j_service import get_neo4j_service
 
         runtime_neo4j = get_neo4j_service().get_runtime_connection_info()
-    except Exception:
+    except Exception as exc:
         # 健康检查不应因 Neo4j 初始化失败而直接抛错
-        pass
+        runtime_neo4j["error"] = str(exc)
 
     return success_response(
         data={
-            "status": "healthy",
+            "status": "healthy" if runtime_neo4j.get("connected") else "degraded",
             "neo4j": runtime_neo4j,
             "media_dir": MEDIA_DIR,
             "build_tag": BUILD_TAG,
@@ -243,9 +243,7 @@ app.include_router(qa_traces.router, prefix="/api/v1", tags=["问答链路追踪
 app.include_router(rbac.router, prefix="/api/v1", tags=["权限管理"])
 app.include_router(users.router, prefix="/api/v1", tags=["用户管理"])
 
-# 注意：旧的管理路由已被新的标准化 API 替代
-# 如需使用旧路由，请手动导入并注册
-# from admin.routes import auth, config, monitor, logs
+# 注意：旧的管理路由已移除，管理后台只允许使用 admin.api.endpoints 下的标准化 API。
 
 
 if __name__ == "__main__":

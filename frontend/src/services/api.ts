@@ -36,7 +36,17 @@ api.interceptors.response.use(
     // 统一错误处理
     if (error.response) {
       // 服务器返回错误响应
-      console.error('API Error:', error.response.data);
+      const status = error.response.status;
+      const log = status === 401 || status === 403 ? console.warn : console.error;
+      const method = String(error.config?.method || 'GET').toUpperCase();
+      const url = error.config?.url || '';
+      const message = error.response.data?.message || error.message || '请求失败';
+      const traceId = error.response.data?.trace_id;
+      log(
+        traceId
+          ? `API ${status} ${method} ${url}: ${message} [trace_id: ${traceId}]`
+          : `API ${status} ${method} ${url}: ${message}`
+      );
     } else if (error.request) {
       // 请求已发送但没有收到响应
       console.error('Network Error:', error.message);

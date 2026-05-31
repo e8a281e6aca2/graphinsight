@@ -19,6 +19,8 @@ type Client struct {
 	forwardAuth bool
 }
 
+const upstreamBaseHeader = "X-Upstream-Base"
+
 func New(cfg config.Config) (*Client, error) {
 	raw := strings.TrimSpace(cfg.PythonBackendBaseURL)
 	if raw == "" {
@@ -70,6 +72,7 @@ func (c *Client) Proxy(w http.ResponseWriter, r *http.Request) error {
 	if !c.forwardAuth {
 		req.Header.Del("Authorization")
 	}
+	req.Header.Del(upstreamBaseHeader)
 	req.Header.Set("X-Go-Proxy", "graphinsight-go")
 
 	resp, err := c.httpClient.Do(req)
@@ -78,8 +81,7 @@ func (c *Client) Proxy(w http.ResponseWriter, r *http.Request) error {
 	}
 	defer resp.Body.Close()
 
-	copyHeader(w.Header(), resp.Header)
-	w.Header().Set("X-Upstream-Base", c.baseURL.String())
+	copyHeaderExcept(w.Header(), resp.Header, upstreamBaseHeader)
 	w.WriteHeader(resp.StatusCode)
 	_, _ = io.Copy(w, resp.Body)
 	return nil
@@ -98,7 +100,19 @@ func joinPath(basePath, routePath string) string {
 }
 
 func copyHeader(dst, src http.Header) {
+	copyHeaderExcept(dst, src)
+}
+
+func copyHeaderExcept(dst, src http.Header, excluded ...string) {
+	blocked := make(map[string]struct{}, len(excluded))
+	for _, header := range excluded {
+		blocked[http.CanonicalHeaderKey(header)] = struct{}{}
+	}
+
 	for k, values := range src {
+		if _, ok := blocked[http.CanonicalHeaderKey(k)]; ok {
+			continue
+		}
 		dst.Del(k)
 		for _, value := range values {
 			dst.Add(k, value)

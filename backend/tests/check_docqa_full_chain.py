@@ -15,6 +15,7 @@
 """
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import sys
@@ -187,12 +188,29 @@ def _verify_trace(base_url: str, token: str, trace_id: str) -> dict:
 
 
 def main() -> int:
-    base_url = os.getenv("ADMIN_BASE_URL", "http://127.0.0.1:8081").rstrip("/")
-    admin_email = os.getenv("ADMIN_EMAIL", "yh@qs.al")
-    admin_password = os.getenv("ADMIN_PASSWORD")
-    token = (os.getenv("ADMIN_TOKEN") or "").strip()
-    timeout_seconds = int(os.getenv("DOCQA_FULL_CHAIN_TIMEOUT_SECONDS", "240"))
-    poll_interval = float(os.getenv("DOCQA_FULL_CHAIN_POLL_SECONDS", "2"))
+    parser = argparse.ArgumentParser(description="DocQA full-chain smoke check")
+    parser.add_argument("--base-url", default=os.getenv("ADMIN_BASE_URL", "http://127.0.0.1:8081"))
+    parser.add_argument("--admin-token", default=os.getenv("ADMIN_TOKEN"))
+    parser.add_argument("--admin-email", default=os.getenv("ADMIN_EMAIL", "yh@qs.al"))
+    parser.add_argument("--admin-password", default=os.getenv("ADMIN_PASSWORD"))
+    parser.add_argument(
+        "--timeout-seconds",
+        type=int,
+        default=int(os.getenv("DOCQA_FULL_CHAIN_TIMEOUT_SECONDS", "240")),
+    )
+    parser.add_argument(
+        "--poll-seconds",
+        type=float,
+        default=float(os.getenv("DOCQA_FULL_CHAIN_POLL_SECONDS", "2")),
+    )
+    args = parser.parse_args()
+
+    base_url = str(args.base_url).rstrip("/")
+    admin_email = args.admin_email
+    admin_password = args.admin_password
+    token = (args.admin_token or "").strip()
+    timeout_seconds = args.timeout_seconds
+    poll_interval = args.poll_seconds
 
     if not token:
         if not admin_password:
@@ -262,7 +280,7 @@ def main() -> int:
             "tenant_id": "t-docqa-chain",
             "project_id": "p-docqa-chain",
             "payload": {"source": "documents", "force": True},
-            "max_retries": 1,
+            "max_retries": 0,
         }
         create_status, create_body = _request(
             "POST",

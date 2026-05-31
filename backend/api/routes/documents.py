@@ -393,7 +393,7 @@ async def delete_document(
         file_path = _find_file_by_doc_id(doc_id)
         service = DocumentGraphService()
         before_active_docs = len(_collect_active_file_items())
-        before_graph = service.get_graph_totals() if (purge_graph or verify_after or dry_run) else None
+        before_graph = service.get_graph_totals() if purge_graph else None
         graph_preview = service.preview_delete_document_graph(doc_id) if purge_graph else None
 
         if dry_run:
@@ -452,7 +452,7 @@ async def delete_document(
         verification = None
         if verify_after:
             after_active_docs = len(_collect_active_file_items())
-            after_graph = service.get_graph_totals() if (purge_graph or before_graph is not None) else None
+            after_graph = service.get_graph_totals() if purge_graph else None
             verification = _build_verification(
                 before_active_docs=before_active_docs,
                 after_active_docs=after_active_docs,
@@ -498,8 +498,6 @@ async def restore_document(
             return error_response(message="回收站文件已不存在", code=404)
 
         before_active_docs = len(_collect_active_file_items())
-        service = DocumentGraphService()
-        before_graph = service.get_graph_totals() if verify_after else None
 
         original_path = Path(str(item.get("original_path") or ""))
         target_path = original_path
@@ -520,12 +518,11 @@ async def restore_document(
         verification = None
         if verify_after:
             after_active_docs = len(_collect_active_file_items())
-            after_graph = service.get_graph_totals() if before_graph is not None else None
             verification = _build_verification(
                 before_active_docs=before_active_docs,
                 after_active_docs=after_active_docs,
-                before_graph=before_graph,
-                after_graph=after_graph,
+                before_graph=None,
+                after_graph=None,
             )
 
         return success_response(
@@ -564,7 +561,7 @@ async def clear_documents(
 
         service = DocumentGraphService()
         before_active_docs = len(file_paths)
-        before_graph = service.get_graph_totals() if (purge_graph or verify_after or dry_run) else None
+        before_graph = service.get_graph_totals() if purge_graph else None
         graph_preview = service.preview_clear_document_graph() if purge_graph else None
 
         if dry_run:
@@ -607,7 +604,7 @@ async def clear_documents(
         verification = None
         if verify_after:
             after_active_docs = len(_collect_active_file_items())
-            after_graph = service.get_graph_totals() if (purge_graph or before_graph is not None) else None
+            after_graph = service.get_graph_totals() if purge_graph else None
             verification = _build_verification(
                 before_active_docs=before_active_docs,
                 after_active_docs=after_active_docs,

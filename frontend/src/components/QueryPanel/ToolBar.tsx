@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useMemo, useState, useEffect } from 'react';
 import {
   Box,
   TextField,
@@ -26,7 +26,13 @@ import {
 import { useGraphStore } from '../../store/graphStore';
 import { BookmarkManager } from '../GraphCanvas/BookmarkManager';
 import type { RendererAPI } from '../../renderers/core/types';
-import { loadNavigationHistory } from '../../utils/navigationStorage';
+import { loadNavigationHistory, type NavigationHistoryItem } from '../../utils/navigationStorage';
+
+function displayText(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  return '';
+}
 
 interface ToolBarProps {
   rendererRef: React.RefObject<RendererAPI | null>;
@@ -43,19 +49,16 @@ export const ToolBar: React.FC<ToolBarProps> = ({ rendererRef }) => {
   const { graphData, setSelectedNodeId } = useGraphStore();
 
   const [searchQuery, setSearchQuery] = useState('');
-  const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
-  const [showSearchResults, setShowSearchResults] = useState(false);
+  const [lastSelectedQuery, setLastSelectedQuery] = useState('');
 
   const [bookmarkManagerOpen, setBookmarkManagerOpen] = useState(false);
 
   const [showHistory, setShowHistory] = useState(false);
-  const [navigationHistory, setNavigationHistory] = useState<any[]>([]);
+  const [navigationHistory, setNavigationHistory] = useState<NavigationHistoryItem[]>(() => loadNavigationHistory());
 
-  useEffect(() => {
+  const searchResults = useMemo(() => {
     if (!searchQuery.trim() || !graphData?.nodes) {
-      setSearchResults([]);
-      setShowSearchResults(false);
-      return;
+      return [] as SearchResult[];
     }
 
     const query = searchQuery.toLowerCase();
@@ -63,7 +66,7 @@ export const ToolBar: React.FC<ToolBarProps> = ({ rendererRef }) => {
 
     graphData.nodes.forEach((node) => {
       let score = 0;
-      const label = (node.properties?.name || node.id || '').toLowerCase();
+      const label = (displayText(node.properties?.name) || node.id).toLowerCase();
       const type = (node.labels?.[0] || '').toLowerCase();
 
       if (label.includes(query)) {
@@ -82,7 +85,7 @@ export const ToolBar: React.FC<ToolBarProps> = ({ rendererRef }) => {
       if (score > 0) {
         results.push({
           id: node.id,
-          label: node.properties?.name || node.id,
+          label: displayText(node.properties?.name) || node.id,
           type: node.labels?.[0] || 'Unknown',
           score,
         });
@@ -90,9 +93,9 @@ export const ToolBar: React.FC<ToolBarProps> = ({ rendererRef }) => {
     });
 
     results.sort((a, b) => b.score - a.score);
-    setSearchResults(results.slice(0, 10));
-    setShowSearchResults(results.length > 0);
+    return results.slice(0, 10);
   }, [searchQuery, graphData]);
+  const showSearchResults = searchQuery !== lastSelectedQuery && searchResults.length > 0;
 
   const handleSearchResultClick = (result: SearchResult) => {
     const renderer = rendererRef.current;
@@ -109,14 +112,13 @@ export const ToolBar: React.FC<ToolBarProps> = ({ rendererRef }) => {
       }
     }
 
+    setLastSelectedQuery('');
     setSearchQuery('');
-    setShowSearchResults(false);
   };
 
   const handleClearSearch = () => {
+    setLastSelectedQuery('');
     setSearchQuery('');
-    setSearchResults([]);
-    setShowSearchResults(false);
     rendererRef.current?.clearSearchHighlight();
   };
 
@@ -125,17 +127,18 @@ export const ToolBar: React.FC<ToolBarProps> = ({ rendererRef }) => {
   };
 
   useEffect(() => {
-    setNavigationHistory(loadNavigationHistory());
-  }, []);
-
-  useEffect(() => {
     if (!showHistory) return;
-    setNavigationHistory(loadNavigationHistory());
+    const timer = window.setTimeout(() => {
+      setNavigationHistory(loadNavigationHistory());
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, [showHistory, bookmarkManagerOpen]);
 
   useEffect(() => {
     const handleHistoryUpdate = () => {
-      setNavigationHistory(loadNavigationHistory());
+      window.setTimeout(() => {
+        setNavigationHistory(loadNavigationHistory());
+      }, 0);
     };
 
     window.addEventListener('navigationHistoryUpdated', handleHistoryUpdate);

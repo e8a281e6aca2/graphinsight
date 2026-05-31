@@ -7,7 +7,7 @@ export type ClientLogLevel = 'info' | 'warn' | 'error';
 export interface ClientLogPayload {
   level: ClientLogLevel;
   message: string;
-  context?: Record<string, any>;
+  context?: Record<string, unknown>;
   source?: string;
   event?: string;
 }

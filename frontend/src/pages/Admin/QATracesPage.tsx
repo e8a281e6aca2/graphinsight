@@ -28,6 +28,7 @@ import { Refresh, Search } from '@mui/icons-material';
 import AdminLayout from '../../components/Admin/AdminLayout';
 import { qaTracesApi } from '../../services/adminService';
 import type { QACostSummary, QATraceDetail, QATraceItem, QATraceStatus, QATraceType } from '../../types/admin';
+import { getErrorMessage } from '../../utils/errorMessage';
 
 type QATraceTypeFilter = QATraceType | '';
 type QATraceStatusFilter = QATraceStatus | '';
@@ -79,8 +80,8 @@ const QATracesPage: React.FC = () => {
         window_hours: 24,
       });
       setCostSummary(costData);
-    } catch (err: any) {
-      setError(err.message || '问答追踪加载失败');
+    } catch (err: unknown) {
+      setError(getErrorMessage(err, '问答追踪加载失败'));
     } finally {
       setLoading(false);
     }
@@ -96,8 +97,8 @@ const QATracesPage: React.FC = () => {
       const data = await qaTracesApi.getTrace(item.id);
       setDetail(data);
       setDetailOpen(true);
-    } catch (err: any) {
-      setError(err.message || '追踪详情加载失败');
+    } catch (err: unknown) {
+      setError(getErrorMessage(err, '追踪详情加载失败'));
     }
   };
 

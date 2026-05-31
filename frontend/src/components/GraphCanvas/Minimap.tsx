@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Box,
   Paper,
@@ -34,7 +34,7 @@ export function Minimap({ rendererRef, width = 200, height = 150, viewportSize }
   const displayWidth = isExpanded ? width * 1.5 : width;
   const displayHeight = isExpanded ? height * 1.5 : height;
 
-  const drawMinimap = () => {
+  const drawMinimap = useCallback(() => {
     const canvas = canvasRef.current;
     const renderer = rendererRef.current;
     if (!canvas || !renderer) return;
@@ -142,7 +142,7 @@ export function Minimap({ rendererRef, width = 200, height = 150, viewportSize }
     ctx.strokeRect(rectX, rectY, rectWidth, rectHeight);
     ctx.fillStyle = 'rgba(25, 118, 210, 0.15)';
     ctx.fillRect(rectX, rectY, rectWidth, rectHeight);
-  };
+  }, [displayHeight, displayWidth, rendererRef, showDensity, viewportSize.height, viewportSize.width]);
 
   useEffect(() => {
     if (!isVisible) return;
@@ -159,7 +159,7 @@ export function Minimap({ rendererRef, width = 200, height = 150, viewportSize }
         cancelAnimationFrame(animationRef.current);
       }
     };
-  }, [isVisible, isExpanded, showDensity, width, height, viewportSize]);
+  }, [drawMinimap, isVisible]);
 
   const handleMinimapClick = (event: React.MouseEvent<HTMLCanvasElement>) => {
     const renderer = rendererRef.current;

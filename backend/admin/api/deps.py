@@ -181,8 +181,8 @@ def require_permission(permission_code: str, resource: str = "business"):
     权限守卫
 
     环境变量：
-    - RBAC_ENFORCE_BUSINESS_API=true：强制要求登录并严格权限校验
-    - RBAC_ENFORCE_BUSINESS_API=false：灰度模式，允许匿名访问（用于平滑迁移）
+    - RBAC_ENFORCE_BUSINESS_API=true：强制要求登录并严格权限校验（默认）
+    - RBAC_ENFORCE_BUSINESS_API=false：仅用于本地迁移诊断，允许匿名访问
     """
 
     async def dependency(

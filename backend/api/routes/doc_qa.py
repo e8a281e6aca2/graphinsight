@@ -61,6 +61,19 @@ class DeepResearchResponse(BaseModel):
     evidence_stats: Dict[str, Any]
 
 
+def _docqa_health_status(result: Dict[str, Any]) -> str:
+    neo4j_ok = bool((result.get("neo4j") or {}).get("ok"))
+    if not neo4j_ok:
+        return "unhealthy"
+
+    retrieval = result.get("retrieval") or {}
+    llm = result.get("llm") or {}
+    if not bool(retrieval.get("ok")) or not bool(llm.get("ok")):
+        return "degraded"
+
+    return "healthy"
+
+
 def _record_qa_trace(
     db: Session,
     *,
@@ -290,15 +303,31 @@ async def doc_qa_health(
 ):
     try:
         result = doc_qa_service.diagnose(probe_llm=probe_llm)
+        status = _docqa_health_status(result)
+        result["status"] = status
+        result["checks"] = {
+            "neo4j": bool((result.get("neo4j") or {}).get("ok")),
+            "retrieval": bool((result.get("retrieval") or {}).get("ok")),
+            "llm": bool((result.get("llm") or {}).get("ok")),
+        }
         logger.info(
             "文档问答健康检查",
             context={
                 "probe_llm": probe_llm,
+                "status": status,
                 "neo4j_ok": result.get("neo4j", {}).get("ok"),
                 "llm_ok": result.get("llm", {}).get("ok"),
             },
         )
-        return success_response(data=result, message="ok")
+        return success_response(data=result, message=status)
     except Exception as exc:  # noqa: BLE001
         logger.error("文档问答健康检查失败", context={"error": str(exc)})
-        return error_response(message="健康检查失败", code=500)
+        return success_response(
+            data={
+                "status": "unhealthy",
+                "probe_llm": probe_llm,
+                "checks": {"neo4j": False, "retrieval": False, "llm": False},
+                "error": str(exc),
+            },
+            message="unhealthy",
+        )

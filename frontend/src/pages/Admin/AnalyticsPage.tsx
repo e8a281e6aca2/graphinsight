@@ -23,10 +23,16 @@ import OperationTypeChart from '../../components/Admin/Charts/OperationTypeChart
 import LogStatsChart from '../../components/Admin/Charts/LogStatsChart';
 import type { LogStats } from '../../types/admin';
 import AdminLayout from '../../components/Admin/AdminLayout';
+import { getErrorMessage } from '../../utils/errorMessage';
+
+type OperationStat = {
+  operation: string;
+  count: number;
+};
 
 const AnalyticsPage: React.FC = () => {
   const [logStats, setLogStats] = useState<LogStats | null>(null);
-  const [operationStats, setOperationStats] = useState<any[]>([]);
+  const [operationStats, setOperationStats] = useState<OperationStat[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
@@ -42,7 +48,7 @@ const AnalyticsPage: React.FC = () => {
       setLogStats(stats);
       
       // 模拟操作类型统计（实际应该从后端获取）
-      const mockOperationStats = [
+      const mockOperationStats: OperationStat[] = [
         { operation: '查询', count: 150 },
         { operation: '配置更新', count: 45 },
         { operation: '登录', count: 89 },
@@ -51,9 +57,9 @@ const AnalyticsPage: React.FC = () => {
       ];
       setOperationStats(mockOperationStats);
       
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('加载数据失败:', err);
-      setError(err.message || '加载数据失败');
+      setError(getErrorMessage(err, '加载数据失败'));
     } finally {
       setLoading(false);
     }

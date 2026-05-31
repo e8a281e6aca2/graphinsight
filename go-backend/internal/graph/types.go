@@ -51,3 +51,42 @@ type QueryResponse struct {
 	Edges []Edge `json:"edges"`
 	Stats Stats  `json:"stats"`
 }
+
+type GraphSchemaResponse struct {
+	Labels         []GraphLabelSummary        `json:"labels"`
+	Relationships  []GraphRelationshipSummary `json:"relationships"`
+	Patterns       []GraphPatternSummary      `json:"patterns"`
+	NodeProperties []GraphPropertySummary     `json:"nodeProperties"`
+	RelProperties  []GraphPropertySummary     `json:"relProperties"`
+	SampleQuery    string                     `json:"sampleQuery"`
+	Stats          GraphSchemaStats           `json:"stats"`
+}
+
+type GraphLabelSummary struct {
+	Label string `json:"label"`
+	Count int64  `json:"count"`
+}
+
+type GraphRelationshipSummary struct {
+	Type  string `json:"type"`
+	Count int64  `json:"count"`
+}
+
+type GraphPatternSummary struct {
+	SourceLabels []string `json:"sourceLabels"`
+	Relationship string   `json:"relationship"`
+	TargetLabels []string `json:"targetLabels"`
+	Count        int64    `json:"count"`
+}
+
+type GraphPropertySummary struct {
+	Owner string `json:"owner"`
+	Key   string `json:"key"`
+	Count int64  `json:"count"`
+}
+
+type GraphSchemaStats struct {
+	NodeCount     int64   `json:"nodeCount"`
+	EdgeCount     int64   `json:"edgeCount"`
+	ExecutionTime float64 `json:"executionTime"`
+}

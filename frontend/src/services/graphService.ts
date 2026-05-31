@@ -1,13 +1,22 @@
+import axios from 'axios';
 import { api } from './api';
-import type { QueryRequest, QueryResponse, ExpandRequest, NodeDetailResponse } from '../types/api';
+import type { QueryRequest, QueryResponse, ExpandRequest, NodeDetailResponse, GraphSchemaSummary } from '../types/api';
 import type { GraphData } from '../store/graphStore';
+
+interface ApiEnvelope<T> {
+  code: number;
+  message: string;
+  data: T;
+  timestamp?: string;
+  trace_id?: string;
+}
 
 // 自定义错误类
 export class GraphServiceError extends Error {
   public code: string;
-  public details?: any;
+  public details?: unknown;
 
-  constructor(message: string, code: string, details?: any) {
+  constructor(message: string, code: string, details?: unknown) {
     super(message);
     this.name = 'GraphServiceError';
     this.code = code;
@@ -15,31 +24,76 @@ export class GraphServiceError extends Error {
   }
 }
 
-// 执行 Cypher 查询
-export async function executeQuery(cypher: string, parameters?: Record<string, any>): Promise<GraphData> {
+function getResponseMessage(data: unknown, fallback: string) {
+  if (data && typeof data === 'object' && 'message' in data) {
+    const message = (data as { message?: unknown }).message;
+    if (typeof message === 'string' && message.trim()) {
+      return message;
+    }
+  }
+  return fallback;
+}
+
+function unwrapApiData<T>(payload: T | ApiEnvelope<T>): T {
+  if (
+    payload &&
+    typeof payload === 'object' &&
+    'data' in payload &&
+    'code' in payload &&
+    'message' in payload
+  ) {
+    return (payload as ApiEnvelope<T>).data;
+  }
+  return payload as T;
+}
+
+// 发现当前图数据库结构，用于生成更贴近真实数据的默认查询
+export async function getGraphSchema(): Promise<GraphSchemaSummary> {
   try {
-    const request: QueryRequest = { cypher, parameters };
-    const response = await api.post<QueryResponse>('/api/query', request);
-    
-    return {
-      nodes: response.data.nodes,
-      edges: response.data.edges,
-      stats: response.data.stats,
-    };
-  } catch (error: any) {
-    if (error.response?.status === 400) {
-      throw new GraphServiceError(
-        error.response.data.message || 'Invalid Cypher query',
-        'INVALID_QUERY',
-        error.response.data
-      );
-    } else if (error.response?.status === 503) {
+    const response = await api.get<GraphSchemaSummary | ApiEnvelope<GraphSchemaSummary>>('/api/graph/schema');
+    return unwrapApiData(response.data);
+  } catch (error: unknown) {
+    if (axios.isAxiosError(error) && error.response?.status === 503) {
       throw new GraphServiceError(
         'Database unavailable',
         'DATABASE_UNAVAILABLE',
         error.response.data
       );
-    } else if (error.response?.status === 500) {
+    }
+    throw new GraphServiceError(
+      'Failed to discover graph schema',
+      'SCHEMA_DISCOVERY_FAILED',
+      error
+    );
+  }
+}
+
+// 执行 Cypher 查询
+export async function executeQuery(cypher: string, parameters?: Record<string, unknown>): Promise<GraphData> {
+  try {
+    const request: QueryRequest = { cypher, parameters };
+    const response = await api.post<QueryResponse | ApiEnvelope<QueryResponse>>('/api/query', request);
+    const data = unwrapApiData(response.data);
+
+    return {
+      nodes: data.nodes,
+      edges: data.edges,
+      stats: data.stats,
+    };
+  } catch (error: unknown) {
+    if (axios.isAxiosError(error) && error.response?.status === 400) {
+      throw new GraphServiceError(
+        getResponseMessage(error.response.data, 'Invalid Cypher query'),
+        'INVALID_QUERY',
+        error.response.data
+      );
+    } else if (axios.isAxiosError(error) && error.response?.status === 503) {
+      throw new GraphServiceError(
+        'Database unavailable',
+        'DATABASE_UNAVAILABLE',
+        error.response.data
+      );
+    } else if (axios.isAxiosError(error) && error.response?.status === 500) {
       throw new GraphServiceError(
         'Internal server error',
         'SERVER_ERROR',
@@ -57,10 +111,10 @@ export async function executeQuery(cypher: string, parameters?: Record<string, a
 // 获取节点详情
 export async function getNodeDetail(nodeId: string): Promise<NodeDetailResponse> {
   try {
-    const response = await api.get<NodeDetailResponse>(`/api/node/${nodeId}`);
-    return response.data;
-  } catch (error: any) {
-    if (error.response?.status === 404) {
+    const response = await api.get<NodeDetailResponse | ApiEnvelope<NodeDetailResponse>>(`/api/node/${nodeId}`);
+    return unwrapApiData(response.data);
+  } catch (error: unknown) {
+    if (axios.isAxiosError(error) && error.response?.status === 404) {
       throw new GraphServiceError(
         'Node not found',
         'NODE_NOT_FOUND',
@@ -89,15 +143,16 @@ export async function expandNode(
       relationshipTypes,
       limit,
     };
-    const response = await api.post<QueryResponse>('/api/expand', request);
-    
+    const response = await api.post<QueryResponse | ApiEnvelope<QueryResponse>>('/api/expand', request);
+    const data = unwrapApiData(response.data);
+
     return {
-      nodes: response.data.nodes,
-      edges: response.data.edges,
-      stats: response.data.stats,
+      nodes: data.nodes,
+      edges: data.edges,
+      stats: data.stats,
     };
-  } catch (error: any) {
-    if (error.response?.status === 404) {
+  } catch (error: unknown) {
+    if (axios.isAxiosError(error) && error.response?.status === 404) {
       throw new GraphServiceError(
         'Node not found',
         'NODE_NOT_FOUND',

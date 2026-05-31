@@ -6,7 +6,12 @@ import (
 	"runtime/debug"
 	"strings"
 	"time"
+
+	"crypto/rand"
+	"encoding/hex"
 )
+
+const traceHeader = "X-Trace-Id"
 
 type statusRecorder struct {
 	http.ResponseWriter
@@ -16,6 +21,26 @@ type statusRecorder struct {
 func (r *statusRecorder) WriteHeader(status int) {
 	r.status = status
 	r.ResponseWriter.WriteHeader(status)
+}
+
+func Trace(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		traceID := strings.TrimSpace(r.Header.Get(traceHeader))
+		if traceID == "" {
+			traceID = newTraceID()
+			r.Header.Set(traceHeader, traceID)
+		}
+		w.Header().Set(traceHeader, traceID)
+		next.ServeHTTP(w, r)
+	})
+}
+
+func newTraceID() string {
+	var buf [16]byte
+	if _, err := rand.Read(buf[:]); err == nil {
+		return hex.EncodeToString(buf[:])
+	}
+	return time.Now().UTC().Format("20060102T150405.000000000")
 }
 
 func Recovery(logger *slog.Logger, next http.Handler) http.Handler {
@@ -57,8 +82,9 @@ func CORS(allowedOrigins []string, next http.Handler) http.Handler {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Vary", "Origin")
 			w.Header().Set("Access-Control-Allow-Credentials", "true")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Trace-Id, Idempotency-Key, x-idempotency-key, x-tenant-id, x-project-id, x-kb-id")
 			w.Header().Set("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS")
+			w.Header().Set("Access-Control-Expose-Headers", "X-Trace-Id, X-GraphInsight-Route-Owner, X-Idempotency-Key")
 		}
 
 		if r.Method == http.MethodOptions {

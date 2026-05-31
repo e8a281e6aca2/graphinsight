@@ -5,7 +5,7 @@ import { persist } from 'zustand/middleware';
 export interface Node {
   id: string;
   labels: string[];
-  properties: Record<string, any>;
+  properties: Record<string, unknown>;
 }
 
 export interface Edge {
@@ -13,7 +13,7 @@ export interface Edge {
   source: string;
   target: string;
   type: string;
-  properties: Record<string, any>;
+  properties: Record<string, unknown>;
 }
 
 export interface GraphData {

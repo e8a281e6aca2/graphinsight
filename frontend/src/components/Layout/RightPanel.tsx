@@ -10,7 +10,7 @@ import { DetailPanel } from '../DetailPanel/DetailPanel';
 import { GraphStatsPanel } from '../StatsPanel/GraphStatsPanel';
 import { AnalysisPanel } from '../AnalysisPanel/AnalysisPanel';
 import { QueryPanel } from '../QueryPanel/QueryPanel';
-import type { RendererAPI } from '../../renderers/core/types';
+import type { LayoutConfig, RendererAPI } from '../../renderers/core/types';
 
 interface TabPanelProps {
   children?: React.ReactNode;
@@ -46,7 +46,7 @@ function a11yProps(index: number) {
 
 interface RightPanelProps {
   rendererRef?: React.RefObject<RendererAPI | null>;
-  onLayoutChange?: (layout: string, config?: any) => void;
+  onLayoutChange?: (layout: string, config?: LayoutConfig) => void;
   onGroupingChange?: () => void;
 }
 

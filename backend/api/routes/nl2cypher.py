@@ -38,17 +38,17 @@ async def convert_nl_to_cypher(
 ):
     """
     将自然语言转换为 Cypher 查询
-    
+
     Args:
         nl_request: 包含自然语言查询的请求
         http_request: HTTP 请求对象
-        
+
     Returns:
         包含 Cypher 查询和解释的响应
     """
     if not nl_request.natural_language or not nl_request.natural_language.strip():
         raise HTTPException(status_code=400, detail="自然语言查询不能为空")
-    
+
     try:
         nl2cypher_service = NL2CypherService()
         result = await nl2cypher_service.convert(
@@ -57,7 +57,7 @@ async def convert_nl_to_cypher(
         )
     except ServiceUnavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc))
-    
+
     # 记录日志
     if result.get("success"):
         log_action(
@@ -67,7 +67,7 @@ async def convert_nl_to_cypher(
             user_id=current_user.id if current_user else None,
             ip_address=http_request.client.host if http_request.client else None
         )
-    
+
     return result
 
 
@@ -75,7 +75,7 @@ async def convert_nl_to_cypher(
 async def get_examples():
     """
     获取示例查询
-    
+
     Returns:
         示例查询列表
     """
@@ -101,7 +101,7 @@ async def get_examples():
             "description": "查询节点的所有关系"
         }
     ]
-    
+
     return {
         "success": True,
         "examples": examples
@@ -114,19 +114,23 @@ async def get_status(
 ):
     """
     获取 NL2Cypher 服务状态
-    
+
     Returns:
         服务状态信息
     """
     from config import get_settings
     settings = get_settings()
-    
+
     # 尝试从数据库获取配置
+    db = None
     try:
-        from admin.config_service import ConfigService
-        openai_config = ConfigService.get_openai_config()
-        nl2cypher_config = ConfigService.get_nl2cypher_config()
-        
+        from admin.database import SessionLocal
+        from admin.services.config_service import config_service
+
+        db = SessionLocal()
+        openai_config = config_service.get_openai_config(db)
+        nl2cypher_config = config_service.get_nl2cypher_config(db)
+
         return {
             "enabled": nl2cypher_config.get("enabled", settings.nl2cypher_enabled),
             "model": openai_config.get("model", settings.openai_model),
@@ -147,3 +151,6 @@ async def get_status(
             "config_source": "environment",
             "error": str(e)
         }
+    finally:
+        if db is not None:
+            db.close()

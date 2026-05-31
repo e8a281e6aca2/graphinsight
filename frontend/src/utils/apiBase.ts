@@ -1,5 +1,5 @@
 const resolveEnvBase = () => {
-  const envValue = (import.meta as any)?.env?.VITE_API_BASE_URL;
+  const envValue = import.meta.env.VITE_API_BASE_URL;
   if (typeof envValue !== 'string') {
     return '';
   }

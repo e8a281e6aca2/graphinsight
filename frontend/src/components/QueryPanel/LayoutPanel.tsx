@@ -23,15 +23,21 @@ import {
 } from '@mui/icons-material';
 import { LAYOUT_CONFIGS, LAYOUT_NAMES, type LayoutType } from '../../utils/cytoscapeConfig';
 import { useGraphStore } from '../../store/graphStore';
+import type { LayoutConfig, LayoutConfigValue } from '../../renderers/core/types';
 
 interface LayoutPanelProps {
-  onLayoutChange: (layout: LayoutType, config?: any) => void;
+  onLayoutChange: (layout: LayoutType, config?: LayoutConfig) => void;
 }
 
 export function LayoutPanel({ onLayoutChange }: LayoutPanelProps) {
   const { graphData, preferredLayout, setPreferredLayout } = useGraphStore();
   const [selectedLayout, setSelectedLayout] = useState<LayoutType>(preferredLayout as LayoutType || 'cose');
-  const [layoutConfig, setLayoutConfig] = useState<any>(LAYOUT_CONFIGS[preferredLayout as LayoutType] || LAYOUT_CONFIGS.cose);
+  const [layoutConfig, setLayoutConfig] = useState<LayoutConfig>(LAYOUT_CONFIGS[preferredLayout as LayoutType] || LAYOUT_CONFIGS.cose);
+
+  const numberConfig = (key: string, fallback: number) => {
+    const value = layoutConfig[key];
+    return typeof value === 'number' ? value : fallback;
+  };
 
   const handleLayoutSelect = (layout: LayoutType) => {
     setSelectedLayout(layout);
@@ -47,8 +53,8 @@ export function LayoutPanel({ onLayoutChange }: LayoutPanelProps) {
     onLayoutChange(recommendedLayout, nextConfig);
   };
 
-  const handleConfigChange = (key: string, value: any) => {
-    setLayoutConfig((prev: any) => ({
+  const handleConfigChange = (key: string, value: LayoutConfigValue) => {
+    setLayoutConfig((prev) => ({
       ...prev,
       [key]: value,
     }));
@@ -76,11 +82,11 @@ export function LayoutPanel({ onLayoutChange }: LayoutPanelProps) {
             
             <Box sx={{ mb: 2 }}>
               <Typography variant="body2" gutterBottom>
-                节点排斥力: {layoutConfig.nodeRepulsion || 8000}
+                节点排斥力: {numberConfig('nodeRepulsion', 8000)}
               </Typography>
               <Slider
                 size="small"
-                value={layoutConfig.nodeRepulsion || 8000}
+                value={numberConfig('nodeRepulsion', 8000)}
                 onChange={(_, value) => handleConfigChange('nodeRepulsion', value)}
                 min={1000}
                 max={20000}
@@ -90,11 +96,11 @@ export function LayoutPanel({ onLayoutChange }: LayoutPanelProps) {
 
             <Box sx={{ mb: 2 }}>
               <Typography variant="body2" gutterBottom>
-                理想边长: {layoutConfig.idealEdgeLength || 100}
+                理想边长: {numberConfig('idealEdgeLength', 100)}
               </Typography>
               <Slider
                 size="small"
-                value={layoutConfig.idealEdgeLength || 100}
+                value={numberConfig('idealEdgeLength', 100)}
                 onChange={(_, value) => handleConfigChange('idealEdgeLength', value)}
                 min={20}
                 max={200}
@@ -104,11 +110,11 @@ export function LayoutPanel({ onLayoutChange }: LayoutPanelProps) {
 
             <Box sx={{ mb: 2 }}>
               <Typography variant="body2" gutterBottom>
-                重力: {layoutConfig.gravity || 80}
+                重力: {numberConfig('gravity', 80)}
               </Typography>
               <Slider
                 size="small"
-                value={layoutConfig.gravity || 80}
+                value={numberConfig('gravity', 80)}
                 onChange={(_, value) => handleConfigChange('gravity', value)}
                 min={10}
                 max={200}
@@ -129,11 +135,11 @@ export function LayoutPanel({ onLayoutChange }: LayoutPanelProps) {
             
             <Box sx={{ mb: 2 }}>
               <Typography variant="body2" gutterBottom>
-                半径: {layoutConfig.radius || 200}
+                半径: {numberConfig('radius', 200)}
               </Typography>
               <Slider
                 size="small"
-                value={layoutConfig.radius || 200}
+                value={numberConfig('radius', 200)}
                 onChange={(_, value) => handleConfigChange('radius', value)}
                 min={50}
                 max={500}
@@ -163,11 +169,11 @@ export function LayoutPanel({ onLayoutChange }: LayoutPanelProps) {
             
             <Box sx={{ mb: 2 }}>
               <Typography variant="body2" gutterBottom>
-                行数: {layoutConfig.rows || '自动'}
+                行数: {numberConfig('rows', 0) || '自动'}
               </Typography>
               <Slider
                 size="small"
-                value={layoutConfig.rows || 0}
+                value={numberConfig('rows', 0)}
                 onChange={(_, value) => handleConfigChange('rows', value === 0 ? undefined : value)}
                 min={0}
                 max={20}
@@ -177,11 +183,11 @@ export function LayoutPanel({ onLayoutChange }: LayoutPanelProps) {
 
             <Box sx={{ mb: 2 }}>
               <Typography variant="body2" gutterBottom>
-                列数: {layoutConfig.cols || '自动'}
+                列数: {numberConfig('cols', 0) || '自动'}
               </Typography>
               <Slider
                 size="small"
-                value={layoutConfig.cols || 0}
+                value={numberConfig('cols', 0)}
                 onChange={(_, value) => handleConfigChange('cols', value === 0 ? undefined : value)}
                 min={0}
                 max={20}
@@ -200,11 +206,11 @@ export function LayoutPanel({ onLayoutChange }: LayoutPanelProps) {
             
             <Box sx={{ mb: 2 }}>
               <Typography variant="body2" gutterBottom>
-                节点间距: {layoutConfig.minNodeSpacing || 50}
+                节点间距: {numberConfig('minNodeSpacing', 50)}
               </Typography>
               <Slider
                 size="small"
-                value={layoutConfig.minNodeSpacing || 50}
+                value={numberConfig('minNodeSpacing', 50)}
                 onChange={(_, value) => handleConfigChange('minNodeSpacing', value)}
                 min={10}
                 max={200}
@@ -225,11 +231,11 @@ export function LayoutPanel({ onLayoutChange }: LayoutPanelProps) {
             
             <Box sx={{ mb: 2 }}>
               <Typography variant="body2" gutterBottom>
-                间距因子: {layoutConfig.spacingFactor || 1.5}
+                间距因子: {numberConfig('spacingFactor', 1.5)}
               </Typography>
               <Slider
                 size="small"
-                value={layoutConfig.spacingFactor || 1.5}
+                value={numberConfig('spacingFactor', 1.5)}
                 onChange={(_, value) => handleConfigChange('spacingFactor', value)}
                 min={0.5}
                 max={3}
@@ -396,11 +402,11 @@ export function LayoutPanel({ onLayoutChange }: LayoutPanelProps) {
         <AccordionDetails>
           <Box sx={{ mb: 2 }}>
             <Typography variant="body2" gutterBottom>
-              动画时长: {layoutConfig.animationDuration || 500}ms
+              动画时长: {numberConfig('animationDuration', 500)}ms
             </Typography>
             <Slider
               size="small"
-              value={layoutConfig.animationDuration || 500}
+              value={numberConfig('animationDuration', 500)}
               onChange={(_, value) => handleConfigChange('animationDuration', value)}
               min={0}
               max={2000}

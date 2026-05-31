@@ -16,9 +16,12 @@ import {
   PMREMGenerator,
   Points,
   PointsMaterial,
+  PerspectiveCamera,
+  Scene,
   SphereGeometry,
   TextureLoader,
   Texture,
+  WebGLRenderer,
   SRGBColorSpace,
 } from 'three';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
@@ -37,6 +40,104 @@ import { generateVideoThumbnail } from '../../utils/videoThumbnail';
 
 type GraphNode = RendererNode & { x?: number; y?: number; z?: number };
 type GraphLink = RendererEdge & { source: string; target: string };
+
+type Vector3Like = { x: number; y: number; z: number };
+type ControlsLike = {
+  target?: Vector3Like & { set?: (x: number, y: number, z: number) => void };
+  enableDamping?: boolean;
+  dampingFactor?: number;
+  rotateSpeed?: number;
+  zoomSpeed?: number;
+  panSpeed?: number;
+  minDistance?: number;
+  maxDistance?: number;
+  update?: () => void;
+  addEventListener?: (event: string, handler: () => void) => void;
+  removeEventListener?: (event: string, handler: () => void) => void;
+};
+type ExtendedWebGLRenderer = WebGLRenderer & {
+  physicallyCorrectLights?: boolean;
+};
+type ForceGraphData = { nodes?: GraphNode[]; links?: GraphLink[] };
+type ForceGraphRuntime = {
+  renderer: () => ExtendedWebGLRenderer;
+  scene?: () => Scene;
+  camera: () => PerspectiveCamera;
+  controls: () => ControlsLike;
+  width: (value: number) => ForceGraphRuntime;
+  height: (value: number) => ForceGraphRuntime;
+  backgroundColor: (value: string) => ForceGraphRuntime;
+  showNavInfo?: (value: boolean) => ForceGraphRuntime;
+  enablePointerInteraction?: (value: boolean) => ForceGraphRuntime;
+  nodeId: (key: string) => ForceGraphRuntime;
+  linkSource: (key: string) => ForceGraphRuntime;
+  linkTarget: (key: string) => ForceGraphRuntime;
+  nodeLabel: (fn: (node: GraphNode) => string) => ForceGraphRuntime;
+  nodeOpacity?: (value: number) => ForceGraphRuntime;
+  nodeResolution?: (value: number) => ForceGraphRuntime;
+  linkOpacity?: (value: number) => ForceGraphRuntime;
+  linkDirectionalArrowLength: (value: number) => ForceGraphRuntime;
+  linkDirectionalArrowRelPos: (value: number) => ForceGraphRuntime;
+  linkDirectionalArrowResolution?: (value: number) => ForceGraphRuntime;
+  linkResolution?: (value: number) => ForceGraphRuntime;
+  lights?: (lights: unknown[]) => ForceGraphRuntime;
+  forceEngine?: (engine: string) => ForceGraphRuntime;
+  numDimensions?: (dimensions: number) => ForceGraphRuntime;
+  d3Force?: (name: string) => { strength?: (value: number) => void; distance?: (value: number) => void };
+  postProcessingComposer?: () => { addPass: (pass: unknown) => void };
+  graphData: {
+    (): ForceGraphData;
+    (data: { nodes: GraphNode[]; links: GraphLink[] }): ForceGraphRuntime;
+  };
+  cameraPosition: (position: Vector3Like, lookAt?: Vector3Like, duration?: number) => ForceGraphRuntime;
+  nodeColor: (fn: (node: GraphNode) => string) => ForceGraphRuntime;
+  linkColor: (fn: (edge: GraphLink) => string) => ForceGraphRuntime;
+  linkDirectionalArrowColor: (fn: (edge: GraphLink) => string) => ForceGraphRuntime;
+  linkWidth: (fn: (edge: GraphLink) => number) => ForceGraphRuntime;
+  linkDirectionalParticles: (fn: (edge: GraphLink) => number) => ForceGraphRuntime;
+  linkDirectionalParticleWidth?: (value: number) => ForceGraphRuntime;
+  linkDirectionalParticleSpeed?: (value: number) => ForceGraphRuntime;
+  linkDirectionalParticleColor?: (fn: (edge: GraphLink) => string) => ForceGraphRuntime;
+  nodeRelSize: (value: number) => ForceGraphRuntime;
+  nodeVal: (fn: (node: GraphNode) => number) => ForceGraphRuntime;
+  nodeThreeObject: (fn: (node: GraphNode) => Group) => ForceGraphRuntime;
+  nodeThreeObjectExtend: (value: boolean) => ForceGraphRuntime;
+  linkThreeObject: (fn: (edge: GraphLink) => SpriteText | Group) => ForceGraphRuntime;
+  linkThreeObjectExtend: (value: boolean) => ForceGraphRuntime;
+  linkPositionUpdate: (
+    fn: (
+      obj: LinkLabelObject | null,
+      coords: { start?: Vector3Like; end?: Vector3Like }
+    ) => false | void
+  ) => ForceGraphRuntime;
+  onNodeHover: (fn: (node: GraphNode | null) => void) => ForceGraphRuntime;
+  onLinkHover: (fn: (link: GraphLink | null) => void) => ForceGraphRuntime;
+  onNodeClick: (fn: (node: GraphNode | null) => void) => ForceGraphRuntime;
+  onLinkClick: (fn: (link: GraphLink | null) => void) => ForceGraphRuntime;
+  onNodeRightClick?: (fn: (node: GraphNode | null, event?: PointerEvent) => void) => ForceGraphRuntime;
+  onLinkRightClick?: (fn: (link: GraphLink | null, event?: PointerEvent) => void) => ForceGraphRuntime;
+  refresh?: () => ForceGraphRuntime;
+  resumeAnimation?: () => void;
+  pauseAnimation?: () => void;
+  d3ReheatSimulation?: () => void;
+  onEngineTick?: (fn: () => void) => ForceGraphRuntime;
+  _destructor?: () => void;
+};
+
+type ForceGraphFactory = {
+  new (container: HTMLDivElement, config: Record<string, unknown>): ForceGraphInstance;
+  (config?: Record<string, unknown>): ForceGraphInstance | ((container: HTMLDivElement) => ForceGraphInstance);
+};
+
+type ForceGraphInstance = ForceGraphRuntime;
+
+type DebugWindow = Window & {
+  __KG_GRAPH_3D__?: ForceGraphInstance;
+};
+
+type LinkLabelObject = SpriteText & {
+  position: { set: (x: number, y: number, z: number) => void };
+};
 
 type NodeObject = {
   group: Group;
@@ -135,7 +236,7 @@ function withAlpha(color: string, alpha: number) {
   return color;
 }
 
-function getEdgeLabelText(edge: { type?: string; predicate?: string; properties?: Record<string, any> }) {
+function getEdgeLabelText(edge: { type?: string; predicate?: string; properties?: Record<string, unknown> }) {
   const props = edge.properties || {};
   const candidates = [
     'label',
@@ -163,10 +264,9 @@ export function createRenderer3D(
   handlers: RendererEventHandlers = {},
   options: RendererOptions = {}
 ): RendererAPI {
-  const isDev = typeof import.meta !== 'undefined' && (import.meta as any).env?.DEV;
-  const debugLog = (...args: any[]) => {
+  const isDev = import.meta.env.DEV;
+  const debugLog = (...args: unknown[]) => {
     if (isDev) {
-      // eslint-disable-next-line no-console
       console.info('[Force3D]', ...args);
     }
   };
@@ -177,14 +277,13 @@ export function createRenderer3D(
       ? FORCE3D_PRESETS[options.styleName]
       : FORCE3D_PRESETS.kgCosmic;
 
-  let graph: any;
   const graphConfig = {
     controlType: style.controlType,
     rendererConfig: { antialias: true, alpha: true },
   };
 
   const initGraph = () => {
-    const GraphCtor = ForceGraph3D as any;
+    const GraphCtor = ForceGraph3D as unknown as ForceGraphFactory;
     try {
       return new GraphCtor(container, graphConfig);
     } catch {
@@ -192,32 +291,32 @@ export function createRenderer3D(
     }
 
     try {
-      const factory = GraphCtor(graphConfig);
-      if (typeof factory === 'function') {
-        const maybeInstance = factory(container);
-        return maybeInstance || factory;
-      }
-      return factory;
+    const factory = GraphCtor(graphConfig);
+    if (typeof factory === 'function') {
+      const maybeInstance = factory(container);
+      return maybeInstance || factory;
+    }
+      return factory as ForceGraphInstance;
     } catch {
       // ignore and fallback
     }
 
-    const fallbackFactory = (ForceGraph3D as any)();
+    const fallbackFactory = (ForceGraph3D as unknown as ForceGraphFactory)();
     if (typeof fallbackFactory === 'function') {
       const maybeInstance = fallbackFactory(container);
       return maybeInstance || fallbackFactory;
     }
-    return fallbackFactory;
+    return fallbackFactory as ForceGraphInstance;
   };
 
-  graph = initGraph();
+  const graph = initGraph();
 
   if (!graph) {
     throw new Error('Failed to initialize 3D graph renderer');
   }
   debugLog('init', { width, height });
   if (isDev && typeof window !== 'undefined') {
-    (window as any).__KG_GRAPH_3D__ = graph;
+    (window as DebugWindow).__KG_GRAPH_3D__ = graph;
   }
 
   container.style.minWidth = '1px';
@@ -226,12 +325,13 @@ export function createRenderer3D(
   container.style.height = '100%';
 
   const ensureRendererDom = () => {
-    if (typeof graph === 'function') {
+    const maybeBindable = graph as ForceGraphRuntime & { (container: HTMLDivElement): ForceGraphRuntime };
+    if (typeof maybeBindable === 'function') {
       const renderer = graph.renderer?.();
       const needsBind = !renderer?.domElement || !container.contains(renderer.domElement);
       if (needsBind) {
         try {
-          graph(container);
+          maybeBindable(container);
         } catch {
           // ignore
         }
@@ -326,19 +426,12 @@ export function createRenderer3D(
     .width(width)
     .height(height)
     .backgroundColor(style.backgroundColor)
-    .showNavInfo?.(false)
-    .enablePointerInteraction?.(true)
     .nodeId('id')
     .linkSource('source')
     .linkTarget('target')
     .nodeLabel(() => '')
-    .nodeOpacity?.(style.nodeOpacity)
-    .nodeResolution?.(style.nodeResolution)
-    .linkOpacity?.(style.linkOpacity)
     .linkDirectionalArrowLength(style.arrowLength)
     .linkDirectionalArrowRelPos(style.arrowRelPos)
-    .linkDirectionalArrowResolution?.(style.arrowResolution)
-    .linkResolution?.(style.linkResolution)
     .linkThreeObject((edge: GraphLink) => {
       const labelText = getEdgeLabelText(edge);
       const text = typeof labelText === 'string' ? labelText.trim() : String(labelText || '');
@@ -371,7 +464,7 @@ export function createRenderer3D(
     })
     .linkThreeObjectExtend(true)
     .linkPositionUpdate((
-      obj: any,
+      obj: LinkLabelObject | null,
       coords: {
         start?: { x: number; y: number; z: number };
         end?: { x: number; y: number; z: number };
@@ -392,6 +485,13 @@ export function createRenderer3D(
       }
       return false;
     });
+  graph.showNavInfo?.(false);
+  graph.enablePointerInteraction?.(true);
+  graph.nodeOpacity?.(style.nodeOpacity);
+  graph.nodeResolution?.(style.nodeResolution);
+  graph.linkOpacity?.(style.linkOpacity);
+  graph.linkDirectionalArrowResolution?.(style.arrowResolution);
+  graph.linkResolution?.(style.linkResolution);
 
   graph.forceEngine?.('d3');
   graph.numDimensions?.(3);
@@ -404,7 +504,7 @@ export function createRenderer3D(
   }
 
   if (typeof graph.d3Force === 'function') {
-    graph.d3Force('charge').strength(style.chargeStrength);
+    graph.d3Force('charge')?.strength?.(style.chargeStrength);
     const linkForce = graph.d3Force('link');
     if (linkForce && typeof linkForce.distance === 'function') {
       linkForce.distance(style.linkDistance);
@@ -436,10 +536,10 @@ export function createRenderer3D(
   }
   if (renderer) {
     renderer.setClearColor?.(style.backgroundColor, 1);
-    (renderer as any).outputColorSpace = SRGBColorSpace;
-    (renderer as any).toneMapping = ACESFilmicToneMapping;
-    (renderer as any).toneMappingExposure = style.toneMappingExposure ?? 1.12;
-    (renderer as any).physicallyCorrectLights = true;
+    renderer.outputColorSpace = SRGBColorSpace;
+    renderer.toneMapping = ACESFilmicToneMapping;
+    renderer.toneMappingExposure = style.toneMappingExposure ?? 1.12;
+    renderer.physicallyCorrectLights = true;
   }
 
   const keyLight = new DirectionalLight(new Color('#fff1e6'), 0.95);
@@ -529,7 +629,7 @@ export function createRenderer3D(
 
   function renderOnce() {
     const renderer = graph.renderer?.();
-    const scene = (graph as any).scene?.();
+    const scene = graph.scene?.();
     const camera = graph.camera?.();
     if (renderer?.render && scene && camera) {
       renderer.render(scene, camera);

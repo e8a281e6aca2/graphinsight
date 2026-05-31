@@ -36,16 +36,16 @@ settings = get_settings()
 
 class ConfigService:
     """配置服务类"""
-    
+
     def __init__(self):
         self._cache: Dict[str, Tuple[str, datetime]] = {}
         self._cache_ttl = timedelta(minutes=5)  # 缓存5分钟
         self._last_model_connection_test: Optional[Dict[str, any]] = None
-    
+
     def _get_cache_key(self, category: str, key: str) -> str:
         """生成缓存键"""
         return f"{category}:{key}"
-    
+
     def _get_from_cache(self, category: str, key: str) -> Optional[str]:
         """从缓存获取配置"""
         cache_key = self._get_cache_key(category, key)
@@ -58,13 +58,13 @@ class ConfigService:
                 # 缓存过期，删除
                 del self._cache[cache_key]
         return None
-    
+
     def _set_to_cache(self, category: str, key: str, value: str):
         """设置缓存"""
         cache_key = self._get_cache_key(category, key)
         self._cache[cache_key] = (value, datetime.utcnow())
         logger.debug(f"设置缓存: {cache_key}")
-    
+
     def _clear_cache(self, category: Optional[str] = None, key: Optional[str] = None):
         """清除缓存"""
         if category and key:
@@ -85,7 +85,7 @@ class ConfigService:
             # 清除所有缓存
             self._cache.clear()
             logger.debug("清除所有缓存")
-    
+
     def get_config(
         self,
         db: Session,
@@ -96,7 +96,7 @@ class ConfigService:
     ) -> Optional[str]:
         """
         获取配置值
-        
+
         优先级: 缓存 > 数据库 > 环境变量 > 默认值
         """
         try:
@@ -105,7 +105,7 @@ class ConfigService:
                 cached_value = self._get_from_cache(category, key)
                 if cached_value is not None:
                     return cached_value
-            
+
             # 2. 从数据库获取
             config = config_crud.get_by_key(db, category, key)
             if config:
@@ -113,17 +113,17 @@ class ConfigService:
                 if use_cache:
                     self._set_to_cache(category, key, value)
                 return value
-            
+
             # 3. 从环境变量获取
             env_key = f"{category.upper()}_{key.upper()}"
             env_value = os.getenv(env_key)
             if env_value:
                 logger.debug(f"从环境变量获取配置: {env_key}")
                 return env_value
-            
+
             # 4. 返回默认值
             return default
-            
+
         except Exception as e:
             logger.error(f"获取配置失败: {category}.{key}, {str(e)}")
             return default
@@ -182,7 +182,7 @@ class ConfigService:
         except Exception as e:
             logger.error(f"设置配置失败: {category}.{key}, {str(e)}", exc_info=True)
             raise
-    
+
     def get_config_item(
         self,
         db: Session,
@@ -227,7 +227,7 @@ class ConfigService:
                             version=1,
                         )
                 raise NotFoundException(f"配置不存在: {category}.{key}")
-            
+
             return ConfigItem.model_validate(config)
         except NotFoundException:
             raise
@@ -327,7 +327,7 @@ class ConfigService:
             "description": payload["description"],
             "is_sensitive": payload["is_sensitive"] == "true",
         }
-    
+
     def get_config_list(
         self,
         db: Session,
@@ -336,15 +336,15 @@ class ConfigService:
         """获取配置列表"""
         try:
             items, total = config_crud.get_list(db, query)
-            
+
             # 转换为 Pydantic 模型
             config_items = [ConfigItem.model_validate(item) for item in items]
-            
+
             return config_items, total
         except Exception as e:
             logger.error(f"获取配置列表失败: {str(e)}", exc_info=True)
             raise BusinessException("获取配置列表失败")
-    
+
     def create_config(
         self,
         db: Session,
@@ -358,7 +358,7 @@ class ConfigService:
         try:
             # 创建配置
             config = config_crud.create(db, config_create, user.id)
-            
+
             # 记录日志
             log_crud.create(db, LogCreate(
                 user_id=user.id,
@@ -376,17 +376,17 @@ class ConfigService:
                 ip_address=ip_address,
                 status="success"
             ))
-            
+
             logger.info(
                 f"创建配置: {config.category}.{config.key}",
                 context={"user_id": user.id, "config_id": config.id}
             )
-            
+
             return ConfigItem.model_validate(config)
         except Exception as e:
             logger.error(f"创建配置失败: {str(e)}", exc_info=True)
             raise BusinessException("创建配置失败")
-    
+
     def update_config(
         self,
         db: Session,
@@ -472,7 +472,7 @@ class ConfigService:
         except Exception as e:
             logger.error(f"更新配置失败: {str(e)}", exc_info=True)
             raise BusinessException("更新配置失败")
-    
+
     def batch_update_configs(
         self,
         db: Session,
@@ -490,10 +490,10 @@ class ConfigService:
                 batch_update.configs,
                 user.id
             )
-            
+
             # 清除所有缓存
             self._clear_cache()
-            
+
             # 记录日志
             log_crud.create(db, LogCreate(
                 user_id=user.id,
@@ -509,17 +509,17 @@ class ConfigService:
                 ip_address=ip_address,
                 status="success"
             ))
-            
+
             logger.info(
                 f"批量更新配置: {updated_count}/{len(batch_update.configs)}",
                 context={"user_id": user.id}
             )
-            
+
             return updated_count
         except Exception as e:
             logger.error(f"批量更新配置失败: {str(e)}", exc_info=True)
             raise BusinessException("批量更新配置失败")
-    
+
     def delete_config(
         self,
         db: Session,
@@ -536,10 +536,10 @@ class ConfigService:
             success = config_crud.delete(db, category, key)
             if not success:
                 raise NotFoundException(f"配置不存在: {category}.{key}")
-            
+
             # 清除缓存
             self._clear_cache(category, key)
-            
+
             # 记录日志
             log_crud.create(db, LogCreate(
                 user_id=user.id,
@@ -552,38 +552,46 @@ class ConfigService:
                 ip_address=ip_address,
                 status="success"
             ))
-            
+
             logger.info(
                 f"删除配置: {category}.{key}",
                 context={"user_id": user.id}
             )
-            
+
             return True
         except NotFoundException:
             raise
         except Exception as e:
             logger.error(f"删除配置失败: {str(e)}", exc_info=True)
             raise BusinessException("删除配置失败")
-    
+
     # 便捷方法：获取特定分类的配置
-    
-    def get_ai_service_config(self, db: Session) -> Dict[str, any]:
+
+    @staticmethod
+    def _safe_sensitive_value(value: Optional[str], include_sensitive: bool) -> str:
+        if include_sensitive:
+            return value or ""
+        return ""
+
+    def get_ai_service_config(self, db: Session, include_sensitive: bool = True) -> Dict[str, any]:
         """获取 AI 服务配置"""
+        api_key = self.get_config(db, "ai_service", "api_key", "")
         return {
             "provider": self.get_config(db, "ai_service", "provider", "openai"),
             "enabled": self.get_config(db, "ai_service", "enabled", "true").lower() == "true",
             "base_url": self.get_config(db, "ai_service", "base_url", ""),
-            "api_key": self.get_config(db, "ai_service", "api_key", ""),
+            "api_key": self._safe_sensitive_value(api_key, include_sensitive),
+            "api_key_configured": bool(api_key and api_key.strip() and api_key != "your-api-key-here"),
             "model": self.get_config(db, "ai_service", "model", "gpt-3.5-turbo"),
             "max_tokens": int(self.get_config(db, "ai_service", "max_tokens", "2000")),
             "temperature": float(self.get_config(db, "ai_service", "temperature", "0.7")),
         }
-    
-    def get_openai_config(self, db: Session) -> Dict[str, any]:
+
+    def get_openai_config(self, db: Session, include_sensitive: bool = True) -> Dict[str, any]:
         """获取 OpenAI 配置（兼容旧代码）"""
         # 为了兼容性，保留这个方法，但实际使用 ai_service 配置
-        return self.get_ai_service_config(db)
-    
+        return self.get_ai_service_config(db, include_sensitive=include_sensitive)
+
     def get_nl2cypher_config(self, db: Session) -> Dict[str, any]:
         """获取 NL2Cypher 配置"""
         return {
@@ -591,17 +599,19 @@ class ConfigService:
             "cache_size": int(self.get_config(db, "nl2cypher", "cache_size", "100")),
             "max_limit": int(self.get_config(db, "nl2cypher", "max_limit", "100")),
         }
-    
-    def get_neo4j_config(self, db: Session) -> Dict[str, str]:
+
+    def get_neo4j_config(self, db: Session, include_sensitive: bool = True) -> Dict[str, str]:
         """获取 Neo4j 配置"""
         mode = str(getattr(settings, "neo4j_config_source", "env") or "env").strip().lower()
         if mode == "env":
             env_user = os.getenv("NEO4J_USER", os.getenv("NEO4J_USERNAME", "neo4j"))
+            env_password = os.getenv("NEO4J_PASSWORD", "password")
             return {
                 "uri": os.getenv("NEO4J_URI", "bolt://localhost:7687"),
                 "user": env_user,
                 "username": env_user,
-                "password": os.getenv("NEO4J_PASSWORD", "password"),
+                "password": self._safe_sensitive_value(env_password, include_sensitive),
+                "password_configured": bool(env_password and env_password.strip()),
                 "database": os.getenv("NEO4J_DATABASE", "neo4j"),
                 "source": "env",
                 "mode": "env",
@@ -622,17 +632,19 @@ class ConfigService:
             or self.get_config(db, "neo4j", "username", None)
             or "neo4j"
         )
+        password_value = self.get_config(db, "neo4j", "password", "password")
         return {
             "uri": self.get_config(db, "neo4j", "uri", "bolt://localhost:7687"),
             "user": user_value,
             # 仅用于兼容历史读取方，严格模式仍推荐使用 user
             "username": user_value,
-            "password": self.get_config(db, "neo4j", "password", "password"),
+            "password": self._safe_sensitive_value(password_value, include_sensitive),
+            "password_configured": bool(password_value and password_value.strip()),
             "database": self.get_config(db, "neo4j", "database", "neo4j"),
             "source": "admin_config" if has_admin_value else "env_fallback",
             "mode": mode,
         }
-    
+
     def init_from_env(
         self,
         db: Session,
@@ -644,7 +656,7 @@ class ConfigService:
         """从环境变量初始化配置"""
         try:
             count = 0
-            
+
             # Neo4j 配置
             neo4j_configs = {
                 "uri": os.getenv("NEO4J_URI", "bolt://localhost:7687"),
@@ -652,14 +664,14 @@ class ConfigService:
                 "password": os.getenv("NEO4J_PASSWORD", "password"),
                 "database": os.getenv("NEO4J_DATABASE", "neo4j"),
             }
-            
+
             for key, value in neo4j_configs.items():
                 try:
                     self.set_config(db, "neo4j", key, value, user_id=user.id)
                     count += 1
                 except Exception as exc:
                     logger.warning(f"初始化配置失败(neo4j.{key}): {str(exc)}")
-            
+
             # AI Service 配置（标准分类）
             ai_service_configs = {
                 "provider": os.getenv("AI_SERVICE_PROVIDER", os.getenv("OPENAI_PROVIDER", "openai")),
@@ -670,14 +682,14 @@ class ConfigService:
                 "max_tokens": os.getenv("AI_SERVICE_MAX_TOKENS", os.getenv("OPENAI_MAX_TOKENS", "2000")),
                 "temperature": os.getenv("AI_SERVICE_TEMPERATURE", os.getenv("OPENAI_TEMPERATURE", "0.7")),
             }
-            
+
             for key, value in ai_service_configs.items():
                 try:
                     self.set_config(db, "ai_service", key, value, user_id=user.id)
                     count += 1
                 except Exception as exc:
                     logger.warning(f"初始化配置失败(ai_service.{key}): {str(exc)}")
-            
+
             # 记录日志
             log_crud.create(db, LogCreate(
                 user_id=user.id,
@@ -690,14 +702,14 @@ class ConfigService:
                 ip_address=ip_address,
                 status="success"
             ))
-            
+
             logger.info(f"从环境变量初始化配置: {count} 项")
             return count
-            
+
         except Exception as e:
             logger.error(f"初始化配置失败: {str(e)}", exc_info=True)
             raise BusinessException("初始化配置失败")
-    
+
     def test_neo4j_connection(self, db: Session) -> Dict[str, any]:
         """测试 Neo4j 连接"""
         try:
@@ -728,14 +740,14 @@ class ConfigService:
                 }
             finally:
                 driver.close()
-                
+
         except Exception as e:
             logger.error(f"测试 Neo4j 连接失败: {str(e)}")
             return {
                 "success": False,
                 "message": f"Neo4j 连接失败: {str(e)}"
             }
-    
+
     def test_ai_service_connection(self, db: Session) -> Dict[str, any]:
         """测试 AI 服务连接"""
         try:
@@ -744,19 +756,19 @@ class ConfigService:
             provider = config.get("provider", "openai")
             enabled = config.get("enabled", True)
             api_key = config.get("api_key", "")
-            
+
             if not enabled:
                 return {
                     "success": False,
                     "message": "AI服务未启用"
                 }
-            
+
             if not api_key or not api_key.strip() or api_key == "your-api-key-here":
                 return {
                     "success": False,
                     "message": f"{provider.upper()} API Key 未配置"
                 }
-            
+
             # 根据不同的 provider 检查格式
             if provider == "openai":
                 if not api_key.startswith("sk-"):
@@ -796,7 +808,7 @@ class ConfigService:
                     "success": True,
                     "message": f"{provider.upper()} API Key 已配置"
                 }
-                
+
         except Exception as e:
             logger.error(f"测试 AI 服务连接失败: {str(e)}")
             return {
@@ -1022,11 +1034,11 @@ class ConfigService:
     def get_last_model_connection_test(self) -> Optional[Dict[str, any]]:
         """获取最近一次模型连通性测试结果（进程内留存）。"""
         return self._last_model_connection_test
-    
+
     def test_openai_connection(self, db: Session) -> Dict[str, any]:
         """测试 OpenAI 连接（兼容旧代码）"""
         return self.test_ai_service_connection(db)
-    
+
     def _build_models_urls(self, base_url: str) -> List[str]:
         """把 base_url 规整为候选 models 接口地址（兼容 /v1 与非 /v1）。"""
         normalized = (base_url or "").strip().rstrip("/")

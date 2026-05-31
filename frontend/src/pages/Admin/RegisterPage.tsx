@@ -18,6 +18,7 @@ import { Visibility, VisibilityOff } from '@mui/icons-material';
 import { useNavigate } from 'react-router-dom';
 import { authApi } from '../../services/adminService';
 import AdminAuthLayout from '../../components/Admin/AdminAuthLayout';
+import { getErrorMessage } from '../../utils/errorMessage';
 
 const RegisterPage: React.FC = () => {
   const navigate = useNavigate();
@@ -79,20 +80,8 @@ const RegisterPage: React.FC = () => {
       setTimeout(() => {
         navigate('/admin/login');
       }, 3000);
-    } catch (err: any) {
-      let errorMessage = '注册失败，请稍后重试';
-      if (err && typeof err === 'object') {
-        errorMessage =
-          err.message ||
-          err.error?.message ||
-          err.response?.data?.message ||
-          err.details?.message ||
-          errorMessage;
-      } else if (typeof err === 'string') {
-        errorMessage = err;
-      }
-
-      setError(errorMessage);
+    } catch (err: unknown) {
+      setError(getErrorMessage(err, '注册失败，请稍后重试'));
     } finally {
       setLoading(false);
     }

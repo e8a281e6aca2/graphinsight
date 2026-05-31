@@ -1,6 +1,6 @@
 import { Box, Typography, Divider, Tabs, Tab } from '@mui/material';
 import { useState, useRef, useEffect } from 'react';
-import { CypherEditor } from './CypherEditor';
+import { CypherEditor, type CypherEditorRef } from './CypherEditor';
 import { QueryHistory } from './QueryHistory';
 import { QueryStats } from './QueryStats';
 import { LayoutPanel } from './LayoutPanel';
@@ -8,10 +8,10 @@ import { GroupingPanel } from './GroupingPanel';
 import { FilterPanel } from '../FilterPanel/FilterPanel';
 import { ToolBar } from './ToolBar';
 import { NL2CypherInput } from './NL2CypherInput';
-import type { RendererAPI } from '../../renderers/core/types';
+import type { LayoutConfig, RendererAPI } from '../../renderers/core/types';
 
 interface QueryPanelProps {
-  onLayoutChange?: (layout: string, config?: any) => void;
+  onLayoutChange?: (layout: string, config?: LayoutConfig) => void;
   onGroupingChange?: () => void;
   rendererRef?: React.RefObject<RendererAPI | null>;
   defaultTab?: number;
@@ -19,7 +19,7 @@ interface QueryPanelProps {
 
 export function QueryPanel({ onLayoutChange, onGroupingChange, rendererRef, defaultTab = 0 }: QueryPanelProps) {
   const [activeTab, setActiveTab] = useState(defaultTab);
-  const cypherEditorRef = useRef<any>(null);
+  const cypherEditorRef = useRef<CypherEditorRef | null>(null);
 
   useEffect(() => {
     setActiveTab(defaultTab);

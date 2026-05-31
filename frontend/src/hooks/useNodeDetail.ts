@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { getNodeDetail } from '../services/graphService';
 import type { NodeDetailResponse } from '../types/api';
+import { getErrorMessage } from '../utils/errorMessage';
 
 export function useNodeDetail(nodeId: string | null) {
   const [nodeDetail, setNodeDetail] = useState<NodeDetailResponse | null>(null);
@@ -21,8 +22,8 @@ export function useNodeDetail(nodeId: string | null) {
       try {
         const detail = await getNodeDetail(nodeId);
         setNodeDetail(detail);
-      } catch (err: any) {
-        setError(err.message || '获取节点详情失败');
+      } catch (err: unknown) {
+        setError(getErrorMessage(err, '获取节点详情失败'));
         console.error('Failed to fetch node detail:', err);
       } finally {
         setIsLoading(false);

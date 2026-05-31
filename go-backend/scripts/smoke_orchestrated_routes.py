@@ -236,8 +236,10 @@ def main() -> int:
         timeout=args.timeout,
     )
     qa_owner = _route_owner(qa_headers)
-    ok_qa = status in {200, 500} and isinstance(qa_health, dict) and qa_owner == "go-orchestrator"
-    detail_qa = f"route_owner={qa_owner or '<missing>'}, envelope_code={_envelope_code(qa_health)}"
+    qa_data = qa_health.get("data") if isinstance(qa_health, dict) else None
+    qa_status = qa_data.get("status") if isinstance(qa_data, dict) else None
+    ok_qa = status == 200 and isinstance(qa_health, dict) and qa_owner == "go-orchestrator" and qa_status in {"healthy", "degraded", "unhealthy"}
+    detail_qa = f"route_owner={qa_owner or '<missing>'}, envelope_code={_envelope_code(qa_health)}, status={qa_status or '<missing>'}"
     results.append(StepResult("docqa.health", ok_qa, status, detail_qa))
 
     # 4) NL2Cypher read-only contract checks (orchestrated)

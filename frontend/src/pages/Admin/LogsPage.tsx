@@ -2,7 +2,7 @@
  * 操作日志页面 v2.0
  * 使用标准化 API
  */
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   Box,
   Container,
@@ -27,6 +27,9 @@ import { Refresh, FilterList } from '@mui/icons-material';
 import { logApi } from '../../services/adminService';
 import type { LogItem } from '../../types/admin';
 import AdminLayout from '../../components/Admin/AdminLayout';
+import { getErrorMessage } from '../../utils/errorMessage';
+
+type LogStatusFilter = 'success' | 'failed' | '';
 
 const LogsPage: React.FC = () => {
   const [logs, setLogs] = useState<LogItem[]>([]);
@@ -36,14 +39,10 @@ const LogsPage: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [action, setAction] = useState<string>('');
-  const [status, setStatus] = useState<'success' | 'failed' | ''>('');
+  const [status, setStatus] = useState<LogStatusFilter>('');
   const [traceId, setTraceId] = useState('');
 
-  useEffect(() => {
-    loadLogs();
-  }, [page, rowsPerPage, action, status, traceId]);
-
-  const loadLogs = async () => {
+  const loadLogs = useCallback(async () => {
     setLoading(true);
     setError('');
     try {
@@ -56,13 +55,17 @@ const LogsPage: React.FC = () => {
       });
       setLogs(Array.isArray(response.logs) ? response.logs : []);
       setTotal(Number(response.total || 0));
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('加载日志失败:', err);
-      setError(err.message || '加载日志失败');
+      setError(getErrorMessage(err, '加载日志失败'));
     } finally {
       setLoading(false);
     }
-  };
+  }, [action, page, rowsPerPage, status, traceId]);
+
+  useEffect(() => {
+    loadLogs();
+  }, [loadLogs]);
 
   const formatDate = (dateString: string) => {
     const date = new Date(dateString);
@@ -111,7 +114,7 @@ const LogsPage: React.FC = () => {
                 label="状态"
                 value={status}
                 onChange={(e) => {
-                  setStatus(e.target.value as any);
+                  setStatus(e.target.value as LogStatusFilter);
                   setPage(0);
                 }}
                 sx={{ minWidth: 120 }}

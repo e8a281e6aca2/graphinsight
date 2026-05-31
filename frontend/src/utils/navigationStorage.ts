@@ -1,8 +1,12 @@
 export type NavigationHistoryItem = {
   name?: string;
-  timestamp?: number;
+  timestamp: number;
   zoom: number;
   center: { x: number; y: number };
+};
+
+export type NewNavigationHistoryItem = Omit<NavigationHistoryItem, 'timestamp'> & {
+  timestamp?: number;
 };
 
 export type GraphBookmark = {
@@ -11,7 +15,8 @@ export type GraphBookmark = {
   timestamp: number;
   zoom: number;
   center: { x: number; y: number };
-  [key: string]: any;
+  selectedNodeId?: string;
+  lastUsedAt?: number;
 };
 
 const BOOKMARK_KEY = 'graphBookmarks';
@@ -49,9 +54,9 @@ export function loadNavigationHistory(): NavigationHistoryItem[] {
   return Array.isArray(data) ? data : [];
 }
 
-export function addNavigationHistory(item: NavigationHistoryItem, limit = 20) {
+export function addNavigationHistory(item: NewNavigationHistoryItem, limit = 20) {
   const timestamp = item.timestamp ?? Date.now();
-  const normalized = {
+  const normalized: NavigationHistoryItem = {
     ...item,
     timestamp,
     name: item.name ?? `视图 ${new Date(timestamp).toLocaleTimeString()}`,

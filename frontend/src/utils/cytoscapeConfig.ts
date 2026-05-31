@@ -1,5 +1,20 @@
 // Cytoscape.js 样式配置
-export function getCytoscapeStyles(isDarkMode: boolean): any[] {
+type CytoscapeStyleValue = string | number;
+type CytoscapeStyleRule = {
+  selector: string;
+  style: Record<string, CytoscapeStyleValue>;
+};
+
+type CytoscapeLayoutNode = {
+  degree: () => number;
+};
+
+type CytoscapePosition = {
+  x: number;
+  y: number;
+};
+
+export function getCytoscapeStyles(isDarkMode: boolean): CytoscapeStyleRule[] {
   const textColor = isDarkMode ? '#ffffff' : '#000000';
   const backgroundColor = isDarkMode ? '#1e1e1e' : '#f5f5f5';
 
@@ -292,7 +307,7 @@ export const LAYOUT_CONFIGS = {
     animationDuration: 500,
     animationEasing: 'ease-out',
     minNodeSpacing: 50,
-    concentric: (node: any) => node.degree(),
+    concentric: (node: CytoscapeLayoutNode) => node.degree(),
     levelWidth: () => 2,
   },
 
@@ -331,7 +346,7 @@ export const LAYOUT_CONFIGS = {
     circle: false,
     grid: false,
     avoidOverlap: true,
-    transform: (_node: any, position: any) => {
+    transform: (_node: CytoscapeLayoutNode, position: CytoscapePosition) => {
       // 交换x和y坐标实现水平布局
       return { x: position.y, y: position.x };
     },

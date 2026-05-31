@@ -83,6 +83,29 @@ func TestUnknownAdminRouteIsOwnedByGoAdminProxy(t *testing.T) {
 	}
 }
 
+func TestUnknownNonAdminAPIV1RouteIsNotLegacyProxied(t *testing.T) {
+	t.Parallel()
+
+	proxyClient := newProxyClientForTest(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("proxy should not be called for unknown non-admin api v1 route")
+	})
+
+	mux := http.NewServeMux()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	registerLegacyPythonProxyRoutes(mux, logger, proxyClient, nil)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/legacy/debug", nil)
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", rec.Code)
+	}
+	if rec.Header().Get(routeOwnerHeader) != "" {
+		t.Fatalf("unexpected route owner: %s", rec.Header().Get(routeOwnerHeader))
+	}
+}
+
 func TestAdminMonitorAlertsCheckProxyRouteUsesReadPermission(t *testing.T) {
 	t.Parallel()
 

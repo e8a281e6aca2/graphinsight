@@ -124,12 +124,13 @@ async def get_available_models(
     description="获取所有 OpenAI 相关配置"
 )
 async def get_openai_config(
+    include_sensitive: bool = Query(False, description="是否返回敏感值，仅供内部受控调用"),
     current_user: AdminUser = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """获取 OpenAI 配置"""
     try:
-        config = config_service.get_openai_config(db)
+        config = config_service.get_openai_config(db, include_sensitive=include_sensitive)
         return success_response(data=config, message="获取成功")
     except Exception as e:
         logger.error(f"获取 OpenAI 配置异常: {str(e)}", exc_info=True)
@@ -166,12 +167,13 @@ async def get_nl2cypher_config(
     description="获取所有 Neo4j 相关配置"
 )
 async def get_neo4j_config(
+    include_sensitive: bool = Query(False, description="是否返回敏感值，仅供内部受控调用"),
     current_user: AdminUser = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """获取 Neo4j 配置"""
     try:
-        config = config_service.get_neo4j_config(db)
+        config = config_service.get_neo4j_config(db, include_sensitive=include_sensitive)
         return success_response(data=config, message="获取成功")
     except Exception as e:
         logger.error(f"获取 Neo4j 配置异常: {str(e)}", exc_info=True)
@@ -187,12 +189,13 @@ async def get_neo4j_config(
     description="获取所有 AI 服务相关配置"
 )
 async def get_ai_service_config(
+    include_sensitive: bool = Query(False, description="是否返回敏感值，仅供内部受控调用"),
     current_user: AdminUser = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """获取 AI 服务配置"""
     try:
-        config = config_service.get_ai_service_config(db)
+        config = config_service.get_ai_service_config(db, include_sensitive=include_sensitive)
         return success_response(data=config, message="获取成功")
     except Exception as e:
         logger.error(f"获取 AI 服务配置异常: {str(e)}", exc_info=True)

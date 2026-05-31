@@ -1,5 +1,6 @@
 import { select } from 'd3-selection';
 import { zoom, zoomIdentity, type ZoomTransform } from 'd3-zoom';
+import type { Selection } from 'd3-selection';
 import {
   forceSimulation,
   forceLink,
@@ -9,6 +10,7 @@ import {
   type Simulation,
 } from 'd3-force';
 import type {
+  LayoutConfig,
   RendererAPI,
   RendererActiveElement,
   RendererData,
@@ -113,6 +115,8 @@ export function createRenderer(
       handlers.onTransform?.({ x: transform.x, y: transform.y, k: transform.k });
       scheduleRender();
     });
+
+  const canvasSelection = (): Selection<HTMLCanvasElement, unknown, null, undefined> => select(canvas);
 
   function updateCanvasSize() {
     const rect = canvas.getBoundingClientRect();
@@ -321,7 +325,7 @@ export function createRenderer(
     simulation.alpha(1).restart();
   }
 
-  function applyLayout(layout: string, config: any = {}) {
+  function applyLayout(layout: string, config: LayoutConfig = {}) {
     const layoutNodes = nodes.filter((node) => visibleNodeIds.has(node.id));
     if (layoutNodes.length === 0) return;
 
@@ -940,16 +944,16 @@ export function createRenderer(
   }
 
   function zoomBy(factor: number) {
-    select(canvas).call(zoomBehavior.scaleBy as any, factor);
+    canvasSelection().call(zoomBehavior.scaleBy, factor);
   }
 
   function zoomTo(k: number) {
     const clamped = Math.max(minZoom, Math.min(maxZoom, k));
-    select(canvas).call(zoomBehavior.scaleTo as any, clamped);
+    canvasSelection().call(zoomBehavior.scaleTo, clamped);
   }
 
   function panTo(x: number, y: number) {
-    select(canvas).call(zoomBehavior.translateTo as any, x, y);
+    canvasSelection().call(zoomBehavior.translateTo, x, y);
   }
 
   function center() {
@@ -1016,7 +1020,7 @@ export function createRenderer(
     const nextTransform = zoomIdentity
       .translate(width / 2 - centerX * clampedScale, height / 2 - centerY * clampedScale)
       .scale(clampedScale);
-    select(canvas).call(zoomBehavior.transform as any, nextTransform);
+    canvasSelection().call(zoomBehavior.transform, nextTransform);
   }
 
   function getTransform() {
@@ -1370,10 +1374,10 @@ export function createRenderer(
   canvas.addEventListener('dblclick', handleDoubleClick);
   canvas.addEventListener('contextmenu', handleContextMenu);
 
-  select(canvas).call(zoomBehavior as any);
+  canvasSelection().call(zoomBehavior);
   select(canvas).on('dblclick.zoom', null);
   if (initialZoom !== 1) {
-    select(canvas).call(zoomBehavior.scaleTo as any, initialZoom);
+    canvasSelection().call(zoomBehavior.scaleTo, initialZoom);
   }
 
   const resizeObserver = new ResizeObserver(() => {

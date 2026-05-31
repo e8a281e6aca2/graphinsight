@@ -51,7 +51,8 @@ docker run -d \
   --name neo4j \
   -p 7474:7474 -p 7687:7687 \
   -e NEO4J_AUTH=neo4j/password \
-  neo4j:5.14
+  -e NEO4J_PLUGINS='["apoc"]' \
+  neo4j:5.26.26
 ```
 
 或者下载并安装 Neo4j Desktop：https://neo4j.com/download/

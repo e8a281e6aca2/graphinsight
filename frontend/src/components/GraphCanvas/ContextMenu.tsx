@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React from 'react';
 import {
   Menu,
   MenuItem,
@@ -17,7 +17,7 @@ import {
   Info as InfoIcon,
   SelectAll as SelectIcon,
 } from '@mui/icons-material';
-import type { RendererAPI, RendererEdge, RendererNode } from '../../renderers/core/types';
+import type { RendererAPI, RendererEdge } from '../../renderers/core/types';
 import { useGraphStore } from '../../store/graphStore';
 import { addBookmark } from '../../utils/navigationStorage';
 
@@ -51,31 +51,22 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
   viewportSize,
 }) => {
   const { setSelectedNodeId, createGroup, setNodeTypeFilter, setRelationshipTypeFilter } = useGraphStore();
-  const [elementType, setElementType] = useState<'node' | 'edge' | null>(null);
-  const [elementData, setElementData] = useState<RendererNode | RendererEdge | null>(null);
+  const elementType = target?.type || null;
+  const elementId = target?.id || null;
 
-  useEffect(() => {
-    if (!target || !rendererRef.current) {
-      setElementType(null);
-      setElementData(null);
-      return;
-    }
-
-    if (target.type === 'node') {
-      setElementType('node');
-      setElementData(rendererRef.current.getNodeById(target.id) || null);
-      return;
-    }
-
-    setElementType('edge');
-    setElementData(rendererRef.current.getEdgeById(target.id) || null);
-  }, [target, rendererRef]);
+  const getElementData = () => {
+    if (!target || !rendererRef.current) return null;
+    return target.type === 'node'
+      ? rendererRef.current.getNodeById(target.id) || null
+      : rendererRef.current.getEdgeById(target.id) || null;
+  };
 
   const handleClose = () => {
     onClose();
   };
 
   const handleShowNodeDetails = () => {
+    const elementData = getElementData();
     if (elementType === 'node' && elementData) {
       setSelectedNodeId(elementData.id);
       rendererRef.current?.setActiveElement({ type: 'node', id: elementData.id });
@@ -84,6 +75,7 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
   };
 
   const handleHideNode = () => {
+    const elementData = getElementData();
     if (elementType === 'node' && elementData) {
       onHideNode(elementData.id);
     }
@@ -91,6 +83,7 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
   };
 
   const handleShowNode = () => {
+    const elementData = getElementData();
     if (elementType === 'node' && elementData) {
       onShowNode(elementData.id);
     }
@@ -98,6 +91,7 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
   };
 
   const handleFocusNode = () => {
+    const elementData = getElementData();
     if (elementType === 'node' && elementData) {
       rendererRef.current?.fitTo([elementData.id], 120);
     }
@@ -105,6 +99,7 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
   };
 
   const handleExpandNeighbors = () => {
+    const elementData = getElementData();
     if (elementType === 'node' && elementData) {
       const neighbors = rendererRef.current?.getNeighbors(elementData.id) || [];
       rendererRef.current?.setActiveElement({ type: 'node', id: elementData.id });
@@ -114,6 +109,7 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
   };
 
   const handleCreateGroup = () => {
+    const elementData = getElementData();
     if (elementType === 'node' && elementData) {
       const groupName = `Group_${Date.now()}`;
       createGroup(groupName, [elementData.id]);
@@ -122,6 +118,7 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
   };
 
   const handleSelectSimilar = () => {
+    const elementData = getElementData();
     if (elementType === 'node' && elementData) {
       setNodeTypeFilter([elementData.type]);
     }
@@ -129,6 +126,7 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
   };
 
   const handleHideEdge = () => {
+    const elementData = getElementData();
     if (elementType === 'edge' && elementData) {
       onHideEdge(elementData.id);
     }
@@ -136,6 +134,7 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
   };
 
   const handleShowEdge = () => {
+    const elementData = getElementData();
     if (elementType === 'edge' && elementData) {
       onShowEdge(elementData.id);
     }
@@ -143,6 +142,7 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
   };
 
   const handleFocusEdge = () => {
+    const elementData = getElementData();
     if (elementType === 'edge' && elementData) {
       const edge = elementData as RendererEdge;
       rendererRef.current?.fitTo([edge.source, edge.target], 120);
@@ -151,6 +151,7 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
   };
 
   const handleSelectSimilarEdges = () => {
+    const elementData = getElementData();
     if (elementType === 'edge' && elementData) {
       const edge = elementData as RendererEdge;
       setRelationshipTypeFilter([edge.type]);
@@ -175,8 +176,8 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
       zoom: transform.k,
       center,
       timestamp: Date.now(),
-      name: elementData
-        ? `${elementType}_${(elementData as any).label || elementData.id}`
+      name: elementId
+        ? `${elementType}_${elementId}`
         : `视图_${new Date().toLocaleTimeString()}`,
     };
 
@@ -185,12 +186,12 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
     handleClose();
   };
 
-  if (!anchorPosition || !target || !elementData) {
+  if (!anchorPosition || !target || !elementId) {
     return null;
   }
 
-  const isNodeHidden = elementType === 'node' && hiddenNodeIds.has(elementData.id);
-  const isEdgeHidden = elementType === 'edge' && hiddenEdgeIds.has(elementData.id);
+  const isNodeHidden = elementType === 'node' && hiddenNodeIds.has(elementId);
+  const isEdgeHidden = elementType === 'edge' && hiddenEdgeIds.has(elementId);
 
   return (
     <Menu
@@ -286,7 +287,7 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
       </MenuItem>
 
       <Typography variant="caption" color="text.secondary" sx={{ px: 2, py: 1 }}>
-        {elementType === 'node' ? `节点: ${(elementData as RendererNode).label || elementData.id}` : `边: ${(elementData as RendererEdge).predicate || elementData.id}`}
+        {elementType === 'node' ? `节点: ${elementId}` : `边: ${elementId}`}
       </Typography>
     </Menu>
   );

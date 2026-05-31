@@ -32,9 +32,13 @@ class Settings:
     def __init__(self):
         # Neo4j 配置
         self.neo4j_uri = os.getenv("NEO4J_URI", "bolt://localhost:7687")
-        self.neo4j_user = os.getenv("NEO4J_USER", "neo4j")
+        self.neo4j_user = os.getenv("NEO4J_USER", os.getenv("NEO4J_USERNAME", "neo4j"))
         self.neo4j_password = os.getenv("NEO4J_PASSWORD", "password")
         self.neo4j_database = os.getenv("NEO4J_DATABASE", "neo4j")
+        self.neo4j_connection_timeout_seconds = float(os.getenv("NEO4J_CONNECTION_TIMEOUT_SECONDS", "5"))
+        self.neo4j_connection_acquisition_timeout_seconds = float(
+            os.getenv("NEO4J_CONNECTION_ACQUISITION_TIMEOUT_SECONDS", "5")
+        )
         # env(默认): 仅使用 .env；admin: 仅使用配置中心；auto: 优先配置中心，缺失时回退 .env
         self.neo4j_config_source = os.getenv("NEO4J_CONFIG_SOURCE", "env").strip().lower()
         

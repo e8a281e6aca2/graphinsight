@@ -36,6 +36,7 @@ import { jobsApi } from '../../services/adminService';
 import type { JobItem, JobLogItem, JobStatus, JobType } from '../../types/admin';
 import AdminLayout from '../../components/Admin/AdminLayout';
 import { usePageVisible } from '../../hooks/usePageVisible';
+import { getErrorMessage } from '../../utils/errorMessage';
 
 type JobTypeFilter = JobType | '';
 type JobStatusFilter = JobStatus | '';
@@ -117,8 +118,8 @@ const JobsPage: React.FC = () => {
         });
         setJobs(Array.isArray(data.items) ? data.items : []);
         setTotal(Number(data.total || 0));
-      } catch (err: any) {
-        setError(err.message || '任务加载失败');
+      } catch (err: unknown) {
+        setError(getErrorMessage(err, '任务加载失败'));
       } finally {
         if (showSpinner) {
           setLoading(false);
@@ -153,8 +154,8 @@ const JobsPage: React.FC = () => {
       });
       setMessage('建图任务已创建并开始执行');
       await loadJobs(false);
-    } catch (err: any) {
-      setError(err.message || '创建建图任务失败');
+    } catch (err: unknown) {
+      setError(getErrorMessage(err, '创建建图任务失败'));
     } finally {
       setOperatingJobId(null);
     }
@@ -175,8 +176,8 @@ const JobsPage: React.FC = () => {
       setClearKbDialogOpen(false);
       setClearKbConfirmText('');
       await loadJobs(false);
-    } catch (err: any) {
-      setError(err.message || '创建清库任务失败');
+    } catch (err: unknown) {
+      setError(getErrorMessage(err, '创建清库任务失败'));
     } finally {
       setOperatingJobId(null);
     }
@@ -195,8 +196,8 @@ const JobsPage: React.FC = () => {
       });
       setMessage('重建索引任务已创建并开始执行');
       await loadJobs(false);
-    } catch (err: any) {
-      setError(err.message || '创建重建索引任务失败');
+    } catch (err: unknown) {
+      setError(getErrorMessage(err, '创建重建索引任务失败'));
     } finally {
       setOperatingJobId(null);
     }
@@ -209,8 +210,8 @@ const JobsPage: React.FC = () => {
       await jobsApi.retryJob(jobId);
       setMessage(`任务 #${jobId} 已提交重试`);
       await loadJobs(false);
-    } catch (err: any) {
-      setError(err.message || '重试任务失败');
+    } catch (err: unknown) {
+      setError(getErrorMessage(err, '重试任务失败'));
     } finally {
       setOperatingJobId(null);
     }
@@ -223,8 +224,8 @@ const JobsPage: React.FC = () => {
       await jobsApi.cancelJob(jobId);
       setMessage(`任务 #${jobId} 已取消`);
       await loadJobs(false);
-    } catch (err: any) {
-      setError(err.message || '取消任务失败');
+    } catch (err: unknown) {
+      setError(getErrorMessage(err, '取消任务失败'));
     } finally {
       setOperatingJobId(null);
     }
@@ -238,8 +239,8 @@ const JobsPage: React.FC = () => {
       setSelectedJob(data);
       setJobLogs(logs.items || []);
       setDetailOpen(true);
-    } catch (err: any) {
-      setError(err.message || '加载任务详情失败');
+    } catch (err: unknown) {
+      setError(getErrorMessage(err, '加载任务详情失败'));
     }
   };
 

@@ -65,6 +65,7 @@ func New(cfg config.Config, logger *slog.Logger) *Server {
 	handler := CORS(cfg.AllowedOrigins, mux)
 	handler = RequestLogging(logger, handler)
 	handler = Recovery(logger, handler)
+	handler = Trace(handler)
 
 	httpServer := &http.Server{
 		Addr:              cfg.Addr(),

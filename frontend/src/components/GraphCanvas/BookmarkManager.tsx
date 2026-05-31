@@ -28,6 +28,7 @@ interface BookmarkItem {
   zoom: number;
   center: { x: number; y: number };
   timestamp: number;
+  lastUsedAt?: number;
 }
 
 interface BookmarkManagerProps {
@@ -78,7 +79,10 @@ export const BookmarkManager: React.FC<BookmarkManagerProps> = ({
 
   useEffect(() => {
     if (open) {
-      setBookmarks(loadBookmarks());
+      const timer = window.setTimeout(() => {
+        setBookmarks(loadBookmarks());
+      }, 0);
+      return () => window.clearTimeout(timer);
     }
   }, [open]);
 
@@ -86,9 +90,10 @@ export const BookmarkManager: React.FC<BookmarkManagerProps> = ({
     if (rendererRef.current) {
       animateToView(rendererRef.current, { zoom: bookmark.zoom, center: bookmark.center });
 
+      const timestamp = bookmark.lastUsedAt ?? bookmark.timestamp;
       addNavigationHistory({
         name: `跳转到: ${bookmark.name}`,
-        timestamp: Date.now(),
+        timestamp,
         zoom: bookmark.zoom,
         center: bookmark.center,
       });

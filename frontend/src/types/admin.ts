@@ -10,7 +10,7 @@
 /**
  * 标准化 API 响应
  */
-export interface ApiResponse<T = any> {
+export interface ApiResponse<T = unknown> {
   code: number;
   message: string;
   data?: T;
@@ -24,7 +24,7 @@ export interface ApiResponse<T = any> {
 export interface ErrorDetail {
   error_code: string;
   error_type: string;
-  details?: any;
+  details?: unknown;
 }
 
 /**
@@ -313,9 +313,9 @@ export interface QATraceItem {
 }
 
 export interface QATraceDetail extends QATraceItem {
-  retrieval_snapshot?: any;
-  generation_snapshot?: any;
-  response_snapshot?: any;
+  retrieval_snapshot?: unknown;
+  generation_snapshot?: unknown;
+  response_snapshot?: unknown;
 }
 
 export interface QATraceQueryParams {
@@ -484,7 +484,7 @@ export interface LogDetail {
   action: string;
   resource?: string;
   resource_id?: string;
-  details?: Record<string, any>;
+  details?: Record<string, unknown>;
   ip_address?: string;
   user_agent?: string;
   status: 'success' | 'failed';

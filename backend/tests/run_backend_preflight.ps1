@@ -39,6 +39,12 @@ function Test-Health {
     }
 }
 
+function Test-PortListening {
+    param([int]$Port)
+    $connections = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
+    return ($null -ne $connections)
+}
+
 function Wait-Health {
     param(
         [string]$Url,
@@ -140,6 +146,15 @@ try {
     }
 
     if (-not (Test-Health -Url $BaseUrl)) {
+        $basePort = [int]([System.Uri]$BaseUrl).Port
+        if (Test-PortListening -Port $basePort) {
+            Write-Host "GO_GATEWAY_PORT_OCCUPIED_UNHEALTHY url=$BaseUrl port=$basePort"
+            Write-Host "The configured Go gateway port is already listening but does not return GraphInsight /health."
+            Write-Host "Free the port or rerun explicitly with a different URL, for example:"
+            Write-Host "powershell -ExecutionPolicy Bypass -File backend/tests/run_backend_preflight.ps1 -BaseUrl http://127.0.0.1:18081"
+            exit 1
+        }
+
         $goCommand = Resolve-GoCommand
         if (-not $goCommand) {
             Write-Host "GO_COMMAND_NOT_FOUND"

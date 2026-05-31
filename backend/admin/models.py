@@ -59,8 +59,8 @@ class AdminConfig(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     version = Column(Integer, default=1)  # 新增：版本号
     
-    # 添加唯一约束
     __table_args__ = (
+        UniqueConstraint("category", "key", name="uq_admin_config_category_key"),
         {'sqlite_autoincrement': True},
     )
 

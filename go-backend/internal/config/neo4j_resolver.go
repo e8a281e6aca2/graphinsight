@@ -154,7 +154,9 @@ func adminConfigURL(baseURL string) (string, error) {
 		return "", fmt.Errorf("python backend base url must contain scheme and host")
 	}
 	parsed.Path = joinURLPath(parsed.Path, "/api/v1/admin/config/neo4j/all")
-	parsed.RawQuery = ""
+	query := parsed.Query()
+	query.Set("include_sensitive", "true")
+	parsed.RawQuery = query.Encode()
 	return parsed.String(), nil
 }
 

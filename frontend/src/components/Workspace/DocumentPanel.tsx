@@ -19,6 +19,7 @@ import {
   type DeletedDocumentItem,
   type DocumentVerificationSnapshot,
 } from '../../services/documents';
+import { getErrorMessage } from '../../utils/errorMessage';
 
 function buildGraphSummary(graph?: { documents: number; chunks: number; relations: number; orphan_entities: number }) {
   if (!graph) return '';
@@ -60,6 +61,7 @@ export function DocumentPanel() {
   const [restoringId, setRestoringId] = useState<string | null>(null);
   const [clearingAll, setClearingAll] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [documentsLoaded, setDocumentsLoaded] = useState(false);
   const [uploadSummary, setUploadSummary] = useState<string | null>(null);
 
   useEffect(() => {
@@ -78,9 +80,12 @@ export function DocumentPanel() {
       ]);
       setDocuments(items);
       setDeletedDocuments(deletedItems);
+      setDocumentsLoaded(true);
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      setError(message);
+      setDocuments([]);
+      setDeletedDocuments([]);
+      setDocumentsLoaded(false);
+      setError(getErrorMessage(err, '文档列表加载失败'));
     } finally {
       setLoading(false);
     }
@@ -108,8 +113,7 @@ export function DocumentPanel() {
         setUploadSummary(`上传成功 ${uploaded} · 跳过 ${skipped}`);
         await refreshDocuments();
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        setError(message);
+        setError(getErrorMessage(err, '文档上传失败'));
       } finally {
         setUploading(false);
       }
@@ -165,8 +169,7 @@ export function DocumentPanel() {
         }
         await refreshDocuments();
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        setError(message);
+        setError(getErrorMessage(err, '文档删除失败'));
       } finally {
         setDeletingId(null);
       }
@@ -210,8 +213,7 @@ export function DocumentPanel() {
       });
       await refreshDocuments();
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      setError(message);
+      setError(getErrorMessage(err, '清空知识库失败'));
     } finally {
       setClearingAll(false);
     }
@@ -233,8 +235,7 @@ export function DocumentPanel() {
         );
         await refreshDocuments();
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        setError(message);
+        setError(getErrorMessage(err, '文档恢复失败'));
       } finally {
         setRestoringId(null);
       }
@@ -367,7 +368,7 @@ export function DocumentPanel() {
               正在加载文档...
             </Typography>
           )}
-          {!loading && documents.length === 0 && (
+          {!loading && documentsLoaded && documents.length === 0 && (
             <Typography variant="body2" color="text.secondary">
               暂无文档，请先上传。
             </Typography>

@@ -3,6 +3,7 @@
 """
 import os
 from sqlalchemy import create_engine
+from sqlalchemy import text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from dotenv import load_dotenv, find_dotenv
@@ -39,3 +40,37 @@ def get_db():
 def init_db():
     """初始化数据库表"""
     Base.metadata.create_all(bind=engine)
+    _ensure_admin_config_unique_key()
+
+
+def _ensure_admin_config_unique_key():
+    """Ensure config keys are unique per category, including upgraded databases."""
+    dialect = engine.dialect.name
+    with engine.begin() as conn:
+        if dialect == "postgresql":
+            conn.execute(text("""
+                DELETE FROM admin_configs old
+                USING admin_configs newer
+                WHERE old.category = newer.category
+                  AND old.key = newer.key
+                  AND old.id < newer.id
+            """))
+            conn.execute(text("""
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_admin_config_category_key
+                ON admin_configs (category, key)
+            """))
+            return
+
+        if dialect == "sqlite":
+            conn.execute(text("""
+                DELETE FROM admin_configs
+                WHERE id NOT IN (
+                    SELECT MAX(id)
+                    FROM admin_configs
+                    GROUP BY category, key
+                )
+            """))
+            conn.execute(text("""
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_admin_config_category_key
+                ON admin_configs (category, key)
+            """))

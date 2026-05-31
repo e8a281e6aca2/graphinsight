@@ -1,6 +1,6 @@
 import { lazy, Suspense, useRef, useState } from 'react';
 import { Routes, Route } from 'react-router-dom';
-import type { RendererAPI } from './renderers/core/types';
+import type { LayoutConfig, RendererAPI } from './renderers/core/types';
 
 const AppLayout = lazy(() => import('./components/Layout/AppLayout').then((mod) => ({ default: mod.AppLayout })));
 const DocChatPanel = lazy(() => import('./components/ChatPanel/DocChatPanel').then((mod) => ({ default: mod.DocChatPanel })));
@@ -42,7 +42,7 @@ function MainApp() {
   const [exportDialogOpen, setExportDialogOpen] = useState(false);
   const rendererRef = useRef<RendererAPI | null>(null);
 
-  const handleLayoutChange = (layout: string, config?: any) => {
+  const handleLayoutChange = (layout: string, config?: LayoutConfig) => {
     rendererRef.current?.applyLayout(layout, config);
     setTimeout(() => {
       rendererRef.current?.fitTo(undefined, 50);

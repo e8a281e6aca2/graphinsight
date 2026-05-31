@@ -18,6 +18,7 @@ import {
 import { NodeSearch } from './NodeSearch';
 import type { RendererAPI } from '../../renderers/core/types';
 import { useGraphStore } from '../../store/graphStore';
+import type { NavigationHistoryItem } from '../../utils/navigationStorage';
 
 interface NavigationControlsProps {
   rendererRef: React.RefObject<RendererAPI | null>;
@@ -26,7 +27,7 @@ interface NavigationControlsProps {
 export function NavigationControls({ rendererRef }: NavigationControlsProps) {
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchAnchor, setSearchAnchor] = useState<HTMLElement | null>(null);
-  const [history] = useState<any[]>([]);
+  const [history] = useState<NavigationHistoryItem[]>([]);
   const [historyIndex] = useState(-1);
   const { setSelectedNodeId } = useGraphStore();
 

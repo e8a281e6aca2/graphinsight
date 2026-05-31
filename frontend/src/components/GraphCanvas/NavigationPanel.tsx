@@ -91,27 +91,7 @@ function animateToView(
 }
 
 export function NavigationPanel({ rendererRef, isOpen, onClose }: NavigationPanelProps) {
-  const [bookmarks, setBookmarks] = useState<ViewBookmark[]>([]);
-  const [history, setHistory] = useState<NavigationHistory[]>([]);
-  const [historyIndex, setHistoryIndex] = useState(-1);
-  const [bookmarkDialogOpen, setBookmarkDialogOpen] = useState(false);
-  const [bookmarkName, setBookmarkName] = useState('');
-  const [highlightedNodeId, setHighlightedNodeId] = useState<string | null>(null);
-  const { selectedNodeId, setSelectedNodeId } = useGraphStore();
-
-  const historyRef = useRef<NavigationHistory[]>([]);
-  const historyIndexRef = useRef(-1);
-
-  useEffect(() => {
-    historyRef.current = history;
-  }, [history]);
-
-  useEffect(() => {
-    historyIndexRef.current = historyIndex;
-  }, [historyIndex]);
-
-  // 从localStorage加载书签
-  useEffect(() => {
+  const loadStoredBookmarks = useCallback(() => {
     const normalizeBookmarks = (raw: string | null) => {
       if (!raw) return [] as ViewBookmark[];
       const parsed = JSON.parse(raw);
@@ -161,13 +141,36 @@ export function NavigationPanel({ rendererRef, isOpen, onClose }: NavigationPane
         }
       }
 
-      if (normalized.length > 0) {
-        setBookmarks(normalized);
-      }
+      return normalized;
     } catch (error) {
       console.error('Failed to load bookmarks:', error);
+      return [] as ViewBookmark[];
     }
   }, [rendererRef]);
+
+  const [bookmarks, setBookmarks] = useState<ViewBookmark[]>([]);
+  const [history, setHistory] = useState<NavigationHistory[]>([]);
+  const [historyIndex, setHistoryIndex] = useState(-1);
+  const [bookmarkDialogOpen, setBookmarkDialogOpen] = useState(false);
+  const [bookmarkName, setBookmarkName] = useState('');
+  const [highlightedNodeId, setHighlightedNodeId] = useState<string | null>(null);
+  const { selectedNodeId, setSelectedNodeId } = useGraphStore();
+
+  const historyRef = useRef<NavigationHistory[]>([]);
+  const historyIndexRef = useRef(-1);
+
+  useEffect(() => {
+    historyRef.current = history;
+  }, [history]);
+
+  useEffect(() => {
+    historyIndexRef.current = historyIndex;
+  }, [historyIndex]);
+
+  // 从localStorage加载书签
+  useEffect(() => {
+    setBookmarks(loadStoredBookmarks());
+  }, [loadStoredBookmarks]);
 
   // 保存书签到localStorage
   const persistBookmarks = (newBookmarks: ViewBookmark[]) => {

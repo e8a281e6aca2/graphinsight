@@ -23,6 +23,7 @@ import {
   Cancel,
 } from '@mui/icons-material';
 import { profileApi } from '../../services/adminService';
+import { getErrorMessage } from '../../utils/errorMessage';
 
 interface PasswordDialogProps {
   open: boolean;
@@ -104,8 +105,8 @@ const PasswordDialog: React.FC<PasswordDialogProps> = ({ open, onClose, onSucces
         onSuccess?.();
         handleClose();
       }, 1500);
-    } catch (err: any) {
-      setError(err.message || '修改密码失败');
+    } catch (err: unknown) {
+      setError(getErrorMessage(err, '修改密码失败'));
     } finally {
       setLoading(false);
     }

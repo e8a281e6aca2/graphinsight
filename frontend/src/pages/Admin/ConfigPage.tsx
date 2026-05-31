@@ -31,6 +31,7 @@ import { useSearchParams } from 'react-router-dom';
 import { configApi } from '../../services/adminService';
 import type { ConfigItem, ConfigCategory, ConnectionTestResult } from '../../types/admin';
 import AdminLayout from '../../components/Admin/AdminLayout';
+import { getErrorMessage } from '../../utils/errorMessage';
 
 interface TabPanelProps {
   children?: React.ReactNode;
@@ -66,6 +67,24 @@ interface FormValues {
   nl2cypher_cache_size: string;
   nl2cypher_max_limit: string;
 }
+
+const getErrorDebugInfo = (reason: unknown) => {
+  if (!reason || typeof reason !== 'object') {
+    return { message: getErrorMessage(reason, '未知错误') };
+  }
+  const error = reason as {
+    message?: unknown;
+    code?: unknown;
+    trace_id?: unknown;
+    details?: unknown;
+  };
+  return {
+    message: typeof error.message === 'string' ? error.message : getErrorMessage(reason, '未知错误'),
+    code: error.code,
+    trace_id: error.trace_id,
+    details: error.details,
+  };
+};
 
 const ConfigPage: React.FC = () => {
   const [searchParams] = useSearchParams();
@@ -115,11 +134,11 @@ const ConfigPage: React.FC = () => {
       setFormValues({
         neo4j_uri: configs.neo4j?.uri?.value || '',
         neo4j_user: configs.neo4j?.user?.value || '',
-        neo4j_password: configs.neo4j?.password?.value || '',
+        neo4j_password: '',
         ai_service_provider: configs.ai_service?.provider?.value || 'openai',
         ai_service_enabled: configs.ai_service?.enabled?.value || 'true',
         ai_service_base_url: configs.ai_service?.base_url?.value || '',
-        ai_service_api_key: configs.ai_service?.api_key?.value || '',
+        ai_service_api_key: '',
         ai_service_model: configs.ai_service?.model?.value || '',
         ai_service_max_tokens: configs.ai_service?.max_tokens?.value || '',
         ai_service_temperature: configs.ai_service?.temperature?.value || '',
@@ -142,9 +161,9 @@ const ConfigPage: React.FC = () => {
         console.warn('Load latest model test skipped:', latestErr);
       }
       setError('');
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Load configs error:', err);
-      setError(err.message || '加载配置失败');
+      setError(getErrorMessage(err, '加载配置失败'));
     } finally {
       setLoading(false);
     }
@@ -171,14 +190,9 @@ const ConfigPage: React.FC = () => {
         return newSet;
       });
       setMessage('配置已保存');
-    } catch (err: any) {
-      console.error('Save config error:', {
-        message: err?.message,
-        code: err?.code,
-        trace_id: err?.trace_id,
-        details: err?.details,
-      });
-      setError(err.message || '保存失败');
+    } catch (err: unknown) {
+      console.error('Save config error:', getErrorDebugInfo(err));
+      setError(getErrorMessage(err, '保存失败'));
     } finally {
       setSaving(false);
     }
@@ -220,9 +234,9 @@ const ConfigPage: React.FC = () => {
       
       setDirtyFields(new Set());
       setMessage(`成功保存 ${savedCount} 项配置`);
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Save all error:', err);
-      setError(err.message || '保存失败');
+      setError(getErrorMessage(err, '保存失败'));
     } finally {
       setSaving(false);
     }
@@ -234,11 +248,11 @@ const ConfigPage: React.FC = () => {
       setFormValues({
         neo4j_uri: configs.neo4j?.uri?.value || '',
         neo4j_user: configs.neo4j?.user?.value || '',
-        neo4j_password: configs.neo4j?.password?.value || '',
+        neo4j_password: '',
         ai_service_provider: configs.ai_service?.provider?.value || 'openai',
         ai_service_enabled: configs.ai_service?.enabled?.value || 'true',
         ai_service_base_url: configs.ai_service?.base_url?.value || '',
-        ai_service_api_key: configs.ai_service?.api_key?.value || '',
+        ai_service_api_key: '',
         ai_service_model: configs.ai_service?.model?.value || '',
         ai_service_max_tokens: configs.ai_service?.max_tokens?.value || '',
         ai_service_temperature: configs.ai_service?.temperature?.value || '',
@@ -262,10 +276,10 @@ const ConfigPage: React.FC = () => {
       } else {
         setError(result.message || `${type === 'ai_service' ? 'AI 服务' : type} 连接测试失败`);
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Test connection error:', err);
       setTestResults(prev => ({ ...prev, [type]: false }));
-      setError(err.message || '测试失败');
+      setError(getErrorMessage(err, '测试失败'));
     }
   };
 
@@ -274,9 +288,9 @@ const ConfigPage: React.FC = () => {
       await configApi.initFromEnv();
       setMessage('配置初始化成功');
       await loadConfigs();
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Init config error:', err);
-      setError(err.message || '初始化失败');
+      setError(getErrorMessage(err, '初始化失败'));
     }
   };
 
@@ -322,10 +336,10 @@ const ConfigPage: React.FC = () => {
       } else {
         setError(result.message || '模型连通性测试失败');
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Model connection test error:', err);
       setTestResults(prev => ({ ...prev, model: false }));
-      setError(err.message || '模型连通性测试失败');
+      setError(getErrorMessage(err, '模型连通性测试失败'));
     } finally {
       setTestingModel(false);
     }
@@ -333,7 +347,6 @@ const ConfigPage: React.FC = () => {
 
   const handleFetchModels = async () => {
     setLoadingModels(true);
-    console.log('开始获取模型列表...');
     try {
       // 先落库 AI 配置（尤其 API Key），避免 onBlur 未触发时读到旧值
       await saveDirtyAiServiceFields();
@@ -343,7 +356,6 @@ const ConfigPage: React.FC = () => {
         base_url: formValues.ai_service_base_url,
         model: formValues.ai_service_model,
       });
-      console.log('获取到的模型列表:', models);
       setAvailableModels(models);
       if (models.length > 0) {
         setMessage(`成功获取 ${models.length} 个可用模型`);
@@ -353,14 +365,9 @@ const ConfigPage: React.FC = () => {
       } else {
         setError('未获取到模型列表，请检查 AI 服务配置');
       }
-    } catch (err: any) {
-      console.error('Fetch models error:', {
-        message: err?.message,
-        code: err?.code,
-        trace_id: err?.trace_id,
-        details: err?.details,
-      });
-      setError(err.message || '获取模型列表失败');
+    } catch (err: unknown) {
+      console.error('Fetch models error:', getErrorDebugInfo(err));
+      setError(getErrorMessage(err, '获取模型列表失败'));
     } finally {
       setLoadingModels(false);
     }

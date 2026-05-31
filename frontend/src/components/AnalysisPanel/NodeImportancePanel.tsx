@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   Box,
   Typography,
@@ -46,7 +46,7 @@ export function NodeImportancePanel({ rendererRef }: NodeImportancePanelProps) {
   const [selectedMetric, setSelectedMetric] = useState<ImportanceMetric>('pageRank');
   const [appliedToSize, setAppliedToSize] = useState(false);
 
-  const runAnalysis = () => {
+  const runAnalysis = useCallback(() => {
     if (!rendererRef.current) return;
 
     setLoading(true);
@@ -59,14 +59,14 @@ export function NodeImportancePanel({ rendererRef }: NodeImportancePanelProps) {
     } finally {
       setLoading(false);
     }
-  };
+  }, [rendererRef]);
 
   useEffect(() => {
     if (!rendererRef.current) return;
     if (rendererRef.current.getAllNodes().length > 0) {
       runAnalysis();
     }
-  }, [rendererRef, graphData?.stats?.executionTime]);
+  }, [rendererRef, graphData?.stats?.executionTime, runAnalysis]);
 
   const handleApplyToSize = () => {
     if (!rendererRef.current || importance.length === 0) return;

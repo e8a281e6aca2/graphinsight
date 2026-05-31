@@ -173,8 +173,8 @@ class MonitorService:
             try:
                 neo4j_service = get_neo4j_service()
                 
-                # 直接使用driver执行简单查询
-                with neo4j_service.driver.session() as session:
+                neo4j_service.ensure_connected()
+                with neo4j_service.session() as session:
                     session.run("RETURN 1 AS ok").single()
                 
                 return self._set_cached("neo4j_status", Neo4jStatus(

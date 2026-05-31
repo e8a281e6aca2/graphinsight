@@ -73,7 +73,7 @@ func Load() Config {
 		OrchestratorSafeRetryDocQA:    envBoolOrDefault("ORCHESTRATOR_SAFE_RETRY_DOCQA", false),
 		IdempotencyCacheTTLSeconds:    envIntOrDefault("IDEMPOTENCY_CACHE_TTL_SECONDS", 600),
 
-		RBACEnforceBusinessAPI: envBoolOrDefault("RBAC_ENFORCE_BUSINESS_API", false),
+		RBACEnforceBusinessAPI: envBoolOrDefault("RBAC_ENFORCE_BUSINESS_API", true),
 	}
 }
 

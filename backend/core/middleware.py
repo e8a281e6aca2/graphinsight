@@ -92,8 +92,8 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
         """处理请求"""
-        # 生成 trace_id
-        trace_id = str(uuid.uuid4())
+        # 复用网关传入的 trace_id，缺失时才生成，确保 Go -> Python 链路可对账。
+        trace_id = request.headers.get("x-trace-id") or request.headers.get("X-Trace-Id") or str(uuid.uuid4())
         request.state.trace_id = trace_id
         
         # 记录请求开始

@@ -78,9 +78,17 @@ class DocumentGraphService:
     def __init__(self) -> None:
         self.neo4j = None
 
+    def ensure_schema(self) -> None:
+        if self.neo4j is None:
+            self.neo4j = get_neo4j_service()
+        self.neo4j.ensure_connected()
+        with self.neo4j.session() as session:
+            self._ensure_schema(session)
+
     def build_graph(self, force: bool = False, doc_ids: Optional[List[str]] = None) -> Dict[str, object]:
         if self.neo4j is None:
             self.neo4j = get_neo4j_service()
+        self.neo4j.ensure_connected()
         doc_dir = Path(settings.document_storage_path).resolve()
         if not doc_dir.exists():
             doc_dir.mkdir(parents=True, exist_ok=True)
@@ -117,7 +125,7 @@ class DocumentGraphService:
         )
 
         apoc_available = False
-        with self.neo4j.driver.session() as session:
+        with self.neo4j.session() as session:
             self._ensure_schema(session)
             if settings.llm_relation_dynamic_type:
                 apoc_available = self._check_apoc_available(session)
@@ -166,7 +174,7 @@ class DocumentGraphService:
                         }
                     )
 
-                with self.neo4j.driver.session() as session:
+                with self.neo4j.session() as session:
                     existing = session.run(
                         "MATCH (d:Document {doc_id: $doc_id}) RETURN d.hash AS hash",
                         {"doc_id": doc_id},
@@ -207,7 +215,8 @@ class DocumentGraphService:
 
                     session.run(
                         """
-                        MATCH ()-[r {doc_id: $doc_id}]-()
+                        MATCH (:Entity)-[r]->(:Entity)
+                        WHERE r.doc_id = $doc_id
                         DELETE r
                         """,
                         {"doc_id": doc_id},
@@ -335,20 +344,16 @@ class DocumentGraphService:
         if self.neo4j is None:
             self.neo4j = get_neo4j_service()
 
-        with self.neo4j.driver.session() as session:
-            relation_count = int(
-                (
-                    session.run(
-                        "MATCH ()-[r {doc_id: $doc_id}]-() RETURN count(r) AS c",
-                        {"doc_id": doc_id},
-                    ).single()
-                    or {}
-                ).get("c")
-                or 0
-            )
+        self.neo4j.ensure_connected()
+        with self.neo4j.session() as session:
+            relation_count = self._count_document_relations_for_doc(session, doc_id)
             if relation_count:
                 session.run(
-                    "MATCH ()-[r {doc_id: $doc_id}]-() DELETE r",
+                    """
+                    MATCH (:Entity)-[r]->(:Entity)
+                    WHERE r.doc_id = $doc_id
+                    DELETE r
+                    """,
                     {"doc_id": doc_id},
                 )
 
@@ -396,24 +401,17 @@ class DocumentGraphService:
     def clear_document_graph(self) -> Dict[str, int]:
         if self.neo4j is None:
             self.neo4j = get_neo4j_service()
-        with self.neo4j.driver.session() as session:
+        self.neo4j.ensure_connected()
+        with self.neo4j.session() as session:
             return self._clear_graph_data(session)
 
     def preview_delete_document_graph(self, doc_id: str) -> Dict[str, int]:
         if self.neo4j is None:
             self.neo4j = get_neo4j_service()
 
-        with self.neo4j.driver.session() as session:
-            relation_count = int(
-                (
-                    session.run(
-                        "MATCH ()-[r {doc_id: $doc_id}]-() RETURN count(r) AS c",
-                        {"doc_id": doc_id},
-                    ).single()
-                    or {}
-                ).get("c")
-                or 0
-            )
+        self.neo4j.ensure_connected()
+        with self.neo4j.session() as session:
+            relation_count = self._count_document_relations_for_doc(session, doc_id)
             chunk_count = int(
                 (
                     session.run(
@@ -445,7 +443,8 @@ class DocumentGraphService:
     def preview_clear_document_graph(self) -> Dict[str, int]:
         if self.neo4j is None:
             self.neo4j = get_neo4j_service()
-        with self.neo4j.driver.session() as session:
+        self.neo4j.ensure_connected()
+        with self.neo4j.session() as session:
             totals = self._get_graph_totals(session)
         return {
             "documents": totals["documents"],
@@ -457,27 +456,16 @@ class DocumentGraphService:
     def get_graph_totals(self) -> Dict[str, int]:
         if self.neo4j is None:
             self.neo4j = get_neo4j_service()
-        with self.neo4j.driver.session() as session:
+        self.neo4j.ensure_connected()
+        with self.neo4j.session() as session:
             return self._get_graph_totals(session)
 
     def _clear_graph_data(self, session) -> Dict[str, int]:
-        relation_count = int(
-            (
-                session.run(
-                    """
-                    MATCH ()-[r]-()
-                    WHERE r.source = 'document_ingest' OR r.doc_id IS NOT NULL
-                    RETURN count(r) AS c
-                    """
-                ).single()
-                or {}
-            ).get("c")
-            or 0
-        )
+        relation_count = self._count_document_relations(session)
         if relation_count:
             session.run(
                 """
-                MATCH ()-[r]-()
+                MATCH (:Entity)-[r]->(:Entity)
                 WHERE r.source = 'document_ingest' OR r.doc_id IS NOT NULL
                 DELETE r
                 """
@@ -526,19 +514,7 @@ class DocumentGraphService:
         }
 
     def _get_graph_totals(self, session) -> Dict[str, int]:
-        relation_count = int(
-            (
-                session.run(
-                    """
-                    MATCH ()-[r]-()
-                    WHERE r.source = 'document_ingest' OR r.doc_id IS NOT NULL
-                    RETURN count(r) AS c
-                    """
-                ).single()
-                or {}
-            ).get("c")
-            or 0
-        )
+        relation_count = self._count_document_relations(session)
         chunk_count = int(
             (
                 session.run(
@@ -576,6 +552,60 @@ class DocumentGraphService:
             "relations": relation_count,
             "entities": entity_count,
         }
+
+    @staticmethod
+    def _scalar_count(session, cypher: str, parameters: Optional[Dict[str, object]] = None) -> int:
+        return int(((session.run(cypher, parameters or {}).single() or {}).get("c")) or 0)
+
+    def _count_document_relations_for_doc(self, session, doc_id: str) -> int:
+        return (
+            self._scalar_count(
+                session,
+                "MATCH (:Document {doc_id: $doc_id})-[r:HAS_CHUNK]->(:Chunk) RETURN count(r) AS c",
+                {"doc_id": doc_id},
+            )
+            + self._scalar_count(
+                session,
+                "MATCH (:Chunk {doc_id: $doc_id})-[r:MENTIONS]->(:Entity) RETURN count(r) AS c",
+                {"doc_id": doc_id},
+            )
+            + self._scalar_count(
+                session,
+                """
+                MATCH (:Entity)-[r]->(:Entity)
+                WHERE r.doc_id = $doc_id
+                RETURN count(r) AS c
+                """,
+                {"doc_id": doc_id},
+            )
+        )
+
+    def _count_document_relations(self, session) -> int:
+        return (
+            self._scalar_count(
+                session,
+                """
+                MATCH (:Document {source: 'document_ingest'})-[r:HAS_CHUNK]->(:Chunk)
+                RETURN count(r) AS c
+                """,
+            )
+            + self._scalar_count(
+                session,
+                """
+                MATCH (c:Chunk)-[r:MENTIONS]->(:Entity)
+                WHERE c.source = 'document_ingest' OR c.doc_id IS NOT NULL
+                RETURN count(r) AS c
+                """,
+            )
+            + self._scalar_count(
+                session,
+                """
+                MATCH (:Entity)-[r]->(:Entity)
+                WHERE r.source = 'document_ingest' OR r.doc_id IS NOT NULL
+                RETURN count(r) AS c
+                """,
+            )
+        )
 
     @staticmethod
     def _cleanup_orphan_entities(session) -> int:
@@ -941,6 +971,17 @@ class DocumentGraphService:
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("创建全文索引失败", context={"error": str(exc)})
+
+        for cypher in (
+            "CREATE INDEX document_source IF NOT EXISTS FOR (d:Document) ON (d.source)",
+            "CREATE INDEX chunk_doc_id IF NOT EXISTS FOR (c:Chunk) ON (c.doc_id)",
+            "CREATE INDEX chunk_source IF NOT EXISTS FOR (c:Chunk) ON (c.source)",
+            "CREATE INDEX entity_source IF NOT EXISTS FOR (e:Entity) ON (e.source)",
+        ):
+            try:
+                session.run(cypher)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("创建文档图谱索引失败", context={"query": cypher, "error": str(exc)})
 
     @staticmethod
     def _batch(items: List[Dict], size: int) -> List[List[Dict]]:

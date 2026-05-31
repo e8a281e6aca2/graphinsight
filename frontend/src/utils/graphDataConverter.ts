@@ -1,4 +1,4 @@
-import type { GraphData, NodeGroup } from '../store/graphStore';
+import type { Edge, GraphData, Node, NodeGroup } from '../store/graphStore';
 import { getNodeColor, getEdgeColor } from './colorMapping';
 import { generateVideoThumbnail } from './videoThumbnail';
 import { buildProxyMediaUrl } from './apiBase';
@@ -10,7 +10,7 @@ export interface CytoscapeNode {
     label: string;
     color: string;
     type: string;
-    properties: Record<string, any>;
+    properties: Record<string, unknown>;
     // 媒体相关属性
     image?: string;
     video?: string;
@@ -36,18 +36,34 @@ export interface CytoscapeEdge {
     label: string;
     color: string;
     type: string;
-    properties: Record<string, any>;
+    properties: Record<string, unknown>;
   };
 }
 
 export type CytoscapeElement = CytoscapeNode | CytoscapeEdge;
+
+export type NodeTypeStyle = {
+  color?: string;
+  size?: number;
+  borderWidth?: number;
+  showLabels?: boolean;
+  labelSize?: number;
+  showImages?: boolean;
+  caption?: string[];
+};
+
+type CytoscapeNodeData = CytoscapeNode['data'];
+
+type CytoscapeDataReader = {
+  data: (key: string) => unknown;
+};
 
 // 将 API 格式的图数据转换为 Cytoscape 格式
 export function convertToCytoscapeFormat(
   graphData: GraphData | null, 
   groups?: NodeGroup[],
   showGroupLabels?: boolean,
-  nodeTypeStyles?: Record<string, any>
+  nodeTypeStyles?: Record<string, NodeTypeStyle>
 ): CytoscapeElement[] {
   if (!graphData) {
     return [];
@@ -62,7 +78,7 @@ export function convertToCytoscapeFormat(
     const color = getNodeColor(node.labels);
     
     // 提取图片信息（支持中英文属性名）
-    let imageUrl = null;
+    let imageUrl: string | null = null;
     const imageKeys = ['images', 'image', 'imageUrl', '图片', '图像', '照片'];
     
     for (const key of imageKeys) {
@@ -78,7 +94,7 @@ export function convertToCytoscapeFormat(
       }
     }
 
-    const nodeData: any = {
+    const nodeData: CytoscapeNodeData = {
       id: node.id,
       label,
       color,
@@ -104,7 +120,7 @@ export function convertToCytoscapeFormat(
     }
 
     // 提取视频信息（支持更灵活的属性名匹配）
-    let videoUrl = null;
+    let videoUrl: string | null = null;
     
     // 首先检查常见的视频属性名
     const videoKeys = ['videos', 'video', 'videoUrl', '视频', '影片'];
@@ -173,7 +189,7 @@ export function convertToCytoscapeFormat(
     for (const key of audioKeys) {
       if (node.properties[key]) {
         const value = node.properties[key];
-        let audioUrl = null;
+        let audioUrl: string | null = null;
         if (typeof value === 'string') {
           audioUrl = value;
         } else if (Array.isArray(value) && value.length > 0) {
@@ -256,7 +272,7 @@ export function convertToCytoscapeFormat(
 
         // 如果分组是折叠的，添加折叠样式类
         if (group.collapsed) {
-          (groupElement as any).classes = 'collapsed';
+          groupElement.classes = 'collapsed';
         }
 
         elements.push(groupElement);
@@ -270,7 +286,7 @@ export function convertToCytoscapeFormat(
           if (nodeElement) {
             // 如果分组是折叠的，隐藏子节点
             if (group.collapsed) {
-              (nodeElement as any).classes = 'hidden';
+              nodeElement.classes = 'hidden';
             } else {
               // 设置父节点
               nodeElement.data.parent = group.id;
@@ -284,8 +300,8 @@ export function convertToCytoscapeFormat(
   return elements;
 }
 
-function getEdgeLabel(edge: any): string {
-  const props = edge?.properties || {};
+function getEdgeLabel(edge: Edge): string {
+  const props = edge.properties || {};
   const candidates = [
     'label',
     'name',
@@ -304,11 +320,11 @@ function getEdgeLabel(edge: any): string {
     const text = String(raw).trim();
     if (text) return text;
   }
-  return edge?.type || '';
+  return edge.type || '';
 }
 
 // 简单的节点标签生成 - 使用合理的默认逻辑
-export function generateNodeLabel(node: any, nodeTypeStyle?: any): string {
+export function generateNodeLabel(node: Node, nodeTypeStyle?: NodeTypeStyle): string {
   const labels = Array.isArray(node.labels) ? node.labels : [];
   if (labels.includes('Chunk')) {
     const idx = node.properties?.index;
@@ -358,17 +374,17 @@ export function generateNodeLabel(node: any, nodeTypeStyle?: any): string {
 }
 
 // 获取节点的显示名称
-export function getNodeDisplayName(node: any): string {
-  if (node.data) {
-    return node.data('label') || node.data('id');
+export function getNodeDisplayName(node: Node | CytoscapeDataReader): string {
+  if ('data' in node && typeof node.data === 'function') {
+    return String(node.data('label') || node.data('id') || 'Unknown');
   }
-  return node.id || 'Unknown';
+  return 'id' in node ? node.id : 'Unknown';
 }
 
 // 获取边的显示名称
-export function getEdgeDisplayName(edge: any): string {
-  if (edge.data) {
-    return edge.data('label') || edge.data('type') || '';
+export function getEdgeDisplayName(edge: Edge | CytoscapeDataReader): string {
+  if ('data' in edge && typeof edge.data === 'function') {
+    return String(edge.data('label') || edge.data('type') || '');
   }
-  return edge.type || '';
+  return 'type' in edge ? edge.type : '';
 }

@@ -9,7 +9,7 @@ export default defineConfig(({ mode }) => {
   const normalized = rawBase.endsWith('/api') ? rawBase.slice(0, -4) : rawBase
   const target = normalized && !['auto', 'same-origin'].includes(normalized)
     ? normalized
-    : 'http://localhost:8081'
+    : 'http://127.0.0.1:8081'
 
   return {
     plugins: [react()],
@@ -23,6 +23,9 @@ export default defineConfig(({ mode }) => {
       },
     },
     build: {
+      // 3D graph mode is intentionally isolated in an async vendor chunk.
+      // Keep the warning threshold above that chunk while preserving manual split boundaries.
+      chunkSizeWarningLimit: 1200,
       rollupOptions: {
         output: {
           manualChunks(id) {
@@ -32,8 +35,14 @@ export default defineConfig(({ mode }) => {
             if (id.includes('@mui') || id.includes('@emotion')) {
               return 'vendor-mui'
             }
-            if (id.includes('three') || id.includes('3d-force-graph') || id.includes('cytoscape') || id.includes('d3-')) {
-              return 'vendor-graph'
+            if (id.includes('3d-force-graph') || id.includes('three') || id.includes('three-spritetext')) {
+              return 'vendor-graph-3d'
+            }
+            if (id.includes('cytoscape')) {
+              return 'vendor-cytoscape'
+            }
+            if (id.includes('d3-')) {
+              return 'vendor-d3'
             }
             if (id.includes('recharts')) {
               return 'vendor-charts'

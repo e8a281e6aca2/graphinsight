@@ -30,21 +30,10 @@ import SystemResourceChart from '../../components/Admin/Charts/SystemResourceCha
 import { useSystemMetrics } from '../../hooks/useSystemMetrics';
 import { usePageVisible } from '../../hooks/usePageVisible';
 import AdminLayout from '../../components/Admin/AdminLayout';
+import { getErrorMessage } from '../../utils/errorMessage';
 
 const API_WINDOW_SECONDS = 900;
 const JOB_WINDOW_MINUTES = 60;
-
-const getErrorMessage = (reason: unknown, fallback: string): string => {
-  if (
-    reason &&
-    typeof reason === 'object' &&
-    'message' in reason &&
-    typeof (reason as { message?: unknown }).message === 'string'
-  ) {
-    return (reason as { message: string }).message;
-  }
-  return fallback;
-};
 
 const MonitorPage: React.FC = () => {
   const pageVisible = usePageVisible();

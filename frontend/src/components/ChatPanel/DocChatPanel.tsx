@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
@@ -112,9 +112,9 @@ WHERE r.source = 'document_ingest'
 RETURN e1 AS n, r, e2 AS m
 LIMIT 600`;
 
-const DOC_FALLBACK_GRAPH_QUERY = `MATCH (n)-[r]->(m)
-WHERE n.source = 'document_ingest' OR m.source = 'document_ingest'
-RETURN n, r, m
+const DOC_FALLBACK_GRAPH_QUERY = `MATCH (d:Document {source: 'document_ingest'})-[h:HAS_CHUNK]->(c:Chunk)
+OPTIONAL MATCH (c)-[m:MENTIONS]->(e:Entity)
+RETURN d, h, c, m, e
 LIMIT 600`;
 
 const DOC_CITATION_FOCUS_QUERY = `MATCH (d:Document)-[h:HAS_CHUNK]->(c:Chunk)
@@ -206,7 +206,7 @@ export function DocChatPanel() {
       )
     ).slice(0, 60);
 
-  const applyCitationSelection = (
+  const applyCitationSelection = useCallback((
     citation: Citation,
     openGraph = true,
     extraKeywords?: string[]
@@ -225,7 +225,7 @@ export function DocChatPanel() {
     if (openGraph) {
       setWorkspaceTab('graph');
     }
-  };
+  }, [setSelectedCitation, setWorkspaceTab]);
 
   const handleSend = async () => {
     const value = input.trim();
@@ -344,7 +344,7 @@ export function DocChatPanel() {
     applyCitationSelection(citation, true);
   };
 
-  const runDocGraphQuery = async () => {
+  const runDocGraphQuery = useCallback(async () => {
     try {
       let result = await executeQuery(DOC_ENTITY_GRAPH_QUERY);
       let queryUsed = DOC_ENTITY_GRAPH_QUERY;
@@ -367,9 +367,9 @@ export function DocChatPanel() {
         context: { error: message },
       });
     }
-  };
+  }, [addQueryToHistory, setGraphData, setLastQueryStats]);
 
-  const syncGraphWithCitations = async (
+  const syncGraphWithCitations = useCallback(async (
     citations: Citation[],
     question: string,
     answerText: string
@@ -455,14 +455,23 @@ export function DocChatPanel() {
         setWorkspaceTab('graph');
       }
     }
-  };
+  }, [
+    addQueryToHistory,
+    applyCitationSelection,
+    graphSyncMode,
+    runDocGraphQuery,
+    setGraphData,
+    setHighlightAll,
+    setLastQueryStats,
+    setWorkspaceTab,
+  ]);
 
   useEffect(() => {
     if (!lastSyncRef.current) return;
     if (graphSyncMode !== 'full') return;
     const { citations, question, answer } = lastSyncRef.current;
     syncGraphWithCitations(citations, question, answer);
-  }, [graphSyncMode]);
+  }, [graphSyncMode, syncGraphWithCitations]);
 
   const handleBuildGraph = () => {
     if (buildStatus === 'running') return;

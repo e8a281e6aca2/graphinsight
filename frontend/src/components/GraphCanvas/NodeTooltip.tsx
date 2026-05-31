@@ -10,9 +10,15 @@ interface NodeTooltipProps {
     id: string;
     label: string;
     type: string;
-    properties: Record<string, any>;
+    properties: Record<string, unknown>;
   } | null;
 }
+
+const displayText = (value: unknown): string => {
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  return '';
+};
 
 export function NodeTooltip({ visible, x, y, nodeData }: NodeTooltipProps) {
   const [show, setShow] = useState(false);
@@ -25,12 +31,12 @@ export function NodeTooltip({ visible, x, y, nodeData }: NodeTooltipProps) {
       }, 500);
 
       return () => clearTimeout(timer);
-    } else {
-      setShow(false);
     }
   }, [visible, nodeData]);
 
-  if (!show || !nodeData) {
+  const shouldShow = visible && show && nodeData;
+
+  if (!shouldShow) {
     return null;
   }
 
@@ -73,7 +79,7 @@ export function NodeTooltip({ visible, x, y, nodeData }: NodeTooltipProps) {
       </Typography>
 
       {/* 属性预览 */}
-      {nodeData.properties.description && (
+      {displayText(nodeData.properties.description) && (
         <Typography
           variant="caption"
           color="text.secondary"
@@ -85,7 +91,7 @@ export function NodeTooltip({ visible, x, y, nodeData }: NodeTooltipProps) {
             textOverflow: 'ellipsis',
           }}
         >
-          {nodeData.properties.description}
+          {displayText(nodeData.properties.description)}
         </Typography>
       )}
     </Paper>

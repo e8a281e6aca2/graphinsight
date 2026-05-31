@@ -4,7 +4,7 @@ export type RendererNode = {
   color: string;
   radius: number;
   type: string;
-  properties: Record<string, any>;
+  properties: Record<string, unknown>;
   cluster?: string | null;
   neighbors: string[];
   degree: number;
@@ -30,7 +30,7 @@ export type RendererEdge = {
   predicate: string;
   color: string;
   type: string;
-  properties: Record<string, any>;
+  properties: Record<string, unknown>;
 };
 
 export type RendererCluster = {
@@ -71,9 +71,12 @@ export type RendererEventHandlers = {
   onTransform?: (transform: { x: number; y: number; k: number }) => void;
 };
 
+export type LayoutConfigValue = string | number | boolean | number[] | ((...args: never[]) => unknown) | undefined;
+export type LayoutConfig = Record<string, LayoutConfigValue>;
+
 export type RendererAPI = {
   updateData: (data: RendererData) => void;
-  applyLayout: (layout: string, config?: any) => void;
+  applyLayout: (layout: string, config?: LayoutConfig) => void;
   setActiveElement: (active: RendererActiveElement | null) => void;
   setSearchHighlight: (payload: { nodeIds?: string[]; edgeIds?: string[] }) => void;
   clearSearchHighlight: () => void;

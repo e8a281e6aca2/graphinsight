@@ -23,6 +23,8 @@ import {
 import { useGraphStore } from '../../store/graphStore';
 import type { Node } from '../../store/graphStore';
 
+type SearchMode = 'all' | 'name' | 'type' | 'property';
+
 interface SearchResult {
   node: Node;
   matchType: 'name' | 'id' | 'type' | 'property';
@@ -35,12 +37,18 @@ interface NodeSearchProps {
   onNodeHighlight: (nodeId: string | null) => void;
 }
 
+function displayText(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  return '';
+}
+
 export function NodeSearch({ onNodeSelect, onNodeHighlight }: NodeSearchProps) {
   const { graphData } = useGraphStore();
   const [searchQuery, setSearchQuery] = useState('');
   const [isOpen, setIsOpen] = useState(false);
   const [selectedResult, setSelectedResult] = useState<SearchResult | null>(null);
-  const [searchMode, setSearchMode] = useState<'all' | 'name' | 'type' | 'property'>('all');
+  const [searchMode, setSearchMode] = useState<SearchMode>('all');
 
   // 搜索结果
   const searchResults = useMemo(() => {
@@ -118,7 +126,7 @@ export function NodeSearch({ onNodeSelect, onNodeHighlight }: NodeSearchProps) {
 
       // 取最高分的匹配
       if (scores.length > 0) {
-        const bestMatch = scores.reduce((best, current) => 
+        const bestMatch = scores.reduce((best, current) =>
           current.score > best.score ? current : best
         );
 
@@ -173,9 +181,9 @@ export function NodeSearch({ onNodeSelect, onNodeHighlight }: NodeSearchProps) {
 
   // 获取节点显示名称
   const getNodeDisplayName = (node: Node): string => {
-    return node.properties.name || 
-           node.properties.title || 
-           node.properties['名称'] || 
+    return displayText(node.properties.name) ||
+           displayText(node.properties.title) ||
+           displayText(node.properties['名称']) ||
            node.id;
   };
 
@@ -207,21 +215,21 @@ export function NodeSearch({ onNodeSelect, onNodeHighlight }: NodeSearchProps) {
     <Box sx={{ position: 'relative', width: '100%' }}>
       {/* 搜索模式选择 */}
       <Box sx={{ display: 'flex', gap: 0.5, mb: 1 }}>
-        {[
+        {([
           { key: 'all', label: '全部' },
           { key: 'name', label: '名称' },
           { key: 'type', label: '类型' },
           { key: 'property', label: '属性' },
-        ].map(({ key, label }) => (
+        ] as Array<{ key: SearchMode; label: string }>).map(({ key, label }) => (
           <Chip
             key={key}
             label={label}
             size="small"
             variant={searchMode === key ? 'filled' : 'outlined'}
             color={searchMode === key ? 'primary' : 'default'}
-            onClick={() => setSearchMode(key as any)}
-            sx={{ 
-              fontSize: '0.7rem', 
+            onClick={() => setSearchMode(key)}
+            sx={{
+              fontSize: '0.7rem',
               height: 24,
               cursor: 'pointer',
               '&:hover': {
@@ -235,8 +243,8 @@ export function NodeSearch({ onNodeSelect, onNodeHighlight }: NodeSearchProps) {
       <TextField
         fullWidth
         size="small"
-        placeholder={`搜索${searchMode === 'all' ? '节点' : 
-          searchMode === 'name' ? '名称' : 
+        placeholder={`搜索${searchMode === 'all' ? '节点' :
+          searchMode === 'name' ? '名称' :
           searchMode === 'type' ? '类型' : '属性'}... (${nodeCount} 个节点)`}
         value={searchQuery}
         onChange={(e) => handleSearchChange(e.target.value)}
@@ -295,7 +303,7 @@ export function NodeSearch({ onNodeSelect, onNodeHighlight }: NodeSearchProps) {
               找到 {searchResults.length} 个结果
             </Typography>
           </Box>
-          
+
           <List dense>
             {searchResults.map((result, index) => (
               <ListItem
@@ -322,7 +330,7 @@ export function NodeSearch({ onNodeSelect, onNodeHighlight }: NodeSearchProps) {
                     {getMatchTypeIcon(result.matchType)}
                   </Avatar>
                 </ListItemAvatar>
-                
+
                 <ListItemText
                   primary={
                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
@@ -348,7 +356,7 @@ export function NodeSearch({ onNodeSelect, onNodeHighlight }: NodeSearchProps) {
                     </Box>
                   }
                 />
-                
+
                 <IconButton size="small" sx={{ opacity: 0.7 }}>
                   <LocationIcon fontSize="small" />
                 </IconButton>

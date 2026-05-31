@@ -13,6 +13,7 @@ type APIResponse struct {
 	Message   string      `json:"message"`
 	Data      interface{} `json:"data,omitempty"`
 	Timestamp string      `json:"timestamp"`
+	TraceID   string      `json:"trace_id,omitempty"`
 }
 
 func markRouteOwner(w http.ResponseWriter, owner string) {
@@ -37,5 +38,6 @@ func WriteJSON(w http.ResponseWriter, status int, message string, data interface
 		Message:   message,
 		Data:      data,
 		Timestamp: time.Now().UTC().Format(time.RFC3339),
+		TraceID:   w.Header().Get(traceHeader),
 	})
 }

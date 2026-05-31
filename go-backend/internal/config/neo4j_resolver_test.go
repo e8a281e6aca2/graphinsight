@@ -38,6 +38,9 @@ func TestResolveNeo4jConfigAdminMode(t *testing.T) {
 		if r.URL.Path != "/api/v1/admin/config/neo4j/all" {
 			t.Fatalf("unexpected path: %s", r.URL.Path)
 		}
+		if r.URL.Query().Get("include_sensitive") != "true" {
+			t.Fatalf("expected sensitive config opt-in, got query: %s", r.URL.RawQuery)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"code":200,"data":{"uri":"bolt://admin:7687","user":"admin-user","password":"admin-password","database":"admin-db","source":"admin_config","mode":"admin"}}`))
 	}))

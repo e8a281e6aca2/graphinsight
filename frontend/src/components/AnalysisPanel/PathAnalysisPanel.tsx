@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   Box,
   Typography,
@@ -146,14 +146,19 @@ export function PathAnalysisPanel({ rendererRef }: PathAnalysisPanelProps) {
   const [paths, setPaths] = useState<PathInfo[]>([]);
   const [highlightedPathId, setHighlightedPathId] = useState<string | null>(null);
   const [error, setError] = useState<string>('');
+  const [snapshot, setSnapshot] = useState<{
+    nodes: Array<{ id: string; label?: string }>;
+    edges: RendererEdge[];
+    labels: Map<string, string>;
+  } | null>(null);
 
-  const snapshot = useMemo(() => {
-    if (!rendererRef.current) return null;
+  useEffect(() => {
+    if (!rendererRef.current) return;
     const nodes = rendererRef.current.getAllNodes();
     const edges = normalizeEdges(rendererRef.current.getAllEdges());
     const labels = new Map(nodes.map((node) => [node.id, node.label || node.id] as const));
-    return { nodes, edges, labels };
-  }, [rendererRef, graphData?.stats?.executionTime]);
+    setSnapshot({ nodes, edges, labels });
+  }, [rendererRef, graphData]);
 
   const nodeOptions = useMemo(() => {
     if (!snapshot) return [];

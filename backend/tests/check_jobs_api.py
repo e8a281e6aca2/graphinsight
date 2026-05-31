@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import time
 import urllib.error
 import urllib.request
 
@@ -35,6 +36,30 @@ def _data(body: dict | str) -> dict | list | None:
     if isinstance(body, dict):
         return body.get("data")
     return None
+
+
+def _get_job(base: str, token: str, job_id: int) -> tuple[int, dict | str]:
+    return _request("GET", f"{base}/api/v1/admin/jobs/{job_id}", token=token)
+
+
+def _wait_terminal(base: str, token: str, job_id: int, *, timeout_seconds: float = 30.0) -> dict | None:
+    deadline = time.time() + timeout_seconds
+    last: dict | None = None
+    while time.time() < deadline:
+        status, body = _get_job(base, token, job_id)
+        if status != 200:
+            print(f"GET_JOB_FAIL status={status} body={body}")
+            return None
+        data = _data(body)
+        if not isinstance(data, dict):
+            print(f"GET_JOB_INVALID body={body}")
+            return None
+        last = data
+        state = str(data.get("status") or "")
+        if state in {"succeeded", "failed", "cancelled"}:
+            return data
+        time.sleep(0.5)
+    return last
 
 
 def main() -> int:
@@ -64,7 +89,12 @@ def main() -> int:
             print(f"LOGIN_NO_TOKEN body={body}")
             return 1
 
-    create_payload = {"tenant_id": "t-demo", "project_id": "p-demo", "payload": {"source": "smoke"}}
+    create_payload = {
+        "tenant_id": "t-demo",
+        "project_id": "p-demo",
+        "payload": {"source": "smoke"},
+        "max_retries": 0,
+    }
     c_status, c_body = _request("POST", f"{base}/api/v1/admin/jobs/build-graph", create_payload, token)
     print(f"CREATE_JOB status={c_status}")
     if c_status not in {200, 201}:
@@ -90,13 +120,37 @@ def main() -> int:
 
     x_status, x_body = _request("POST", f"{base}/api/v1/admin/jobs/{job_id}:cancel", token=token)
     print(f"CANCEL_JOB status={x_status}")
+    terminal = None
     if x_status != 200:
-        print(x_body)
+        current_status, current_body = _get_job(base, token, job_id)
+        current = _data(current_body)
+        current_state = current.get("status") if isinstance(current, dict) else None
+        if x_status == 400 and current_state in {"succeeded", "failed", "cancelled"}:
+            print(f"CANCEL_SKIPPED_ALREADY_TERMINAL state={current_state}")
+            terminal = current
+        else:
+            print(x_body)
+            return 1
+    else:
+        terminal = _data(x_body) if isinstance(_data(x_body), dict) else None
+
+    if not isinstance(terminal, dict) or str(terminal.get("status") or "") not in {"succeeded", "failed", "cancelled"}:
+        terminal = _wait_terminal(base, token, job_id)
+    if not isinstance(terminal, dict):
+        print("JOB_TERMINAL_MISSING")
         return 1
 
     r_status, r_body = _request("POST", f"{base}/api/v1/admin/jobs/{job_id}:retry", token=token)
     print(f"RETRY_JOB status={r_status}")
-    if r_status != 200:
+    terminal_state = str(terminal.get("status") or "")
+    retry_count = int(terminal.get("retry_count") or 0)
+    max_retries = int(terminal.get("max_retries") or 0)
+    if terminal_state in {"failed", "cancelled"} and retry_count < max_retries:
+        if r_status != 200:
+            print(r_body)
+            return 1
+    elif r_status != 400:
+        print(f"RETRY_EXPECTED_REJECT terminal_state={terminal_state} retry_count={retry_count} max_retries={max_retries}")
         print(r_body)
         return 1
 

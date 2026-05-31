@@ -1,11 +1,10 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { Box, Typography, Dialog, DialogTitle, DialogContent, IconButton } from '@mui/material';
 import { Close as CloseIcon } from '@mui/icons-material';
-import { useGraphStore } from '../../store/graphStore';
+import { useGraphStore, type GraphData } from '../../store/graphStore';
 import { adaptGraphData } from '../../renderers/core/adapter';
 import { createRenderer } from '../../renderers/canvas2d/renderer';
-import { createRenderer3D } from '../../renderers/force3d/renderer';
-import type { RendererAPI, RendererActiveElement } from '../../renderers/core/types';
+import type { RendererAPI, RendererActiveElement, RendererData } from '../../renderers/core/types';
 import { GraphControls } from './GraphControls';
 import { NodeTooltip } from './NodeTooltip';
 import { Minimap } from './Minimap';
@@ -20,6 +19,14 @@ interface GraphCanvasProps {
   onGroupingUpdate?: () => void;
 }
 
+type ExpandResponse = Pick<GraphData, 'nodes' | 'edges' | 'stats'>;
+type TooltipNodeData = {
+  id: string;
+  label: string;
+  type: string;
+  properties: Record<string, unknown>;
+};
+
 export function GraphCanvas({ rendererRef: externalRendererRef, onGroupingUpdate }: GraphCanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -27,14 +34,14 @@ export function GraphCanvas({ rendererRef: externalRendererRef, onGroupingUpdate
   const internalRendererRef = useRef<RendererAPI | null>(null);
   const rendererRef = externalRendererRef || internalRendererRef;
   const activeElementRef = useRef<RendererActiveElement | null>(null);
-  const rendererDataRef = useRef<any>(null);
+  const rendererDataRef = useRef<RendererData | null>(null);
 
   const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
 
   // 提示框状态
   const [tooltipVisible, setTooltipVisible] = useState(false);
   const [tooltipPosition, setTooltipPosition] = useState({ x: 0, y: 0 });
-  const [tooltipData, setTooltipData] = useState<any>(null);
+  const [tooltipData, setTooltipData] = useState<TooltipNodeData | null>(null);
 
   // 视频播放状态
   const [videoDialogOpen, setVideoDialogOpen] = useState(false);
@@ -56,7 +63,7 @@ export function GraphCanvas({ rendererRef: externalRendererRef, onGroupingUpdate
 
   // 性能警告状态
   const [showPerformanceWarning, setShowPerformanceWarning] = useState(false);
-  const [pendingGraphData, setPendingGraphData] = useState<any>(null);
+  const [pendingGraphData, setPendingGraphData] = useState<GraphData | null>(null);
   const [userConfirmedLargeGraph, setUserConfirmedLargeGraph] = useState(false);
   const PERFORMANCE_THRESHOLD = 500;
 
@@ -127,20 +134,20 @@ export function GraphCanvas({ rendererRef: externalRendererRef, onGroupingUpdate
         }),
       });
 
-      const data = await response.json();
+      const data = (await response.json()) as ExpandResponse;
 
       if (data.nodes && data.nodes.length > 0) {
-        const currentData = graphDataRef.current || {
+        const currentData: GraphData = graphDataRef.current || {
           nodes: [],
           edges: [],
           stats: { nodeCount: 0, edgeCount: 0, executionTime: 0 },
         };
 
-        const existingNodeIds = new Set(currentData.nodes.map((n: any) => n.id));
-        const newNodes = data.nodes.filter((n: any) => !existingNodeIds.has(n.id));
+        const existingNodeIds = new Set(currentData.nodes.map((node) => node.id));
+        const newNodes = data.nodes.filter((node) => !existingNodeIds.has(node.id));
 
-        const existingEdgeIds = new Set(currentData.edges.map((e: any) => e.id));
-        const newEdges = data.edges.filter((e: any) => !existingEdgeIds.has(e.id));
+        const existingEdgeIds = new Set(currentData.edges.map((edge) => edge.id));
+        const newEdges = data.edges.filter((edge) => !existingEdgeIds.has(edge.id));
 
         const mergedData = {
           nodes: [...currentData.nodes, ...newNodes],
@@ -184,7 +191,7 @@ export function GraphCanvas({ rendererRef: externalRendererRef, onGroupingUpdate
     if (graphData && graphData.nodes.length > 0) {
       setUserConfirmedLargeGraph(false);
     }
-  }, [graphData?.stats?.executionTime]);
+  }, [graphData]);
 
   const rendererData = useMemo(() => {
     if (graphData && graphData.nodes.length > PERFORMANCE_THRESHOLD && !userConfirmedLargeGraph && !pendingGraphData) {
@@ -396,41 +403,47 @@ export function GraphCanvas({ rendererRef: externalRendererRef, onGroupingUpdate
       }
     };
 
-    const initRenderer = () => {
+    const initRenderer = async () => {
       if (disposed) return;
       attempt += 1;
       try {
-        renderer = !is3D
-          ? createRenderer(
-              canvas!,
-              {
-                onClick: handleRendererClick,
-                onDoubleClick: handleRendererDoubleClick,
-                onContextMenu: handleRendererContextMenu,
-                onHover: handleRendererHover,
-              },
-              { minZoom: 0.25, maxZoom: 3, initialZoom: 0.5 }
-            )
-          : createRenderer3D(
-              container3d!,
-              {
-                onClick: handleRendererClick,
-                onDoubleClick: handleRendererDoubleClick,
-                onContextMenu: handleRendererContextMenu,
-                onHover: handleRendererHover,
-              },
-              {
-                minZoom: 0.25,
-                maxZoom: 3,
-                initialZoom: 0.5,
-                styleName,
-              }
-            );
+        if (!is3D) {
+          renderer = createRenderer(
+            canvas!,
+            {
+              onClick: handleRendererClick,
+              onDoubleClick: handleRendererDoubleClick,
+              onContextMenu: handleRendererContextMenu,
+              onHover: handleRendererHover,
+            },
+            { minZoom: 0.25, maxZoom: 3, initialZoom: 0.5 }
+          );
+        } else {
+          const { createRenderer3D } = await import('../../renderers/force3d/renderer');
+          if (disposed) return;
+          renderer = createRenderer3D(
+            container3d!,
+            {
+              onClick: handleRendererClick,
+              onDoubleClick: handleRendererDoubleClick,
+              onContextMenu: handleRendererContextMenu,
+              onHover: handleRendererHover,
+            },
+            {
+              minZoom: 0.25,
+              maxZoom: 3,
+              initialZoom: 0.5,
+              styleName,
+            }
+          );
+        }
       } catch (error) {
         console.error('Failed to initialize renderer:', error);
         logInitFailure(error, attempt);
         if (is3D && attempt < maxAttempts) {
-          retryTimer = window.setTimeout(initRenderer, retryDelayMs);
+          retryTimer = window.setTimeout(() => {
+            void initRenderer();
+          }, retryDelayMs);
           return;
         }
         if (!disposed) {
@@ -466,7 +479,7 @@ export function GraphCanvas({ rendererRef: externalRendererRef, onGroupingUpdate
       }
     };
 
-    initRenderer();
+    void initRenderer();
 
     return () => {
       disposed = true;
@@ -530,8 +543,8 @@ export function GraphCanvas({ rendererRef: externalRendererRef, onGroupingUpdate
   useEffect(() => {
     if (!rendererRef.current) return;
     if (highlightAll && rendererDataRef.current) {
-      const nodeIds = rendererDataRef.current.nodes.map((node: any) => node.id);
-      const edgeIds = rendererDataRef.current.edges.map((edge: any) => edge.id);
+      const nodeIds = rendererDataRef.current.nodes.map((node) => node.id);
+      const edgeIds = rendererDataRef.current.edges.map((edge) => edge.id);
       rendererRef.current.setSearchHighlight({ nodeIds, edgeIds });
       if (activeWorkspaceTab === 'graph') {
         rendererRef.current.fitTo(nodeIds, SAFE_FIT_PADDING);
@@ -558,18 +571,18 @@ export function GraphCanvas({ rendererRef: externalRendererRef, onGroupingUpdate
     );
     const docId = selectedCitation.id.split('-')[0];
     const matches = rendererDataRef.current.nodes
-      .filter((node: any) => {
+      .filter((node) => {
         const props = node.properties || {};
         if (props.chunk_id && props.chunk_id === selectedCitation.id) return true;
         if (props.doc_id && props.doc_id === docId) return true;
         if (props.name && selectedCitation.title && props.name === selectedCitation.title) return true;
         return false;
       })
-      .map((node: any) => node.id);
+      .map((node) => node.id);
 
     const entityMatches = new Set<string>();
     const keywordNodeMatches = new Set<string>();
-    rendererDataRef.current.nodes.forEach((node: any) => {
+    rendererDataRef.current.nodes.forEach((node) => {
       const props = node.properties || {};
       const nodeType = String(node.type || '').toLowerCase();
       const candidateLabel = String(props.name || props.title || node.label || '').trim().toLowerCase();
@@ -612,12 +625,12 @@ export function GraphCanvas({ rendererRef: externalRendererRef, onGroupingUpdate
     const highlightIds = Array.from(new Set([...matches, ...entityMatches, ...keywordNodeMatches]));
     const highlightIdSet = new Set(highlightIds);
     const highlightEdgeIds = rendererDataRef.current.edges
-      .filter((edge: any) => {
+      .filter((edge) => {
         const source = String(edge.source || '');
         const target = String(edge.target || '');
         return highlightIdSet.has(source) && highlightIdSet.has(target);
       })
-      .map((edge: any) => edge.id);
+      .map((edge) => edge.id);
 
     if (highlightIds.length > 0) {
       rendererRef.current.setSearchHighlight({ nodeIds: highlightIds, edgeIds: highlightEdgeIds });
@@ -629,7 +642,7 @@ export function GraphCanvas({ rendererRef: externalRendererRef, onGroupingUpdate
     }
 
     const adjacency = new Map<string, Array<{ id: string; edgeId: string }>>();
-    rendererDataRef.current.edges.forEach((edge: any) => {
+    rendererDataRef.current.edges.forEach((edge) => {
       const source = String(edge.source || '');
       const target = String(edge.target || '');
       if (!source || !target) return;
@@ -692,7 +705,7 @@ export function GraphCanvas({ rendererRef: externalRendererRef, onGroupingUpdate
     } else {
       rendererRef.current.setPathHighlight({ nodeIds: [], edgeIds: [] });
     }
-  }, [selectedCitation, activeWorkspaceTab, rendererRef, viewMode, rendererKey, setAutoPaths, highlightAll]);
+  }, [selectedCitation, activeWorkspaceTab, rendererData, rendererRef, viewMode, rendererKey, setAutoPaths, highlightAll]);
 
   useEffect(() => {
     const element = containerRef.current;

@@ -17,7 +17,7 @@ import {
   TableHead,
   TableRow,
 } from '@mui/material';
-import { useGraphStore } from '../../store/graphStore';
+import { useGraphStore, type Edge, type Node } from '../../store/graphStore';
 
 interface NodeTypeStats {
   type: string;
@@ -49,17 +49,23 @@ const getNodeTypeColor = (index: number): string => {
   return colors[index % colors.length];
 };
 
+const displayText = (value: unknown): string => {
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  return '';
+};
+
 export const GraphStatsPanel: React.FC = () => {
   const { graphData, groupingState } = useGraphStore();
-  
-  const nodes = graphData?.nodes || [];
-  const edges = graphData?.edges || [];
+
+  const nodes = useMemo(() => graphData?.nodes || [], [graphData?.nodes]);
+  const edges = useMemo(() => graphData?.edges || [], [graphData?.edges]);
 
   // 计算节点类型统计
   const nodeTypeStats = useMemo((): NodeTypeStats[] => {
     const typeCount = new Map<string, number>();
-    
-    nodes.forEach((node: any) => {
+
+    nodes.forEach((node: Node) => {
       const labels = node.labels || ['Unknown'];
       labels.forEach((label: string) => {
         typeCount.set(label, (typeCount.get(label) || 0) + 1);
@@ -80,8 +86,8 @@ export const GraphStatsPanel: React.FC = () => {
   // 计算边类型统计
   const edgeTypeStats = useMemo((): EdgeTypeStats[] => {
     const typeCount = new Map<string, number>();
-    
-    edges.forEach((edge: any) => {
+
+    edges.forEach((edge: Edge) => {
       const type = edge.type || 'Unknown';
       typeCount.set(type, (typeCount.get(type) || 0) + 1);
     });
@@ -99,17 +105,17 @@ export const GraphStatsPanel: React.FC = () => {
   // 计算度分布统计
   const degreeStats = useMemo((): DegreeStats[] => {
     const degreeMap = new Map<string, { in: number; out: number }>();
-    
+
     // 初始化所有节点的度为0
-    nodes.forEach((node: any) => {
+    nodes.forEach((node: Node) => {
       degreeMap.set(node.id, { in: 0, out: 0 });
     });
 
     // 计算每个节点的入度和出度
-    edges.forEach((edge: any) => {
+    edges.forEach((edge: Edge) => {
       const source = edge.source;
       const target = edge.target;
-      
+
       if (degreeMap.has(source)) {
         degreeMap.get(source)!.out++;
       }
@@ -119,17 +125,17 @@ export const GraphStatsPanel: React.FC = () => {
     });
 
     return nodes
-      .map((node: any) => {
+      .map((node: Node) => {
         const degrees = degreeMap.get(node.id) || { in: 0, out: 0 };
         return {
           nodeId: node.id,
-          label: node.properties?.name || node.id,
+          label: displayText(node.properties?.name) || node.id,
           degree: degrees.in + degrees.out,
           inDegree: degrees.in,
           outDegree: degrees.out
         };
       })
-      .sort((a: any, b: any) => b.degree - a.degree)
+      .sort((a, b) => b.degree - a.degree)
       .slice(0, 10); // 只显示前10个高度节点
   }, [nodes, edges]);
 
@@ -139,7 +145,7 @@ export const GraphStatsPanel: React.FC = () => {
     const totalEdges = edges.length;
     const avgDegree = totalNodes > 0 ? (totalEdges * 2) / totalNodes : 0;
     const density = totalNodes > 1 ? (totalEdges * 2) / (totalNodes * (totalNodes - 1)) : 0;
-    
+
     return {
       totalNodes,
       totalEdges,
@@ -226,7 +232,7 @@ export const GraphStatsPanel: React.FC = () => {
                     <Chip
                       size="small"
                       label={stat.type}
-                      sx={{ 
+                      sx={{
                         backgroundColor: stat.color,
                         color: 'white',
                         minWidth: 60
@@ -239,8 +245,8 @@ export const GraphStatsPanel: React.FC = () => {
                     <LinearProgress
                       variant="determinate"
                       value={stat.percentage}
-                      sx={{ 
-                        height: 8, 
+                      sx={{
+                        height: 8,
                         borderRadius: 4,
                         backgroundColor: 'grey.200',
                         '& .MuiLinearProgress-bar': {
@@ -286,8 +292,8 @@ export const GraphStatsPanel: React.FC = () => {
                       <LinearProgress
                         variant="determinate"
                         value={stat.percentage}
-                        sx={{ 
-                          height: 8, 
+                        sx={{
+                          height: 8,
                           borderRadius: 4,
                           backgroundColor: 'grey.200',
                           '& .MuiLinearProgress-bar': {

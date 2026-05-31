@@ -26,6 +26,7 @@ import { profileApi } from '../../services/adminService';
 import type { ProfileInfo } from '../../types/admin';
 import PasswordDialog from '../../components/Admin/PasswordDialog';
 import AdminLayout from '../../components/Admin/AdminLayout';
+import { getErrorMessage } from '../../utils/errorMessage';
 
 const ProfilePage: React.FC = () => {
   const navigate = useNavigate();
@@ -57,8 +58,8 @@ const ProfilePage: React.FC = () => {
         full_name: data.full_name || '',
         phone: data.phone || '',
       });
-    } catch (err: any) {
-      setError(err.message || '加载个人信息失败');
+    } catch (err: unknown) {
+      setError(getErrorMessage(err, '加载个人信息失败'));
     } finally {
       setLoading(false);
     }
@@ -87,8 +88,8 @@ const ProfilePage: React.FC = () => {
       setSuccess('保存成功！');
       
       setTimeout(() => setSuccess(''), 3000);
-    } catch (err: any) {
-      setError(err.message || '保存失败');
+    } catch (err: unknown) {
+      setError(getErrorMessage(err, '保存失败'));
     } finally {
       setSaving(false);
     }

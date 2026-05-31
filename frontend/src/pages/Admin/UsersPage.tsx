@@ -1,7 +1,7 @@
 /**
  * 用户管理页面
  */
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   Alert,
   Box,
@@ -38,6 +38,7 @@ import type {
   AdminUserBatchStatusResult,
   AdminUserItem,
 } from '../../types/admin';
+import { getErrorMessage } from '../../utils/errorMessage';
 
 type BatchResultView = {
   actionLabel: string;
@@ -97,15 +98,11 @@ const UsersPage: React.FC = () => {
   });
 
   useEffect(() => {
-    loadUsers();
-  }, [page, rowsPerPage, isActive]);
-
-  useEffect(() => {
     const currentIds = new Set(items.map((item) => item.id));
     setSelectedIds((prev) => prev.filter((id) => currentIds.has(id)));
   }, [items]);
 
-  const loadUsers = async () => {
+  const loadUsers = useCallback(async () => {
     setLoading(true);
     setError('');
     try {
@@ -117,12 +114,16 @@ const UsersPage: React.FC = () => {
       });
       setItems(response.items || []);
       setTotal(response.total || 0);
-    } catch (err: any) {
-      setError(err.message || '加载用户失败');
+    } catch (err: unknown) {
+      setError(getErrorMessage(err, '加载用户失败'));
     } finally {
       setLoading(false);
     }
-  };
+  }, [isActive, page, rowsPerPage, search]);
+
+  useEffect(() => {
+    loadUsers();
+  }, [loadUsers]);
 
   const handleSearch = () => {
     if (page !== 0) {
@@ -158,8 +159,8 @@ const UsersPage: React.FC = () => {
       });
       setNotice('用户创建成功');
       await loadUsers();
-    } catch (err: any) {
-      setError(err.message || '创建用户失败');
+    } catch (err: unknown) {
+      setError(getErrorMessage(err, '创建用户失败'));
     } finally {
       setCreateSubmitting(false);
     }
@@ -171,8 +172,8 @@ const UsersPage: React.FC = () => {
       await usersApi.toggleUserStatus(user.id);
       setNotice(`已${user.is_active ? '停用' : '启用'}用户 ${user.username}`);
       await loadUsers();
-    } catch (err: any) {
-      setError(err.message || '更新状态失败');
+    } catch (err: unknown) {
+      setError(getErrorMessage(err, '更新状态失败'));
     } finally {
       setActionLoadingUserId(null);
     }
@@ -197,8 +198,8 @@ const UsersPage: React.FC = () => {
       setDeleteTarget(null);
       setDeleteConfirmText('');
       await loadUsers();
-    } catch (err: any) {
-      setError(err.message || '删除用户失败');
+    } catch (err: unknown) {
+      setError(getErrorMessage(err, '删除用户失败'));
     } finally {
       setDeleteSubmitting(false);
       setActionLoadingUserId(null);
@@ -238,8 +239,8 @@ const UsersPage: React.FC = () => {
       setEditTarget(null);
       setNotice(`用户 ${editTarget.username} 信息已更新`);
       await loadUsers();
-    } catch (err: any) {
-      setError(err.message || '更新用户失败');
+    } catch (err: unknown) {
+      setError(getErrorMessage(err, '更新用户失败'));
     } finally {
       setEditSubmitting(false);
     }
@@ -284,8 +285,8 @@ const UsersPage: React.FC = () => {
       });
       setSelectedIds([]);
       await loadUsers();
-    } catch (err: any) {
-      setError(err.message || '批量更新状态失败');
+    } catch (err: unknown) {
+      setError(getErrorMessage(err, '批量更新状态失败'));
     } finally {
       setLoading(false);
     }
@@ -323,8 +324,8 @@ const UsersPage: React.FC = () => {
       setBatchDeleteOpen(false);
       setBatchDeleteConfirmText('');
       await loadUsers();
-    } catch (err: any) {
-      setError(err.message || '批量删除失败');
+    } catch (err: unknown) {
+      setError(getErrorMessage(err, '批量删除失败'));
     } finally {
       setBatchDeleteSubmitting(false);
     }
@@ -347,8 +348,8 @@ const UsersPage: React.FC = () => {
       link.remove();
       window.URL.revokeObjectURL(url);
       setNotice('用户 CSV 导出完成');
-    } catch (err: any) {
-      setError(err.message || '导出失败');
+    } catch (err: unknown) {
+      setError(getErrorMessage(err, '导出失败'));
     } finally {
       setExporting(false);
     }
@@ -371,8 +372,8 @@ const UsersPage: React.FC = () => {
       setResetTarget(null);
       setResetPassword('');
       setResetConfirmText('');
-    } catch (err: any) {
-      setError(err.message || '重置密码失败');
+    } catch (err: unknown) {
+      setError(getErrorMessage(err, '重置密码失败'));
     } finally {
       setResetSubmitting(false);
     }
@@ -414,8 +415,8 @@ const UsersPage: React.FC = () => {
       setBatchResetOpen(false);
       setBatchResetPassword('');
       setBatchResetConfirmText('');
-    } catch (err: any) {
-      setError(err.message || '批量重置密码失败');
+    } catch (err: unknown) {
+      setError(getErrorMessage(err, '批量重置密码失败'));
     } finally {
       setBatchResetSubmitting(false);
     }

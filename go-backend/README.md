@@ -6,7 +6,7 @@ Current execution model:
 
 1. Go is the default external API entry.
 2. Python remains the upstream capability layer for AI, document parsing, and model-facing flows.
-3. Some admin routes are still proxied to Python and will be gradually pulled into Go.
+3. Known admin routes are owned by Go at the entry layer and proxied to Python until their implementations are pulled into Go.
 
 ## Features in this bootstrap
 
@@ -19,7 +19,7 @@ Current execution model:
 7. Contract-compatible graph endpoints: `POST /api/expand`, `GET /api/node/{id}`
 8. RBAC guard on Go native business APIs (compatible with admin token flow)
 9. Go orchestrated extraction routes (Python keeps extraction algorithms)
-10. Hybrid proxy routes to Python backend (media flow and part of admin flow)
+10. Hybrid proxy routes to Python backend (media flow and known admin modules only)
 
 ## Run locally
 
@@ -84,7 +84,7 @@ Key vars:
 18. `ORCHESTRATOR_RETRY_MAX_BACKOFF_MS`
 19. `ORCHESTRATOR_SAFE_RETRY_DOCQA`
 20. `IDEMPOTENCY_CACHE_TTL_SECONDS`
-21. `RBAC_ENFORCE_BUSINESS_API`
+21. `RBAC_ENFORCE_BUSINESS_API` (default: `true`; set `false` only for local migration diagnostics)
 
 Neo4j config source:
 
@@ -106,13 +106,19 @@ Expected response shape:
 
 ```json
 {
-  "nodes": [],
-  "edges": [],
-  "stats": {
-    "nodeCount": 0,
-    "edgeCount": 0,
-    "executionTime": 0.012
-  }
+  "code": 200,
+  "message": "查询成功",
+  "data": {
+    "nodes": [],
+    "edges": [],
+    "stats": {
+      "nodeCount": 0,
+      "edgeCount": 0,
+      "executionTime": 0.012
+    }
+  },
+  "timestamp": "2026-05-14T00:00:00Z",
+  "trace_id": "trace-id"
 }
 ```
 
@@ -131,7 +137,9 @@ curl -X POST http://localhost:8081/api/expand \
 1. `go-native`: `/health`, `/api/query`, `/api/expand`, `/api/node/{id}`.
 2. `go-orchestrator`: document, graph build, DocQA, deep research, and NL2Cypher business routes.
 3. `go-admin-proxy`: known admin modules such as auth, config, monitor, jobs, QA traces, logs, RBAC, users, and profile.
-4. `python-proxy`: legacy fallback routes such as `/api/media/**` and unknown `/api/v1/**` compatibility paths.
+4. `python-proxy`: media compatibility routes under `/api/media/**` only.
+
+Unknown `/api/v1/**` routes are not proxied. Known admin modules are explicitly registered as `go-admin-proxy`; unknown admin paths return Go-owned 404 responses.
 
 Go marks responses with `X-GraphInsight-Route-Owner` so smoke tests and operators can see which layer owns a request.
 
@@ -226,5 +234,5 @@ Recommended timeout knobs:
 
 ## Next migration step
 
-1. Make Go the default path for frontend, smoke, and preflight checks.
-2. Pull `monitor / jobs / qa-traces` out of blanket `/api/v1/**` proxy ownership.
+1. Move Python-backed admin proxy modules to native Go implementations by priority.
+2. Replace Python upstream authorization checks with native Go RBAC decisions when the permission model is fully mirrored.

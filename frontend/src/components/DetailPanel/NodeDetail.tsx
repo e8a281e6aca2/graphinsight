@@ -19,6 +19,12 @@ import { NodeTypeStyleConfig } from './NodeTypeStyleConfig';
 import { useGraphStore } from '../../store/graphStore';
 import type { NodeDetailResponse } from '../../types/api';
 
+function displayText(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  return '';
+}
+
 interface NodeDetailProps {
   nodeDetail: NodeDetailResponse | null;
   isLoading: boolean;
@@ -58,7 +64,7 @@ export function NodeDetail({ nodeDetail, isLoading, error }: NodeDetailProps) {
 
 
 
-  const handleStyleConfigChange = (style: any) => {
+  const handleStyleConfigChange = (style: Parameters<typeof setNodeTypeStyle>[1]) => {
     if (selectedNodeType) {
       console.log('🎨 NodeDetail - Applying style config for:', selectedNodeType, style);
       setNodeTypeStyle(selectedNodeType, style);
@@ -152,8 +158,8 @@ export function NodeDetail({ nodeDetail, isLoading, error }: NodeDetailProps) {
 
   // 获取节点名称
   const nodeName =
-    nodeDetail.properties.name ||
-    nodeDetail.properties.title ||
+    displayText(nodeDetail.properties.name) ||
+    displayText(nodeDetail.properties.title) ||
     nodeDetail.id;
 
   return (

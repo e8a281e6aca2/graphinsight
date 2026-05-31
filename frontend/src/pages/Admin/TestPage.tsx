@@ -1,23 +1,18 @@
 /**
  * 测试页面 - 用于诊断登录后的问题
  */
-import React, { useEffect, useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { Box, Container, Card, CardContent, Typography, Button, Alert } from '@mui/material';
 import { useNavigate } from 'react-router-dom';
 import { monitorApi } from '../../services/adminService';
 import AdminLayout from '../../components/Admin/AdminLayout';
+import { getErrorMessage } from '../../utils/errorMessage';
 
 const TestPage: React.FC = () => {
   const navigate = useNavigate();
-  const [token, setToken] = useState('');
-  const [testResult, setTestResult] = useState<any>(null);
+  const token = useMemo(() => localStorage.getItem('admin_token') || '无 Token', []);
+  const [testResult, setTestResult] = useState<unknown>(null);
   const [error, setError] = useState('');
-
-  useEffect(() => {
-    const storedToken = localStorage.getItem('admin_token');
-    setToken(storedToken || '无 Token');
-    console.log('TestPage - Token:', storedToken);
-  }, []);
 
   const testApi = async () => {
     try {
@@ -26,9 +21,9 @@ const TestPage: React.FC = () => {
       const result = await monitorApi.getHealth();
       console.log('API 调用成功:', result);
       setTestResult(result);
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('API 调用失败:', err);
-      setError(err.message || 'API 调用失败');
+      setError(getErrorMessage(err, 'API 调用失败'));
     }
   };
 
@@ -77,7 +72,7 @@ const TestPage: React.FC = () => {
               </Alert>
             )}
 
-            {testResult && (
+            {testResult !== null && (
               <Box sx={{ mt: 3 }}>
                 <Typography variant="subtitle1" gutterBottom>
                   API 调用结果:

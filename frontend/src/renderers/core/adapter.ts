@@ -8,7 +8,7 @@ const DEFAULT_RADIUS = 24;
 
 export function adaptGraphData(
   graphData: GraphData | null,
-  nodeTypeStyles?: Record<string, any>
+  nodeTypeStyles?: Record<string, { color?: string; size?: number; caption?: string[] }>
 ): RendererData {
   if (!graphData) {
     return emptyRendererData();
@@ -110,7 +110,7 @@ export function adaptGraphData(
 }
 
 function extractMedia(
-  properties: Record<string, any>
+  properties: Record<string, unknown>
 ): {
   image?: string;
   video?: string;

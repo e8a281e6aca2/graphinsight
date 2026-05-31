@@ -24,6 +24,7 @@ import {
 } from '@mui/icons-material';
 import { useGraphStore } from '../../store/graphStore';
 import type { RendererAPI } from '../../renderers/core/types';
+import { getErrorMessage } from '../../utils/errorMessage';
 
 interface ExportDialogProps {
   open: boolean;
@@ -55,8 +56,8 @@ export function ExportDialog({ open, onClose, rendererRef }: ExportDialogProps) 
         await exportJSON();
       }
       onClose();
-    } catch (err: any) {
-      setError(err.message || '导出失败');
+    } catch (err: unknown) {
+      setError(getErrorMessage(err, '导出失败'));
       console.error('Export error:', err);
     } finally {
       setIsExporting(false);

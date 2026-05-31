@@ -455,7 +455,17 @@ class JobService:
         note = payload.get("note")
         doc_ids = [str(item).strip() for item in (payload.get("doc_ids") or []) if str(item).strip()]
 
-        stats = DocumentGraphService().build_graph(force=force, doc_ids=doc_ids or None)
+        try:
+            stats = DocumentGraphService().build_graph(force=force, doc_ids=doc_ids or None)
+        except Exception:
+            try:
+                get_neo4j_service().ensure_connected(force_reconnect=True)
+            except Exception as reconnect_exc:  # noqa: BLE001
+                logger.warning(
+                    "建图失败后刷新 Neo4j 连接失败",
+                    context={"job_id": job_id, "error": str(reconnect_exc)},
+                )
+            raise
         failures = stats.get("failures", [])
         processed = stats.get("documents", 0)
         total = stats.get("total_documents", 0)
@@ -521,7 +531,8 @@ class JobService:
         before_state: List[Dict[str, Any]] = []
         after_state: List[Dict[str, Any]] = []
 
-        with neo4j_service.driver.session() as session:
+        neo4j_service.ensure_connected()
+        with neo4j_service.session() as session:
             try:
                 before_state = [
                     dict(item)

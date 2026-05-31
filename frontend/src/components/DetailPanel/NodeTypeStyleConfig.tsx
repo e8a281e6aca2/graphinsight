@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import {
   Dialog,
   DialogTitle,
@@ -53,16 +53,21 @@ export function NodeTypeStyleConfig({
   availableProperties,
   onConfigChange,
 }: NodeTypeStyleConfigProps) {
-  const [tempConfig, setTempConfig] = useState(config);
-
-  useEffect(() => {
-    setTempConfig(config);
-  }, [config, open]);
+  const [draft, setDraft] = useState<{ key: string; value: NodeTypeStyleConfig } | null>(null);
+  const configKey = `${nodeType}:${open ? 'open' : 'closed'}`;
+  const tempConfig = draft?.key === configKey ? draft.value : config;
+  const setTempConfig = (next: NodeTypeStyleConfig | ((prev: NodeTypeStyleConfig) => NodeTypeStyleConfig)) => {
+    setDraft({
+      key: configKey,
+      value: typeof next === 'function' ? next(tempConfig) : next,
+    });
+  };
 
   const handleSave = () => {
     console.log('🎨 NodeTypeStyleConfig - Saving config for:', nodeType, tempConfig);
     onConfigChange(tempConfig);
     console.log('🎨 NodeTypeStyleConfig - Config change callback called');
+    setDraft(null);
     onClose();
   };
 

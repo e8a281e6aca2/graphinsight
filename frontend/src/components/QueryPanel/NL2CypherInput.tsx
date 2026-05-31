@@ -19,16 +19,25 @@ import {
   ExpandLess as CollapseIcon,
 } from '@mui/icons-material';
 import { buildApiUrl } from '../../utils/apiBase';
+import { getErrorMessage } from '../../utils/errorMessage';
 
 interface NL2CypherInputProps {
   onCypherGenerated: (cypher: string) => void;
   onExecute: (cypher: string) => void;
 }
 
+type NL2CypherResult = {
+  success: boolean;
+  cypher?: string;
+  error?: string;
+  explanation?: string;
+  confidence?: number;
+};
+
 export function NL2CypherInput({ onCypherGenerated, onExecute }: NL2CypherInputProps) {
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<any>(null);
+  const [result, setResult] = useState<NL2CypherResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showExamples, setShowExamples] = useState(true);
 
@@ -53,10 +62,10 @@ export function NL2CypherInput({ onCypherGenerated, onExecute }: NL2CypherInputP
         body: JSON.stringify({ natural_language: input }),
       });
 
-      const data = await response.json();
+      const data = (await response.json()) as NL2CypherResult;
       console.log('[NL2CypherInput] API 响应:', data);
 
-      if (data.success) {
+      if (data.success && data.cypher) {
         console.log('[NL2CypherInput] 生成成功，Cypher:', data.cypher);
         setResult(data);
         onCypherGenerated(data.cypher);
@@ -64,8 +73,8 @@ export function NL2CypherInput({ onCypherGenerated, onExecute }: NL2CypherInputP
         console.error('[NL2CypherInput] 生成失败:', data.error);
         setError(data.error || '生成失败');
       }
-    } catch (err: any) {
-      setError('生成失败：' + err.message);
+    } catch (err: unknown) {
+      setError('生成失败：' + getErrorMessage(err, '未知错误'));
     } finally {
       setLoading(false);
     }
@@ -182,7 +191,7 @@ export function NL2CypherInput({ onCypherGenerated, onExecute }: NL2CypherInputP
             已生成 Cypher 查询
           </Typography>
           <Typography variant="body2" sx={{ mb: 1 }}>
-            {result.explanation}
+            {result.explanation || '已根据问题生成查询语句'}
           </Typography>
           <Box
             sx={{
@@ -198,7 +207,7 @@ export function NL2CypherInput({ onCypherGenerated, onExecute }: NL2CypherInputP
             {result.cypher}
           </Box>
           <Typography variant="caption" color="text.secondary">
-            置信度：{(result.confidence * 100).toFixed(0)}%
+            置信度：{((result.confidence ?? 0) * 100).toFixed(0)}%
           </Typography>
         </Alert>
       )}

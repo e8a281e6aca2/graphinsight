@@ -2,23 +2,56 @@
 
 export interface QueryRequest {
   cypher: string;
-  parameters?: Record<string, any>;
+  parameters?: Record<string, unknown>;
 }
 
 export interface QueryResponse {
   nodes: Array<{
     id: string;
     labels: string[];
-    properties: Record<string, any>;
+    properties: Record<string, unknown>;
   }>;
   edges: Array<{
     id: string;
     source: string;
     target: string;
     type: string;
-    properties: Record<string, any>;
+    properties: Record<string, unknown>;
   }>;
   stats?: {
+    nodeCount: number;
+    edgeCount: number;
+    executionTime: number;
+  };
+}
+
+export interface GraphSchemaSummary {
+  labels: Array<{
+    label: string;
+    count: number;
+  }>;
+  relationships: Array<{
+    type: string;
+    count: number;
+  }>;
+  patterns: Array<{
+    sourceLabels: string[];
+    relationship: string;
+    targetLabels: string[];
+    count: number;
+  }>;
+  nodeProperties: Array<{
+    owner: string;
+    key: string;
+    count: number;
+  }>;
+  relProperties: Array<{
+    owner: string;
+    key: string;
+    count: number;
+  }>;
+  sampleQuery: string;
+  stats: {
     nodeCount: number;
     edgeCount: number;
     executionTime: number;
@@ -42,7 +75,7 @@ export interface MediaResource {
 export interface NodeDetailResponse {
   id: string;
   labels: string[];
-  properties: Record<string, any>;
+  properties: Record<string, unknown>;
   media: {
     images: MediaResource[];
     videos: MediaResource[];
@@ -54,5 +87,5 @@ export interface ApiError {
   error: string;
   code: string;
   message: string;
-  details?: any;
+  details?: unknown;
 }

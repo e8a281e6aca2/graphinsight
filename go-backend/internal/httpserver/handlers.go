@@ -1,6 +1,7 @@
 package httpserver
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -52,6 +53,7 @@ func registerRoutes(
 			"version": cfg.Version,
 		}
 		if graphInitErr != nil {
+			data["status"] = "degraded"
 			data["neo4j"] = map[string]interface{}{
 				"connected":        false,
 				"error":            graphInitErr.Error(),
@@ -59,13 +61,29 @@ func registerRoutes(
 				"config_source":    cfg.Neo4jConfigResolvedSource,
 				"resolution_error": cfg.Neo4jConfigResolutionErr,
 			}
-		} else {
+		} else if graphSvc == nil {
+			data["status"] = "degraded"
 			data["neo4j"] = map[string]interface{}{
-				"connected":     true,
+				"connected":     false,
+				"error":         "neo4j service is not initialized",
+				"config_mode":   cfg.Neo4jConfigSource,
+				"config_source": cfg.Neo4jConfigResolvedSource,
+			}
+		} else {
+			ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+			defer cancel()
+			healthErr := graphSvc.CheckHealth(ctx)
+			connected := healthErr == nil
+			data["neo4j"] = map[string]interface{}{
+				"connected":     connected,
 				"uri":           cfg.Neo4jURI,
 				"database":      cfg.Neo4jDatabase,
 				"config_mode":   cfg.Neo4jConfigSource,
 				"config_source": cfg.Neo4jConfigResolvedSource,
+			}
+			if healthErr != nil {
+				data["status"] = "degraded"
+				data["neo4j"].(map[string]interface{})["error"] = healthErr.Error()
 			}
 		}
 		if proxyInitErr != nil {
@@ -132,7 +150,7 @@ func registerNativeGraphRoutes(
 			WriteJSON(w, http.StatusMethodNotAllowed, "Method not allowed", nil)
 			return
 		}
-		if graphSvc == nil {
+		if graphSvc == nil || graphInitErr != nil {
 			logger.Error("query failed: graph service unavailable", "init_error", graphInitErr)
 			writeGraphError(w, http.StatusServiceUnavailable, map[string]interface{}{
 				"error":   "Database unavailable",
@@ -160,9 +178,33 @@ func registerNativeGraphRoutes(
 			return
 		}
 
-		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(resp)
+		WriteJSON(w, http.StatusOK, "查询成功", resp)
+	})))
+
+	mux.HandleFunc("/api/graph/schema", withRouteOwner("go-native", guard.wrap("graph:read", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			WriteJSON(w, http.StatusMethodNotAllowed, "Method not allowed", nil)
+			return
+		}
+		if graphSvc == nil || graphInitErr != nil {
+			logger.Error("schema discovery failed: graph service unavailable", "init_error", graphInitErr)
+			writeGraphError(w, http.StatusServiceUnavailable, map[string]interface{}{
+				"error":   "Database unavailable",
+				"code":    "DATABASE_UNAVAILABLE",
+				"message": "Cannot connect to Neo4j database",
+			})
+			return
+		}
+
+		resp, err := graphSvc.DiscoverSchema(r.Context())
+		if err != nil {
+			status, body := graph.ClassifyQueryError(err)
+			logger.Warn("schema discovery failed", "status", status, "error", err.Error())
+			writeGraphError(w, status, body)
+			return
+		}
+
+		WriteJSON(w, http.StatusOK, "获取图谱结构成功", resp)
 	})))
 
 	mux.HandleFunc("/api/expand", withRouteOwner("go-native", guard.wrap("graph:read", func(w http.ResponseWriter, r *http.Request) {
@@ -170,7 +212,7 @@ func registerNativeGraphRoutes(
 			WriteJSON(w, http.StatusMethodNotAllowed, "Method not allowed", nil)
 			return
 		}
-		if graphSvc == nil {
+		if graphSvc == nil || graphInitErr != nil {
 			logger.Error("expand failed: graph service unavailable", "init_error", graphInitErr)
 			writeGraphError(w, http.StatusServiceUnavailable, map[string]interface{}{
 				"error":   "Database unavailable",
@@ -198,9 +240,7 @@ func registerNativeGraphRoutes(
 			return
 		}
 
-		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(resp)
+		WriteJSON(w, http.StatusOK, "展开节点成功", resp)
 	})))
 
 	mux.HandleFunc("/api/node/", withRouteOwner("go-native", guard.wrap("graph:read", func(w http.ResponseWriter, r *http.Request) {
@@ -208,7 +248,7 @@ func registerNativeGraphRoutes(
 			WriteJSON(w, http.StatusMethodNotAllowed, "Method not allowed", nil)
 			return
 		}
-		if graphSvc == nil {
+		if graphSvc == nil || graphInitErr != nil {
 			logger.Error("node detail failed: graph service unavailable", "init_error", graphInitErr)
 			writeGraphError(w, http.StatusServiceUnavailable, map[string]interface{}{
 				"error":   "Database unavailable",
@@ -235,9 +275,7 @@ func registerNativeGraphRoutes(
 			return
 		}
 
-		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(resp)
+		WriteJSON(w, http.StatusOK, "获取节点详情成功", resp)
 	})))
 }
 
@@ -353,8 +391,6 @@ func registerLegacyPythonProxyRoutes(
 ) {
 	registerProxyRoute(mux, logger, proxyClient, proxyInitErr, "/api/media")
 	registerProxyRoute(mux, logger, proxyClient, proxyInitErr, "/api/media/")
-	registerProxyRoute(mux, logger, proxyClient, proxyInitErr, "/api/v1")
-	registerProxyRoute(mux, logger, proxyClient, proxyInitErr, "/api/v1/")
 }
 
 func registerProxyRoute(mux *http.ServeMux, logger *slog.Logger, proxyClient *proxy.Client, proxyInitErr error, path string) {
@@ -741,7 +777,20 @@ func buildAdminProxyHandler(
 }
 
 func writeGraphError(w http.ResponseWriter, status int, payload map[string]interface{}) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(payload)
+	message := "请求失败"
+	if v, ok := payload["message"].(string); ok && v != "" {
+		message = v
+	} else if v, ok := payload["error"].(string); ok && v != "" {
+		message = v
+	}
+
+	data := make(map[string]interface{}, len(payload))
+	for k, v := range payload {
+		if k == "code" {
+			data["error_code"] = v
+			continue
+		}
+		data[k] = v
+	}
+	WriteJSON(w, status, message, data)
 }

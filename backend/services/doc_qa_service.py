@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional
 
 from config import get_settings
 from core import get_logger
+from services.document_graph_service import DocumentGraphService
 from services.openai_client_factory import build_openai_client
 from services.neo4j_service import get_neo4j_service
 
@@ -452,11 +453,18 @@ class DocQAService:
             result["neo4j"] = {"ok": False, "error": str(exc)}
             return result
 
-        smoke_chunks = self._retrieve_chunks("文档", 1)
-        result["retrieval"] = {
-            "ok": len(smoke_chunks) > 0,
-            "top_hit": smoke_chunks[0]["id"] if smoke_chunks else None,
-        }
+        try:
+            DocumentGraphService().ensure_schema()
+            smoke_chunks = self._retrieve_chunks("文档", 1)
+            result["retrieval"] = {
+                "ok": len(smoke_chunks) > 0,
+                "top_hit": smoke_chunks[0]["id"] if smoke_chunks else None,
+            }
+        except Exception as exc:  # noqa: BLE001
+            result["retrieval"] = {
+                "ok": False,
+                "error": str(exc),
+            }
 
         if not probe_llm:
             result["llm"]["ok"] = bool(self._client)

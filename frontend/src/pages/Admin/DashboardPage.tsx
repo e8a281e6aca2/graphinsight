@@ -2,7 +2,7 @@
  * 管理系统仪表盘 v3.0
  * 使用标准化 API + 图表展示
  */
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   Box,
   Container,
@@ -33,6 +33,7 @@ import LogStatsChart from '../../components/Admin/Charts/LogStatsChart';
 import { useSystemMetrics } from '../../hooks/useSystemMetrics';
 import { usePageVisible } from '../../hooks/usePageVisible';
 import AdminLayout from '../../components/Admin/AdminLayout';
+import { getErrorMessage } from '../../utils/errorMessage';
 
 const DashboardPage: React.FC = () => {
   const navigate = useNavigate();
@@ -49,17 +50,7 @@ const DashboardPage: React.FC = () => {
     updateInterval: 30000,
   });
 
-  useEffect(() => {
-    fetchStats();
-    // 每 30 秒自动刷新
-    if (!pageVisible) {
-      return undefined;
-    }
-    const interval = window.setInterval(fetchStats, 30000);
-    return () => window.clearInterval(interval);
-  }, [pageVisible]);
-
-  const fetchStats = async () => {
+  const fetchStats = useCallback(async () => {
     try {
       setLoading(true);
       setError('');
@@ -96,7 +87,7 @@ const DashboardPage: React.FC = () => {
         addDataPoint(systemData.value);
       } else {
         console.error('Dashboard - 系统数据失败:', systemData.reason);
-        failures.push(`系统指标：${(systemData.reason as any)?.message || '请求失败'}`);
+        failures.push(`系统指标：${getErrorMessage(systemData.reason, '请求失败')}`);
       }
       
       if (healthData.status === 'fulfilled') {
@@ -104,7 +95,7 @@ const DashboardPage: React.FC = () => {
         setHealthStatus(healthData.value);
       } else {
         console.error('Dashboard - 健康数据失败:', healthData.reason);
-        failures.push(`健康状态：${(healthData.reason as any)?.message || '请求失败'}`);
+        failures.push(`健康状态：${getErrorMessage(healthData.reason, '请求失败')}`);
       }
       
       if (logData.status === 'fulfilled') {
@@ -112,7 +103,7 @@ const DashboardPage: React.FC = () => {
         setLogStats(logData.value);
       } else {
         console.error('Dashboard - 日志数据失败:', logData.reason);
-        failures.push(`日志统计：${(logData.reason as any)?.message || '请求失败'}`);
+        failures.push(`日志统计：${getErrorMessage(logData.reason, '请求失败')}`);
       }
 
       if (failures.length > 0 && !systemStats && !healthStatus && !logStats) {
@@ -122,14 +113,24 @@ const DashboardPage: React.FC = () => {
       // 即使部分数据加载失败,也不显示错误,只在控制台记录
       console.log('Dashboard - 数据加载完成');
       
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Dashboard error:', err);
       // 不设置错误,让页面显示已加载的数据
       console.error('Dashboard 加载出错,但继续显示可用数据');
     } finally {
       setLoading(false);
     }
-  };
+  }, [addDataPoint, healthStatus, logStats, navigate, systemStats]);
+
+  useEffect(() => {
+    fetchStats();
+    // 每 30 秒自动刷新
+    if (!pageVisible) {
+      return undefined;
+    }
+    const interval = window.setInterval(fetchStats, 30000);
+    return () => window.clearInterval(interval);
+  }, [fetchStats, pageVisible]);
 
   const getStatusColor = (status: string): 'success' | 'error' | 'warning' | 'default' => {
     switch (status.toLowerCase()) {

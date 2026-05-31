@@ -3,17 +3,34 @@
  * 根据用户配置生成 Cytoscape 样式
  */
 
+import type { NodeTypeStyle } from './graphDataConverter';
 
+type CytoscapeStyleValue = string | number;
+type CytoscapeStyleMap = Record<string, CytoscapeStyleValue>;
+type CytoscapeStyleRule = {
+  selector: string;
+  style: CytoscapeStyleMap;
+};
+
+type CytoscapeStyleCollection = {
+  length: number;
+  style: (styles: CytoscapeStyleMap) => void;
+};
+
+type CytoscapeStyleTarget = {
+  elements: () => { length: number };
+  nodes: (selector: string) => CytoscapeStyleCollection;
+};
 
 export function generateDynamicStylesByNodeType(
-  nodeTypeStyles: Record<string, any>,
+  nodeTypeStyles: Record<string, NodeTypeStyle>,
   isDarkMode: boolean
-): any[] {
+): CytoscapeStyleRule[] {
   console.log('🎨 Generating dynamic styles by node type:', nodeTypeStyles);
   
   const backgroundColor = isDarkMode ? '#1e1e1e' : '#f5f5f5';
 
-  const styles: any[] = [];
+  const styles: CytoscapeStyleRule[] = [];
 
   // 默认节点样式 (精致风格)
   const defaultNodeStyle = {
@@ -73,20 +90,20 @@ export function generateDynamicStylesByNodeType(
     // 使用 data() 函数来匹配节点类型
     const nodeTypeSelector = `node[type="${nodeType}"]`;
     
-    const nodeTypeStyle: any = {
+    const nodeTypeStyle: CytoscapeStyleRule = {
       selector: nodeTypeSelector,
       style: {
-        'background-color': config.color,
+        'background-color': config.color ?? '#60A5FA',
         label: config.showLabels ? 'data(label)' : '',
         color: '#0f172a',
         'text-valign': 'center', // 始终居中
         'text-halign': 'center', // 始终居中
         'text-margin-y': 0,
-        'font-size': `${config.labelSize}px`,
+        'font-size': `${config.labelSize ?? 12}px`,
         'font-weight': '500',
         'font-family': '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-        width: config.size,
-        height: config.size,
+        width: config.size ?? 52,
+        height: config.size ?? 52,
         'border-width': 1,
         'border-color': 'rgba(15, 23, 42, 0.12)',
         'text-outline-width': 0,
@@ -287,8 +304,8 @@ export function generateDynamicStylesByNodeType(
  * 应用样式到 Cytoscape 实例
  */
 export function applyNodeTypeStylesToCytoscape(
-  cy: any,
-  nodeTypeStyles: Record<string, any>
+  cy: CytoscapeStyleTarget,
+  nodeTypeStyles: Record<string, NodeTypeStyle>
 ): void {
   console.log('🎨 Applying node type styles to cytoscape, elements count:', cy.elements().length);
   
@@ -298,12 +315,12 @@ export function applyNodeTypeStylesToCytoscape(
     console.log(`🎨 Updating ${nodes.length} nodes of type "${nodeType}"`);
     
     if (nodes.length > 0) {
-      const styleUpdate: any = {
-        'background-color': config.color,
-        'width': config.size,
-        'height': config.size,
+      const styleUpdate: CytoscapeStyleMap = {
+        'background-color': config.color ?? '#1976d2',
+        'width': config.size ?? 60,
+        'height': config.size ?? 60,
         'border-width': 0, // Neo4j 风格无边框
-        'font-size': `${config.labelSize}px`,
+        'font-size': `${config.labelSize ?? 12}px`,
         'font-weight': 'normal',
         'font-family': '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
         'label': config.showLabels ? 'data(label)' : '',
@@ -337,7 +354,7 @@ export function applyNodeTypeStylesToCytoscape(
 /**
  * 获取样式预览数据（用于实时预览）
  */
-export function getNodeTypeStylePreview(nodeTypeStyle: any): {
+export function getNodeTypeStylePreview(nodeTypeStyle: NodeTypeStyle): {
   nodeSize: number;
   labelVisible: boolean;
   labelSize: number;
