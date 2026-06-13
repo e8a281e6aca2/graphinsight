@@ -20,7 +20,6 @@ import {
   Dashboard,
   Description,
   FactCheck,
-  Gavel,
   Hub,
   ManageSearch,
   MonitorHeart,
@@ -122,21 +121,13 @@ const AdminLayout: React.FC<AdminLayoutProps> = ({ title, subtitle, actions, chi
         })}
       </List>
 
-      <Stack spacing={1} sx={{ mt: 2 }}>
-        <Button
-          variant="outlined"
-          startIcon={<Logout />}
-          onClick={handleLogout}
-          sx={{ justifyContent: 'flex-start', borderRadius: 2 }}
-        >
-          退出登录
-        </Button>
+      <Stack spacing={1} sx={{ mt: 2, pt: 2, borderTop: '1px solid rgba(15, 31, 45, 0.08)' }}>
         <ListItemButton
           onClick={() => handleNavigate('/admin/profile')}
           sx={{ borderRadius: 2, backgroundColor: 'rgba(15, 31, 45, 0.04)' }}
         >
           <ListItemIcon sx={{ minWidth: 40 }}>
-            <Gavel />
+            <Person />
           </ListItemIcon>
           <ListItemText primary="个人设置" secondary="账号与安全" />
         </ListItemButton>
@@ -149,6 +140,20 @@ const AdminLayout: React.FC<AdminLayoutProps> = ({ title, subtitle, actions, chi
           </ListItemIcon>
           <ListItemText primary="打开工作台" secondary="图谱主界面" />
         </ListItemButton>
+        <Button
+          variant="outlined"
+          color="error"
+          startIcon={<Logout />}
+          onClick={handleLogout}
+          sx={{
+            justifyContent: 'flex-start',
+            borderRadius: 2,
+            mt: 1,
+            py: 1.2,
+          }}
+        >
+          退出登录
+        </Button>
       </Stack>
     </Stack>
   );

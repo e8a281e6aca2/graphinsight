@@ -1,10 +1,12 @@
-import { AppBar, Toolbar, Typography, IconButton, Box, Tooltip } from '@mui/material';
+import { AppBar, Toolbar, Typography, IconButton, Box, Tooltip, Button } from '@mui/material';
 import {
   Brightness4 as DarkModeIcon,
   Brightness7 as LightModeIcon,
   FileDownload as ExportIcon,
   Help as HelpIcon,
+  Dashboard as DashboardIcon,
 } from '@mui/icons-material';
+import { useNavigate } from 'react-router-dom';
 import { useGraphStore } from '../../store/graphStore';
 import logoSvg from '../../assets/images/logo.svg';
 
@@ -13,6 +15,7 @@ interface TopBarProps {
 }
 
 export function TopBar({ onExportClick }: TopBarProps) {
+  const navigate = useNavigate();
   const isDarkMode = useGraphStore((state) => state.isDarkMode);
   const toggleTheme = useGraphStore((state) => state.toggleTheme);
 
@@ -49,6 +52,34 @@ export function TopBar({ onExportClick }: TopBarProps) {
 
         {/* 操作按钮 */}
         <Box sx={{ display: 'flex', gap: 1, flexShrink: 0 }}>
+          <Button
+            variant="outlined"
+            color="inherit"
+            startIcon={<DashboardIcon />}
+            onClick={() => navigate('/admin/dashboard')}
+            sx={{
+              display: { xs: 'none', sm: 'inline-flex' },
+              borderColor: 'rgba(15, 31, 45, 0.24)',
+              color: 'text.primary',
+              bgcolor: 'background.paper',
+              '&:hover': {
+                borderColor: 'primary.main',
+                bgcolor: 'rgba(27, 127, 121, 0.08)',
+              },
+            }}
+          >
+            管理后台
+          </Button>
+          <Tooltip title="管理后台">
+            <IconButton
+              color="inherit"
+              size="large"
+              onClick={() => navigate('/admin/dashboard')}
+              sx={{ display: { xs: 'inline-flex', sm: 'none' } }}
+            >
+              <DashboardIcon />
+            </IconButton>
+          </Tooltip>
           <Tooltip title="导出">
             <IconButton color="inherit" size="large" onClick={onExportClick}>
               <ExportIcon />
