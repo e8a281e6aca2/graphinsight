@@ -14,6 +14,12 @@ ENV_PATH = ROOT / '.env'
 if load_dotenv and ENV_PATH.exists():
     load_dotenv(dotenv_path=ENV_PATH, override=True)
 
+sys.path.insert(0, str(ROOT))
+from admin.database import SessionLocal  # noqa: E402
+from admin.models import AdminUser  # noqa: E402
+from admin.services.auth_service import auth_service  # noqa: E402
+from runtime_env import resolve_base_url  # noqa: E402
+
 SUPPORTED_EXTS = {
     '.txt', '.md', '.markdown', '.csv', '.json', '.log', '.docx', '.pdf'
 }
@@ -71,17 +77,38 @@ def _print_doc_scan(doc_dir: Path) -> None:
         print(f'  preview: {preview}')
 
 
+def _resolve_admin_token() -> str:
+    explicit = (os.getenv('ADMIN_TOKEN') or '').strip()
+    if explicit:
+        return explicit
+    admin_email = (os.getenv('ADMIN_EMAIL') or 'yh@qs.al').strip()
+    if not admin_email:
+        return ''
+    db = SessionLocal()
+    try:
+        user = db.query(AdminUser).filter(AdminUser.email == admin_email).first()
+        if user is None:
+            return ''
+        return auth_service.create_access_token({'sub': user.email or user.username})
+    except Exception:
+        return ''
+    finally:
+        db.close()
+
+
 def _call_build_api() -> None:
-    host = os.getenv('API_HOST', '127.0.0.1')
-    port = os.getenv('API_PORT', '8001')
-    if host == '0.0.0.0':
-        host = '127.0.0.1'
-    api_base = f'http://{host}:{port}'
+    api_base = resolve_base_url('GO_BASE_URL', resolve_base_url('ADMIN_BASE_URL', 'http://127.0.0.1:8081'))
+    build_path = '/api/graph/build'
+    headers = {'Content-Type': 'application/json'}
+    token = _resolve_admin_token()
+    if token:
+        headers['Authorization'] = f'Bearer {token}'
+    print(f'Build diagnose mode: go | base={api_base}')
     payload = json.dumps({'force': True}).encode('utf-8')
     req = urllib.request.Request(
-        f'{api_base}/api/graph/build',
+        f'{api_base.rstrip("/")}{build_path}',
         data=payload,
-        headers={'Content-Type': 'application/json'},
+        headers=headers,
         method='POST',
     )
     try:

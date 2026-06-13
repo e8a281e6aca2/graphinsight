@@ -55,9 +55,9 @@ def main():
         print("数据库表创建成功")
     except Exception as e:
         print(f"数据库表创建失败: {e}")
-        print("\n请检查 PostgreSQL 连接配置:")
-        print("  - ADMIN_DATABASE_URL 环境变量")
-        print("  - 或在 backend/.env 中配置")
+        print("\n请检查本地 Docker PostgreSQL 连接配置:")
+        print("  - 优先使用 scripts/dev-backend.sh up")
+        print("  - 或确认 ADMIN_DATABASE_URL 指向本地容器 127.0.0.1:5434")
         return
     
     # 创建管理员用户

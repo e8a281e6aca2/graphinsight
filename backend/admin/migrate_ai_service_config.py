@@ -33,6 +33,11 @@ def migrate_ai_config():
         new_configs = [
             ("ai_service", "provider", "openai", "AI服务提供商", False),
             ("ai_service", "enabled", "true", "是否启用AI服务", False),
+            ("ai_service", "docqa_reasoning_profile", "balanced", "文档问答默认推理档位", False),
+            ("ai_service", "deep_research_reasoning_profile", "deep", "深度调研默认推理档位", False),
+            ("ai_service", "model_probe_reasoning_profile", "fast", "模型连通性测试默认推理档位", False),
+            ("ai_service", "graph_extract_reasoning_profile", "fast", "图谱抽取默认推理档位", False),
+            ("ai_service", "graph_extract_complex_reasoning_profile", "balanced", "复杂图谱抽取默认推理档位", False),
         ]
         
         for category, key, value, description, is_sensitive in new_configs:

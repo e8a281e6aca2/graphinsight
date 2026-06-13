@@ -2,11 +2,21 @@ package config
 
 import (
 	"context"
-	"net/http"
-	"net/http/httptest"
-	"strings"
+	"errors"
 	"testing"
 )
+
+type fakeAdminConfigReader struct {
+	values map[string]string
+	err    error
+}
+
+func (r fakeAdminConfigReader) GetValue(_ context.Context, category string, key string) (string, error) {
+	if r.err != nil {
+		return "", r.err
+	}
+	return r.values[category+":"+key], nil
+}
 
 func TestResolveNeo4jConfigEnvMode(t *testing.T) {
 	t.Parallel()
@@ -29,58 +39,86 @@ func TestResolveNeo4jConfigEnvMode(t *testing.T) {
 	}
 }
 
-func TestResolveNeo4jConfigAdminMode(t *testing.T) {
+func TestFetchAdminNeo4jConfigFromReader(t *testing.T) {
 	t.Parallel()
 
-	var gotAuth string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotAuth = r.Header.Get("Authorization")
-		if r.URL.Path != "/api/v1/admin/config/neo4j/all" {
-			t.Fatalf("unexpected path: %s", r.URL.Path)
-		}
-		if r.URL.Query().Get("include_sensitive") != "true" {
-			t.Fatalf("expected sensitive config opt-in, got query: %s", r.URL.RawQuery)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"code":200,"data":{"uri":"bolt://admin:7687","user":"admin-user","password":"admin-password","database":"admin-db","source":"admin_config","mode":"admin"}}`))
-	}))
-	defer srv.Close()
-
-	cfg, err := ResolveNeo4jConfig(context.Background(), Config{
-		Neo4jURI:                    "bolt://env:7687",
-		Neo4jUser:                   "env-user",
-		Neo4jPassword:               "env-password",
-		Neo4jDatabase:               "env-db",
-		Neo4jConfigSource:           "admin",
-		PythonBackendBaseURL:        srv.URL,
-		PythonBackendTimeoutSeconds: 2,
-		AdminConfigToken:            "token-123",
+	payload, err := fetchAdminNeo4jConfigFromReader(context.Background(), fakeAdminConfigReader{
+		values: map[string]string{
+			"neo4j:uri":      "bolt://admin-db:7687",
+			"neo4j:user":     "admin-user",
+			"neo4j:password": "admin-password",
+			"neo4j:database": "admin-graph",
+		},
+	}, Config{
+		Neo4jConfigSource: "admin",
 	})
 	if err != nil {
-		t.Fatalf("resolve admin config: %v", err)
+		t.Fatalf("fetch admin config from reader: %v", err)
 	}
-	if gotAuth != "Bearer token-123" {
-		t.Fatalf("unexpected auth header: %q", gotAuth)
+	if payload.URI != "bolt://admin-db:7687" || payload.User != "admin-user" || payload.Password != "admin-password" || payload.Database != "admin-graph" {
+		t.Fatalf("unexpected payload: %+v", payload)
 	}
-	if cfg.Neo4jURI != "bolt://admin:7687" || cfg.Neo4jUser != "admin-user" || cfg.Neo4jPassword != "admin-password" || cfg.Neo4jDatabase != "admin-db" {
-		t.Fatalf("unexpected admin config: %+v", cfg)
-	}
-	if cfg.Neo4jConfigSource != "admin" || cfg.Neo4jConfigResolvedSource != "admin_config" {
-		t.Fatalf("unexpected source metadata: mode=%q source=%q", cfg.Neo4jConfigSource, cfg.Neo4jConfigResolvedSource)
+	if payload.Source != "admin_db" || payload.Mode != "admin" {
+		t.Fatalf("unexpected payload metadata: %+v", payload)
 	}
 }
 
-func TestResolveNeo4jConfigAutoFallsBackToEnv(t *testing.T) {
+func TestFetchAdminNeo4jConfigFromReaderFallsBackToEnvValues(t *testing.T) {
+	t.Parallel()
+
+	payload, err := fetchAdminNeo4jConfigFromReader(context.Background(), fakeAdminConfigReader{
+		values: map[string]string{
+			"neo4j:uri": "bolt://admin-db:7687",
+		},
+	}, Config{
+		Neo4jUser:         "env-user",
+		Neo4jPassword:     "env-password",
+		Neo4jDatabase:     "env-db",
+		Neo4jConfigSource: "auto",
+	})
+	if err != nil {
+		t.Fatalf("expected env fallback values to complete payload, got err=%v", err)
+	}
+	if payload.User != "env-user" || payload.Password != "env-password" || payload.Database != "env-db" {
+		t.Fatalf("unexpected fallback payload: %+v", payload)
+	}
+}
+
+func TestFetchAdminNeo4jConfigFromReaderRejectsIncompleteConfig(t *testing.T) {
+	t.Parallel()
+
+	_, err := fetchAdminNeo4jConfigFromReader(context.Background(), fakeAdminConfigReader{
+		values: map[string]string{
+			"neo4j:uri": "bolt://admin-db:7687",
+		},
+	}, Config{Neo4jConfigSource: "admin"})
+	if err == nil {
+		t.Fatal("expected incomplete admin config to fail")
+	}
+}
+
+func TestReadAdminConfigValueReturnsReaderError(t *testing.T) {
+	t.Parallel()
+
+	value, err := readAdminConfigValue(context.Background(), fakeAdminConfigReader{err: errors.New("boom")}, "neo4j", "uri")
+	if err == nil {
+		t.Fatal("expected reader error to be returned")
+	}
+	if value != "" {
+		t.Fatalf("expected empty value on reader error, got %q", value)
+	}
+}
+
+func TestResolveNeo4jConfigAutoFallsBackToEnvOnAdminDBError(t *testing.T) {
 	t.Parallel()
 
 	cfg, err := ResolveNeo4jConfig(context.Background(), Config{
-		Neo4jURI:                    "bolt://env:7687",
-		Neo4jUser:                   "env-user",
-		Neo4jPassword:               "env-password",
-		Neo4jDatabase:               "env-db",
-		Neo4jConfigSource:           "auto",
-		PythonBackendBaseURL:        "http://127.0.0.1:1",
-		PythonBackendTimeoutSeconds: 1,
+		Neo4jURI:          "bolt://env:7687",
+		Neo4jUser:         "env-user",
+		Neo4jPassword:     "env-password",
+		Neo4jDatabase:     "env-db",
+		Neo4jConfigSource: "auto",
+		AdminDatabaseURL:  "postgresql://invalid:://",
 	})
 	if err != nil {
 		t.Fatalf("auto mode should not return error on fallback: %v", err)
@@ -96,7 +134,7 @@ func TestResolveNeo4jConfigAutoFallsBackToEnv(t *testing.T) {
 	}
 }
 
-func TestResolveNeo4jConfigAdminRequiresToken(t *testing.T) {
+func TestResolveNeo4jConfigAdminRequiresDatabaseURL(t *testing.T) {
 	t.Parallel()
 
 	cfg, err := ResolveNeo4jConfig(context.Background(), Config{
@@ -107,10 +145,7 @@ func TestResolveNeo4jConfigAdminRequiresToken(t *testing.T) {
 		Neo4jConfigSource: "admin",
 	})
 	if err == nil {
-		t.Fatal("expected admin mode without token to fail")
-	}
-	if !strings.Contains(err.Error(), "GO_ADMIN_CONFIG_TOKEN") {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatal("expected admin mode without database url to fail")
 	}
 	if cfg.Neo4jConfigResolvedSource != "admin_error" || cfg.Neo4jConfigResolutionErr == "" {
 		t.Fatalf("expected admin error metadata, got source=%q err=%q", cfg.Neo4jConfigResolvedSource, cfg.Neo4jConfigResolutionErr)

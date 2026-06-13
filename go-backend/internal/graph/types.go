@@ -90,3 +90,24 @@ type GraphSchemaStats struct {
 	EdgeCount     int64   `json:"edgeCount"`
 	ExecutionTime float64 `json:"executionTime"`
 }
+
+type GraphCounts struct {
+	NodeCount         int64 `json:"node_count"`
+	RelationshipCount int64 `json:"relationship_count"`
+}
+
+type RuntimeConnectionInfo struct {
+	URI             string `json:"uri"`
+	Database        string `json:"database"`
+	ConfigMode      string `json:"config_mode"`
+	ConfigSource    string `json:"config_source"`
+	ResolutionError string `json:"resolution_error,omitempty"`
+}
+
+type DocumentGraphStats struct {
+	Documents      int64 `json:"documents"`
+	Chunks         int64 `json:"chunks"`
+	Relations      int64 `json:"relations"`
+	OrphanEntities int64 `json:"orphan_entities"`
+	Entities       int64 `json:"entities,omitempty"`
+}

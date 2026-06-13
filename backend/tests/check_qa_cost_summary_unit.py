@@ -72,7 +72,10 @@ def main() -> int:
     }
     os.environ["AI_COST_MODEL_PRICING_JSON"] = json.dumps(pricing)
     try:
-        with patch("admin.services.qa_trace_service.config_service.get_config", return_value=None):
+        with patch(
+            "admin.services.qa_trace_service.get_ai_cost_runtime_config",
+            return_value={"model_pricing_json": "", "currency": ""},
+        ):
             summary = QATraceService().get_cost_summary(
                 _Session(rows),
                 QACostSummaryQuery(window_hours=24),

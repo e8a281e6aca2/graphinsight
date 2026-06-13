@@ -29,9 +29,11 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
+from runtime_env import resolve_base_url
+
 
 ROOT = Path(__file__).resolve().parents[1]
-PYTHON = ROOT / "venv" / "Scripts" / "python.exe"
+PYTHON_EXE = ROOT / ".venv" / "bin" / "python"
 sys.path.insert(0, str(ROOT))
 
 
@@ -44,7 +46,20 @@ class SmokeCase:
 
 
 CASES: list[SmokeCase] = [
+    SmokeCase("dev_runtime_defaults", "check_dev_runtime_defaults.py", 60, "统一启动脚本默认运行态收口检查"),
+    SmokeCase("migration_cleanup_guards", "check_migration_cleanup_guards.py", 60, "迁移清理与 Go 入口显式注册静态守卫"),
+    SmokeCase("go_orchestrated", "check_go_orchestrated_routes.py", 180, "Go 外部编排业务路由 smoke"),
+    SmokeCase("nl2cypher_contract", "check_nl2cypher_go_contract.py", 90, "NL2Cypher Go 入口 contract smoke"),
+    SmokeCase("nl2cypher_post_contract", "check_nl2cypher_post_go_contract.py", 90, "NL2Cypher POST Go 入口校验 contract smoke"),
+    SmokeCase("nl2cypher_audit_contract", "check_nl2cypher_audit_go_contract.py", 90, "NL2Cypher POST Go 审计 contract smoke"),
+    SmokeCase("docqa_post_contract", "check_docqa_post_go_contract.py", 90, "DocQA POST Go 入口校验 contract smoke"),
+    SmokeCase("docqa_audit_contract", "check_docqa_audit_go_contract.py", 90, "DocQA POST Go 审计 contract smoke"),
+    SmokeCase("deep_research_post_contract", "check_deep_research_post_go_contract.py", 90, "Deep research POST Go 入口校验 contract smoke"),
+    SmokeCase("deep_research_audit_contract", "check_deep_research_audit_go_contract.py", 90, "Deep research POST Go 审计 contract smoke"),
+    SmokeCase("docqa_health_contract", "check_docqa_health_go_contract.py", 90, "DocQA health Go 入口校验 contract smoke"),
+    SmokeCase("python_public_removed", "check_python_public_routes_removed_runtime_smoke.py", 90, "运行态确认 Python 公开业务路由已移除"),
     SmokeCase("authz", "verify_admin_authz.py", 120, "后台权限与越权访问回归"),
+    SmokeCase("unified_mode", "check_unified_backend_mode.py", 60, "统一模式下 Python 公开业务入口已移除，内部能力入口保留"),
     SmokeCase("documents", "check_documents_soft_delete_flow.py", 120, "文档软删除、回收站与恢复流程"),
     SmokeCase("jobs_api", "check_jobs_api.py", 120, "任务创建、查询、取消与重试"),
     SmokeCase("reindex_obs", "check_job_reindex_and_observability.py", 180, "reindex 与监控联调"),
@@ -52,6 +67,15 @@ CASES: list[SmokeCase] = [
     SmokeCase("qa_cost_unit", "check_qa_cost_summary_unit.py", 60, "QA trace cost aggregation unit check"),
     SmokeCase("docqa_full_chain", "check_docqa_full_chain.py", 360, "上传、建图、问答、追踪与删除全链路"),
 ]
+
+
+def _resolve_python() -> Path:
+    if PYTHON_EXE.exists():
+        return PYTHON_EXE
+    raise RuntimeError(
+        f"未找到 Linux 后端虚拟环境 Python: {PYTHON_EXE}。"
+        "请先运行: python3 -m venv backend/.venv && backend/.venv/bin/python -m pip install -r backend/requirements.txt"
+    )
 
 
 def _issue_local_token(email: str) -> str:
@@ -85,7 +109,12 @@ def _health_check(base_url: str) -> tuple[bool, str]:
     req = urllib.request.Request(f"{base_url.rstrip('/')}/health", method="GET")
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
-            return resp.status == 200, f"status={resp.status}"
+            raw = resp.read().decode("utf-8", errors="replace")
+            if resp.status != 200:
+                return False, f"status={resp.status}"
+            if '"python_backend"' not in raw or '"orchestrator"' not in raw:
+                return False, f"status={resp.status}, non_graphinsight_go_health=true"
+            return True, f"status={resp.status}"
     except urllib.error.HTTPError as exc:
         return False, f"status={exc.code}"
     except Exception as exc:  # noqa: BLE001
@@ -94,7 +123,7 @@ def _health_check(base_url: str) -> tuple[bool, str]:
 
 def _run_case(case: SmokeCase, env: dict[str, str]) -> tuple[bool, float, str]:
     started = time.perf_counter()
-    cmd = [str(PYTHON), str(Path(__file__).resolve().parent / case.script)]
+    cmd = [str(_resolve_python()), str(Path(__file__).resolve().parent / case.script)]
     proc = subprocess.run(  # noqa: S603
         cmd,
         cwd=str(ROOT.parent),
@@ -115,7 +144,7 @@ def _run_case(case: SmokeCase, env: dict[str, str]) -> tuple[bool, float, str]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="后端关键路径烟测总控")
-    parser.add_argument("--base-url", default=os.getenv("ADMIN_BASE_URL", "http://127.0.0.1:8081"))
+    parser.add_argument("--base-url", default=resolve_base_url("ADMIN_BASE_URL", "http://127.0.0.1:8081"))
     parser.add_argument("--admin-token", default=os.getenv("ADMIN_TOKEN"))
     parser.add_argument("--low-token", default=os.getenv("LOW_ROLE_TOKEN"))
     parser.add_argument("--admin-email", default=os.getenv("ADMIN_EMAIL", "yh@qs.al"))

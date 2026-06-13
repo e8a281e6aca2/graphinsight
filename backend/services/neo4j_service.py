@@ -8,6 +8,7 @@ from neo4j import GraphDatabase, Driver, Query
 from typing import Optional, Dict, Any, List
 import time
 from config import get_settings
+from services.runtime_config import get_neo4j_runtime_config
 
 settings = get_settings()
 
@@ -51,41 +52,21 @@ class Neo4jService:
             }
 
         try:
-            from admin.database import SessionLocal
-            from admin.crud.config import config_crud
-
-            db = SessionLocal()
-            try:
-                cfg_uri = config_crud.get_by_key(db, "neo4j", "uri")
-                cfg_user = config_crud.get_by_key(db, "neo4j", "user")
-                cfg_username = config_crud.get_by_key(db, "neo4j", "username")
-                cfg_pwd = config_crud.get_by_key(db, "neo4j", "password")
-                cfg_db = config_crud.get_by_key(db, "neo4j", "database")
-
-                has_admin_cfg = False
-                if cfg_uri and cfg_uri.value:
-                    uri = cfg_uri.value
-                    has_admin_cfg = True
-                if cfg_user and cfg_user.value:
-                    user = cfg_user.value
-                    has_admin_cfg = True
-                elif cfg_username and cfg_username.value:
-                    user = cfg_username.value
-                    has_admin_cfg = True
-                if cfg_pwd and cfg_pwd.value:
-                    password = cfg_pwd.value
-                    has_admin_cfg = True
-                if cfg_db and cfg_db.value:
-                    database = cfg_db.value
-                    has_admin_cfg = True
-                if has_admin_cfg:
-                    source = "admin_config"
-                elif mode == "auto":
-                    source = "env"
-                elif mode == "admin":
-                    source = "admin_config_empty_fallback_env"
-            finally:
-                db.close()
+            runtime_cfg = get_neo4j_runtime_config()
+            has_runtime_cfg = any(
+                str(runtime_cfg.get(key) or "").strip()
+                for key in ("uri", "user", "password", "database")
+            )
+            if has_runtime_cfg:
+                uri = runtime_cfg.get("uri", uri)
+                user = runtime_cfg.get("user", user)
+                password = runtime_cfg.get("password", password)
+                database = runtime_cfg.get("database", database)
+                source = "admin_config"
+            elif mode == "auto":
+                source = "env"
+            elif mode == "admin":
+                source = "admin_config_empty_fallback_env"
         except Exception:
             # admin 模式下也允许回退，避免管理库不可用导致服务不可启动
             source = "admin_unavailable_fallback_env"

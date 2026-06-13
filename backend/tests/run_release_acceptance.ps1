@@ -11,6 +11,7 @@ param(
     [double]$MaxP95Ms = $(if ($env:PERF_PROBE_MAX_P95_MS) { [double]$env:PERF_PROBE_MAX_P95_MS } else { 0.0 }),
     [string[]]$BackendInclude = @(),
     [string]$ArtifactsDir = $(if ($env:RELEASE_ACCEPTANCE_ARTIFACTS_DIR) { $env:RELEASE_ACCEPTANCE_ARTIFACTS_DIR } else { "" }),
+    [switch]$SkipMigrationRollbackSmoke,
     [switch]$SkipBackendSmoke,
     [switch]$SkipFrontendE2E,
     [switch]$SkipPerfProbe,
@@ -22,10 +23,27 @@ $ErrorActionPreference = "Stop"
 $RepoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $BackendRoot = Join-Path $RepoRoot "backend"
 $FrontendRoot = Join-Path $RepoRoot "frontend"
-$PythonExe = Join-Path $BackendRoot "venv\Scripts\python.exe"
+$MigrationRollbackSmoke = Join-Path $BackendRoot "tests\run_migration_rollback_smoke.py"
 $SmokeSuite = Join-Path $BackendRoot "tests\run_backend_smoke_suite.py"
 $PerfProbe = Join-Path $BackendRoot "tests\run_perf_probe.py"
 $FrontendE2E = Join-Path $FrontendRoot "tests\run_admin_e2e.ps1"
+
+function Resolve-PythonExe {
+    $candidates = @(
+        (Join-Path $BackendRoot ".venv/bin/python"),
+        (Join-Path $BackendRoot ".venv\Scripts\python.exe"),
+        (Join-Path $BackendRoot "venv/bin/python"),
+        (Join-Path $BackendRoot "venv\Scripts\python.exe")
+    )
+    foreach ($candidate in $candidates) {
+        if (Test-Path $candidate) {
+            return $candidate
+        }
+    }
+    return $null
+}
+
+$PythonExe = Resolve-PythonExe
 
 if (-not $ArtifactsDir) {
     $ArtifactsDir = Join-Path $RepoRoot "artifacts\release-acceptance"
@@ -88,12 +106,23 @@ New-Item -ItemType Directory -Path $ArtifactsDir -Force | Out-Null
 
 $env:ADMIN_BASE_URL = $BaseUrl
 $env:GO_BASE_URL = $BaseUrl
-$env:VITE_API_BASE_URL = $BaseUrl
+$env:E2E_API_BASE_URL = $BaseUrl
+if (-not $env:VITE_API_BASE_URL) {
+    $env:VITE_API_BASE_URL = "same-origin"
+}
 $env:ADMIN_EMAIL = $AdminEmail
 if ($AdminPassword) { $env:ADMIN_PASSWORD = $AdminPassword }
 if ($AdminToken) { $env:ADMIN_TOKEN = $AdminToken }
 
 $failures = 0
+
+if (-not $SkipMigrationRollbackSmoke) {
+    $code = Invoke-AcceptanceStep -Name "migration-rollback-smoke" -FilePath $PythonExe -Arguments @($MigrationRollbackSmoke)
+    if ($code -ne 0) {
+        $failures += 1
+        if ($FailFast) { exit $code }
+    }
+}
 
 if (-not $SkipBackendSmoke) {
     $args = @($SmokeSuite, "--base-url", $BaseUrl)

@@ -8,6 +8,11 @@ on:
   pull_request:
   workflow_dispatch:
     inputs:
+      run_release_acceptance:
+        description: Run the full release acceptance chain through the unified Linux entrypoint.
+        required: false
+        default: false
+        type: boolean
       run_frontend_e2e:
         description: Run the full frontend DocQA E2E flow against an externally reachable Go gateway.
         required: false
@@ -20,6 +25,11 @@ on:
         type: string
       run_perf_probe:
         description: Run performance probe against an externally reachable Go gateway.
+        required: false
+        default: false
+        type: boolean
+      run_perf_soak:
+        description: Run repeated soak/capacity probe rounds against an externally reachable Go gateway.
         required: false
         default: false
         type: boolean
@@ -40,6 +50,26 @@ on:
         description: Perf probe concurrency.
         required: false
         default: '4'
+        type: string
+      perf_soak_rounds:
+        description: Number of soak rounds to execute.
+        required: false
+        default: '3'
+        type: string
+      perf_soak_sleep_seconds:
+        description: Pause between soak rounds.
+        required: false
+        default: '5'
+        type: string
+      run_backend_release_smoke:
+        description: Run the full 20-case backend release smoke suite against an externally reachable Go gateway.
+        required: false
+        default: false
+        type: boolean
+      backend_release_smoke_include:
+        description: Optional backend smoke case filter. Repeat behavior is comma-separated in CI.
+        required: false
+        default: ''
         type: string
 
 jobs:
@@ -78,8 +108,277 @@ jobs:
         run: |
           python -m py_compile \
             backend/tests/issue_admin_token.py \
+            backend/tests/run_unified_boundary_guards.py \
+            backend/tests/run_backend_smoke_suite.py \
             backend/tests/run_perf_probe.py \
             go-backend/scripts/smoke_orchestrated_routes.py
+          bash -n backend/tests/run_release_acceptance.sh frontend/tests/run_admin_e2e.sh
+
+  backend-unified-guards:
+    name: Backend unified boundary guards
+    runs-on: ubuntu-latest
+    env:
+      RBAC_AUTHZ_MODE: go_db
+      NEO4J_URI: bolt://127.0.0.1:7687
+      NEO4J_USER: neo4j
+      NEO4J_PASSWORD: graphinsight-ci
+      ADMIN_DATABASE_URL: sqlite:///./admin.db
+      GRAPHINSIGHT_INTERNAL_TOKEN: ci-internal-token
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Create backend virtual environment
+        shell: bash
+        run: |
+          python -m venv backend/.venv
+          backend/.venv/bin/python -m pip install --upgrade pip
+          backend/.venv/bin/python -m pip install -r backend/requirements.txt
+
+      - name: Prepare unified runtime env fixture
+        shell: bash
+        run: |
+          mkdir -p logs/dev
+          cat > logs/dev/backend.env <<'EOF'
+          RBAC_AUTHZ_MODE=go_db
+          NEO4J_URI=bolt://127.0.0.1:7687
+          NEO4J_USER=neo4j
+          NEO4J_PASSWORD=graphinsight-ci
+          ADMIN_DATABASE_URL=sqlite:///./admin.db
+          GRAPHINSIGHT_INTERNAL_TOKEN=ci-internal-token
+          EOF
+
+      - name: Compile backend boundary modules
+        run: |
+          backend/.venv/bin/python -m py_compile \
+            backend/main.py \
+            backend/api/internal_access.py \
+            backend/api/route_registry.py \
+            backend/api/routes/doc_qa.py \
+            backend/api/routes/doc_qa_internal.py \
+            backend/api/routes/nl2cypher.py \
+            backend/api/routes/nl2cypher_internal.py \
+            backend/admin/api/route_registry.py \
+            backend/admin/api/endpoints/auth.py \
+            backend/admin/api/endpoints/config.py \
+            backend/admin/api/endpoints/jobs.py \
+            backend/admin/api/endpoints/logs.py \
+            backend/admin/api/endpoints/monitor.py \
+            backend/admin/api/endpoints/profile.py \
+            backend/admin/api/endpoints/qa_traces.py \
+            backend/admin/api/endpoints/rbac.py \
+            backend/admin/api/endpoints/users.py \
+            backend/services/job_runtime.py \
+            backend/services/qa_trace_runtime.py \
+            backend/services/runtime_config.py \
+            backend/services/runtime_db.py \
+            backend/admin/services/job_service.py
+
+      - name: Run unified boundary guard suite
+        shell: bash
+        run: |
+          backend/.venv/bin/python backend/tests/run_unified_boundary_guards.py
+
+  backend-release-smoke:
+    name: Backend release smoke suite
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_backend_release_smoke }}
+    env:
+      ADMIN_BASE_URL: ${{ secrets.GRAPHINSIGHT_E2E_API_BASE_URL }}
+      ADMIN_EMAIL: ${{ secrets.GRAPHINSIGHT_E2E_ADMIN_EMAIL }}
+      ADMIN_PASSWORD: ${{ secrets.GRAPHINSIGHT_E2E_ADMIN_PASSWORD }}
+      ADMIN_TOKEN: ${{ secrets.GRAPHINSIGHT_E2E_ADMIN_TOKEN }}
+      BACKEND_RELEASE_SMOKE_INCLUDE: ${{ inputs.backend_release_smoke_include }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Create backend virtual environment
+        shell: bash
+        run: |
+          python -m venv backend/.venv
+          backend/.venv/bin/python -m pip install --upgrade pip
+          backend/.venv/bin/python -m pip install -r backend/requirements.txt
+
+      - name: Validate backend release smoke configuration
+        shell: bash
+        run: |
+          if [[ -z "$ADMIN_BASE_URL" ]]; then
+            echo "GRAPHINSIGHT_E2E_API_BASE_URL is required for backend release smoke."
+            exit 1
+          fi
+          if [[ -z "$ADMIN_TOKEN" && -z "$ADMIN_PASSWORD" ]]; then
+            echo "GRAPHINSIGHT_E2E_ADMIN_TOKEN or GRAPHINSIGHT_E2E_ADMIN_PASSWORD is required for backend release smoke."
+            exit 1
+          fi
+
+      - name: Run backend release smoke suite
+        shell: bash
+        run: |
+          cmd=(backend/tests/run_release_acceptance.sh --skip-frontend-e2e --skip-perf-probe)
+          if [[ -n "$BACKEND_RELEASE_SMOKE_INCLUDE" ]]; then
+            IFS=',' read -ra cases <<< "$BACKEND_RELEASE_SMOKE_INCLUDE"
+            for case_name in "${cases[@]}"; do
+              case_name="$(echo "$case_name" | xargs)"
+              if [[ -n "$case_name" ]]; then
+                cmd+=(--include "$case_name")
+              fi
+            done
+          fi
+          "${cmd[@]}"
+
+  release-frontend-e2e:
+    name: Release frontend DocQA E2E
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_frontend_e2e }}
+    env:
+      ADMIN_BASE_URL: ${{ secrets.GRAPHINSIGHT_E2E_API_BASE_URL }}
+      ADMIN_EMAIL: ${{ secrets.GRAPHINSIGHT_E2E_ADMIN_EMAIL }}
+      ADMIN_PASSWORD: ${{ secrets.GRAPHINSIGHT_E2E_ADMIN_PASSWORD }}
+      ADMIN_TOKEN: ${{ secrets.GRAPHINSIGHT_E2E_ADMIN_TOKEN }}
+      E2E_SPEC: ${{ inputs.frontend_e2e_spec }}
+      E2E_CHECK_UI_LOGIN: '0'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Create backend virtual environment
+        shell: bash
+        run: |
+          python -m venv backend/.venv
+          backend/.venv/bin/python -m pip install --upgrade pip
+          backend/.venv/bin/python -m pip install -r backend/requirements.txt
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.22.2'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Install Playwright browser
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium-headless-shell
+
+      - name: Validate release frontend E2E configuration
+        shell: bash
+        run: |
+          if [[ -z "$ADMIN_BASE_URL" ]]; then
+            echo "GRAPHINSIGHT_E2E_API_BASE_URL is required for release frontend E2E."
+            exit 1
+          fi
+          if [[ -z "$ADMIN_TOKEN" && -z "$ADMIN_PASSWORD" ]]; then
+            echo "GRAPHINSIGHT_E2E_ADMIN_TOKEN or GRAPHINSIGHT_E2E_ADMIN_PASSWORD is required for release frontend E2E."
+            exit 1
+          fi
+
+      - name: Run release frontend E2E via acceptance entry
+        shell: bash
+        run: |
+          backend/tests/run_release_acceptance.sh \
+            --skip-boundary-guards \
+            --skip-backend-smoke \
+            --skip-perf-probe
+
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-frontend-e2e-report
+          path: frontend/playwright-report
+          if-no-files-found: ignore
+
+  release-acceptance:
+    name: Full release acceptance
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_release_acceptance }}
+    env:
+      ADMIN_BASE_URL: ${{ secrets.GRAPHINSIGHT_E2E_API_BASE_URL }}
+      ADMIN_EMAIL: ${{ secrets.GRAPHINSIGHT_E2E_ADMIN_EMAIL }}
+      ADMIN_PASSWORD: ${{ secrets.GRAPHINSIGHT_E2E_ADMIN_PASSWORD }}
+      ADMIN_TOKEN: ${{ secrets.GRAPHINSIGHT_E2E_ADMIN_TOKEN }}
+      E2E_SPEC: ${{ inputs.frontend_e2e_spec }}
+      E2E_CHECK_UI_LOGIN: '0'
+      PERF_PROBE_PRESET: ${{ inputs.perf_probe_preset }}
+      PERF_PROBE_REQUESTS: ${{ inputs.perf_probe_requests }}
+      PERF_PROBE_CONCURRENCY: ${{ inputs.perf_probe_concurrency }}
+      RELEASE_ACCEPTANCE_ARTIFACTS_DIR: artifacts/release-acceptance
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Create backend virtual environment
+        shell: bash
+        run: |
+          python -m venv backend/.venv
+          backend/.venv/bin/python -m pip install --upgrade pip
+          backend/.venv/bin/python -m pip install -r backend/requirements.txt
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.22.2'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Install Playwright browser
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium-headless-shell
+
+      - name: Validate release acceptance configuration
+        shell: bash
+        run: |
+          if [[ -z "$ADMIN_BASE_URL" ]]; then
+            echo "GRAPHINSIGHT_E2E_API_BASE_URL is required for release acceptance."
+            exit 1
+          fi
+          if [[ -z "$ADMIN_TOKEN" && -z "$ADMIN_PASSWORD" ]]; then
+            echo "GRAPHINSIGHT_E2E_ADMIN_TOKEN or GRAPHINSIGHT_E2E_ADMIN_PASSWORD is required for release acceptance."
+            exit 1
+          fi
+
+      - name: Run full release acceptance
+        shell: bash
+        run: |
+          backend/tests/run_release_acceptance.sh --fail-fast
+
+      - name: Upload release acceptance artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-acceptance-artifacts
+          path: |
+            artifacts/release-acceptance
+            frontend/playwright-report
+          if-no-files-found: ignore
 
   frontend-build:
     name: Frontend build
@@ -133,7 +432,8 @@ jobs:
         run: npm ci
 
       - name: Install Playwright browser
-        run: npx playwright install --with-deps chromium
+        run: npx playwright install --with-deps chromium-headless-shell
+        working-directory: frontend
 
       - name: Validate E2E configuration
         shell: bash
@@ -151,9 +451,9 @@ jobs:
         shell: bash
         run: |
           if [[ -n "$FRONTEND_E2E_SPEC" ]]; then
-            npm run e2e -- "$FRONTEND_E2E_SPEC"
+            node node_modules/@playwright/test/cli.js test "$FRONTEND_E2E_SPEC"
           else
-            npm run e2e
+            node node_modules/@playwright/test/cli.js test
           fi
 
       - name: Upload Playwright report
@@ -215,4 +515,67 @@ jobs:
         with:
           name: perf-probe-report
           path: artifacts/perf-probe.*
+          if-no-files-found: error
+
+  perf-soak:
+    name: Performance soak
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_perf_soak }}
+    env:
+      GO_BASE_URL: ${{ secrets.GRAPHINSIGHT_E2E_API_BASE_URL }}
+      ADMIN_EMAIL: ${{ secrets.GRAPHINSIGHT_E2E_ADMIN_EMAIL }}
+      ADMIN_PASSWORD: ${{ secrets.GRAPHINSIGHT_E2E_ADMIN_PASSWORD }}
+      ADMIN_TOKEN: ${{ secrets.GRAPHINSIGHT_E2E_ADMIN_TOKEN }}
+      PERF_PROBE_PRESET: ${{ inputs.perf_probe_preset }}
+      PERF_PROBE_REQUESTS: ${{ inputs.perf_probe_requests }}
+      PERF_PROBE_CONCURRENCY: ${{ inputs.perf_probe_concurrency }}
+      PERF_SOAK_ROUNDS: ${{ inputs.perf_soak_rounds }}
+      PERF_SOAK_SLEEP_SECONDS: ${{ inputs.perf_soak_sleep_seconds }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Create backend virtual environment
+        shell: bash
+        run: |
+          python -m venv backend/.venv
+          backend/.venv/bin/python -m pip install --upgrade pip
+          backend/.venv/bin/python -m pip install -r backend/requirements.txt
+
+      - name: Validate performance soak configuration
+        shell: bash
+        run: |
+          if [[ -z "$GO_BASE_URL" ]]; then
+            echo "GRAPHINSIGHT_E2E_API_BASE_URL is required for performance soak."
+            exit 1
+          fi
+          if [[ -z "$ADMIN_TOKEN" && -z "$ADMIN_PASSWORD" ]]; then
+            echo "GRAPHINSIGHT_E2E_ADMIN_TOKEN or GRAPHINSIGHT_E2E_ADMIN_PASSWORD is required for performance soak."
+            exit 1
+          fi
+
+      - name: Run performance soak
+        shell: bash
+        run: |
+          mkdir -p artifacts/perf-soak
+          backend/.venv/bin/python backend/tests/run_perf_soak.py \
+            --base-url "$GO_BASE_URL" \
+            --preset "$PERF_PROBE_PRESET" \
+            --requests "$PERF_PROBE_REQUESTS" \
+            --concurrency "$PERF_PROBE_CONCURRENCY" \
+            --rounds "$PERF_SOAK_ROUNDS" \
+            --sleep-seconds "$PERF_SOAK_SLEEP_SECONDS" \
+            --output-dir artifacts/perf-soak
+
+      - name: Upload performance soak report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-soak-report
+          path: artifacts/perf-soak
           if-no-files-found: error

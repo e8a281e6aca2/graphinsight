@@ -8,6 +8,7 @@ import re
 from functools import lru_cache
 from config import get_settings
 from services.openai_client_factory import build_async_openai_client
+from services.runtime_config import get_ai_runtime_config, get_nl2cypher_runtime_config
 from services.schema_service import SchemaService
 
 
@@ -19,67 +20,24 @@ class NL2CypherService:
         self.schema_service = SchemaService()
         
     def _get_ai_client(self):
-        """获取 AI 客户端（使用数据库配置）"""
-        try:
-            from admin.database import SessionLocal
-            from admin.services.config_service import config_service
-            
-            db = SessionLocal()
-            try:
-                config = config_service.get_ai_service_config(db)
-                
-                return build_async_openai_client(
-                    api_key=config["api_key"],
-                    base_url=config["base_url"] or None,
-                    timeout=30.0,
-                )
-            finally:
-                db.close()
-        except:
-            # 回退到环境变量配置
-            return build_async_openai_client(api_key=self.settings.openai_api_key, timeout=30.0)
+        """获取 AI 客户端（优先运行时配置，回退环境变量）"""
+        config = get_ai_runtime_config()
+        api_key = str(config.get("api_key") or "").strip() or self.settings.openai_api_key
+        base_url = str(config.get("base_url") or "").strip() or None
+        return build_async_openai_client(api_key=api_key, base_url=base_url, timeout=30.0)
     
     def _get_nl2cypher_config(self) -> dict:
-        """获取 NL2Cypher 配置（使用数据库配置）"""
-        try:
-            from admin.database import SessionLocal
-            from admin.services.config_service import config_service
-            
-            db = SessionLocal()
-            try:
-                return config_service.get_nl2cypher_config(db)
-            finally:
-                db.close()
-        except:
-            # 回退到环境变量配置
-            return {
-                "enabled": self.settings.nl2cypher_enabled,
-                "max_limit": self.settings.nl2cypher_max_limit,
-            }
+        """获取 NL2Cypher 配置（优先运行时配置，回退环境变量）"""
+        return get_nl2cypher_runtime_config()
     
     def _get_ai_params(self) -> dict:
-        """获取 AI 参数（使用数据库配置）"""
-        try:
-            from admin.database import SessionLocal
-            from admin.services.config_service import config_service
-            
-            db = SessionLocal()
-            try:
-                config = config_service.get_ai_service_config(db)
-                return {
-                    "model": config["model"],
-                    "temperature": config["temperature"],
-                    "max_tokens": config["max_tokens"],
-                }
-            finally:
-                db.close()
-        except:
-            # 回退到环境变量配置
-            return {
-                "model": self.settings.openai_model,
-                "temperature": self.settings.openai_temperature,
-                "max_tokens": self.settings.openai_max_tokens,
-            }
+        """获取 AI 参数（优先运行时配置，回退环境变量）"""
+        config = get_ai_runtime_config()
+        return {
+            "model": config["model"],
+            "temperature": config["temperature"],
+            "max_tokens": config["max_tokens"],
+        }
         
     async def convert(
         self,
@@ -105,20 +63,9 @@ class NL2CypherService:
             }
         
         # 验证 AI API Key
-        try:
-            from admin.database import SessionLocal
-            from admin.services.config_service import config_service
-            
-            db = SessionLocal()
-            try:
-                ai_config = config_service.get_ai_service_config(db)
-                api_key = ai_config.get("api_key", "")
-                enabled = ai_config.get("enabled", True)
-            finally:
-                db.close()
-        except:
-            api_key = self.settings.openai_api_key
-            enabled = True
+        ai_config = get_ai_runtime_config()
+        api_key = str(ai_config.get("api_key") or "").strip()
+        enabled = bool(ai_config.get("enabled", True))
         
         if not enabled:
             return {

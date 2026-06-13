@@ -290,6 +290,31 @@ class ConfigService:
                     "description": "AI 模型名称",
                     "is_sensitive": "false",
                 },
+                "docqa_reasoning_profile": {
+                    "value": os.getenv("AI_SERVICE_DOCQA_REASONING_PROFILE", "balanced"),
+                    "description": "文档问答默认推理档位",
+                    "is_sensitive": "false",
+                },
+                "deep_research_reasoning_profile": {
+                    "value": os.getenv("AI_SERVICE_DEEP_RESEARCH_REASONING_PROFILE", "deep"),
+                    "description": "深度调研默认推理档位",
+                    "is_sensitive": "false",
+                },
+                "model_probe_reasoning_profile": {
+                    "value": os.getenv("AI_SERVICE_MODEL_PROBE_REASONING_PROFILE", "fast"),
+                    "description": "模型连通性测试默认推理档位",
+                    "is_sensitive": "false",
+                },
+                "graph_extract_reasoning_profile": {
+                    "value": os.getenv("AI_SERVICE_GRAPH_EXTRACT_REASONING_PROFILE", "fast"),
+                    "description": "图谱抽取默认推理档位",
+                    "is_sensitive": "false",
+                },
+                "graph_extract_complex_reasoning_profile": {
+                    "value": os.getenv("AI_SERVICE_GRAPH_EXTRACT_COMPLEX_REASONING_PROFILE", "balanced"),
+                    "description": "复杂图谱抽取默认推理档位",
+                    "is_sensitive": "false",
+                },
                 "max_tokens": {
                     "value": os.getenv("AI_SERVICE_MAX_TOKENS", os.getenv("OPENAI_MAX_TOKENS", "2000")),
                     "description": "最大 Token 数",
@@ -583,6 +608,11 @@ class ConfigService:
             "api_key": self._safe_sensitive_value(api_key, include_sensitive),
             "api_key_configured": bool(api_key and api_key.strip() and api_key != "your-api-key-here"),
             "model": self.get_config(db, "ai_service", "model", "gpt-3.5-turbo"),
+            "docqa_reasoning_profile": self.get_config(db, "ai_service", "docqa_reasoning_profile", "balanced"),
+            "deep_research_reasoning_profile": self.get_config(db, "ai_service", "deep_research_reasoning_profile", "deep"),
+            "model_probe_reasoning_profile": self.get_config(db, "ai_service", "model_probe_reasoning_profile", "fast"),
+            "graph_extract_reasoning_profile": self.get_config(db, "ai_service", "graph_extract_reasoning_profile", "fast"),
+            "graph_extract_complex_reasoning_profile": self.get_config(db, "ai_service", "graph_extract_complex_reasoning_profile", "balanced"),
             "max_tokens": int(self.get_config(db, "ai_service", "max_tokens", "2000")),
             "temperature": float(self.get_config(db, "ai_service", "temperature", "0.7")),
         }

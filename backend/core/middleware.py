@@ -20,12 +20,12 @@ from .observability import get_api_observability
 
 class RequestLoggingMiddleware(BaseHTTPMiddleware):
     """请求日志中间件"""
-    
+
     def __init__(self, app, logger=None):
         super().__init__(app)
         self.logger = logger or get_logger()
         self.metrics = get_api_observability()
-    
+
     async def _normalize_json_envelope(self, request: Request, response: Response, trace_id: str) -> Response:
         """
         标准化 JSON 响应：
@@ -95,13 +95,13 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         # 复用网关传入的 trace_id，缺失时才生成，确保 Go -> Python 链路可对账。
         trace_id = request.headers.get("x-trace-id") or request.headers.get("X-Trace-Id") or str(uuid.uuid4())
         request.state.trace_id = trace_id
-        
+
         # 记录请求开始
         start_time = time.time()
-        
+
         # 获取客户端 IP
         client_ip = request.client.host if request.client else "unknown"
-        
+
         # 记录请求信息
         auth_context = {
             "auth_user_id": request.headers.get("x-auth-user-id"),
@@ -122,15 +122,15 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
             },
             trace_id=trace_id
         )
-        
+
         # 处理请求
         try:
             response = await call_next(request)
             response = await self._normalize_json_envelope(request, response, trace_id)
-            
+
             # 计算响应时间
             duration = time.time() - start_time
-            
+
             # 记录响应信息
             self.logger.info(
                 f"请求完成: {request.method} {request.url.path}",
@@ -151,13 +151,13 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
                 duration_ms=round(duration * 1000, 3),
                 trace_id=trace_id,
             )
-            
+
             # 添加响应头
             response.headers["X-Trace-ID"] = trace_id
             response.headers["X-Response-Time"] = f"{duration:.3f}s"
-            
+
             return response
-            
+
         except Exception as e:
             # 记录异常
             duration = time.time() - start_time
@@ -185,39 +185,41 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
     """限流中间件"""
-    
+
     def __init__(
         self,
         app,
         default_limit: int = 60,  # 默认每分钟 60 次
         window_seconds: int = 60,  # 时间窗口（秒）
         path_limits: Optional[Dict[str, int]] = None,
+        exempt_paths: Optional[list[str]] = None,
         logger=None
     ):
         super().__init__(app)
         self.default_limit = default_limit
         self.window_seconds = window_seconds
         self.path_limits = path_limits or {}
+        self.exempt_paths = set(exempt_paths or [])
         self.logger = logger or get_logger()
-        
+
         # 存储请求记录: {ip: {path: [(timestamp, count)]}}
         self.request_records: Dict[str, Dict[str, list]] = defaultdict(
             lambda: defaultdict(list)
         )
-    
+
     def _get_limit(self, path: str) -> int:
         """获取路径的限流配置"""
         # 精确匹配
         if path in self.path_limits:
             return self.path_limits[path]
-        
+
         # 前缀匹配
         for pattern, limit in self.path_limits.items():
             if path.startswith(pattern):
                 return limit
-        
+
         return self.default_limit
-    
+
     def _clean_old_records(self, records: list, current_time: datetime):
         """清理过期记录"""
         cutoff_time = current_time - timedelta(seconds=self.window_seconds)
@@ -226,49 +228,53 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             for timestamp, count in records
             if timestamp > cutoff_time
         ]
-    
+
+    def _is_exempt_path(self, path: str) -> bool:
+        """判断路径是否跳过限流。"""
+        return path in self.exempt_paths
+
     def _check_rate_limit(self, client_ip: str, path: str) -> tuple[bool, int, int]:
         """
         检查是否超过限流
-        
+
         Returns:
             (是否允许, 当前请求数, 限制数)
         """
         current_time = datetime.now()
         limit = self._get_limit(path)
-        
+
         # 获取该 IP 和路径的请求记录
         records = self.request_records[client_ip][path]
-        
+
         # 清理过期记录
         records = self._clean_old_records(records, current_time)
         self.request_records[client_ip][path] = records
-        
+
         # 计算当前窗口内的请求数
         current_count = sum(count for _, count in records)
-        
+
         # 检查是否超限
         if current_count >= limit:
             return False, current_count, limit
-        
+
         # 添加新记录
         records.append((current_time, 1))
-        
+
         return True, current_count + 1, limit
-    
+
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
         """处理请求"""
         # 获取客户端 IP
         client_ip = request.client.host if request.client else "unknown"
         path = request.url.path
-        
+
         # 跳过健康检查等路径
-        if path in ["/health", "/docs", "/redoc", "/openapi.json"]:
+        if path in ["/health", "/docs", "/redoc", "/openapi.json"] or self._is_exempt_path(path):
             return await call_next(request)
-        
+
         # 检查限流
         allowed, current_count, limit = self._check_rate_limit(client_ip, path)
-        
+
         if not allowed:
             # 记录限流日志
             self.logger.warning(
@@ -280,7 +286,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                     "limit": limit,
                 }
             )
-            
+
             # 返回 429 错误
             error_response = ResponseBuilder.error(
                 message="请求过于频繁，请稍后再试",
@@ -293,7 +299,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                     "retry_after": self.window_seconds
                 }
             )
-            
+
             return JSONResponse(
                 status_code=429,
                 content=error_response,
@@ -304,27 +310,27 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                     "Retry-After": str(self.window_seconds)
                 }
             )
-        
+
         # 处理请求
         response = await call_next(request)
-        
+
         # 添加限流信息到响应头
         remaining = limit - current_count
         response.headers["X-RateLimit-Limit"] = str(limit)
         response.headers["X-RateLimit-Remaining"] = str(remaining)
         response.headers["X-RateLimit-Reset"] = str(self.window_seconds)
-        
+
         return response
 
 
 class ErrorHandlingMiddleware(BaseHTTPMiddleware):
     """错误处理中间件"""
-    
+
     def __init__(self, app, debug: bool = False, logger=None):
         super().__init__(app)
         self.debug = debug
         self.logger = logger or get_logger()
-    
+
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
         """处理请求"""
         try:
@@ -342,7 +348,7 @@ class ErrorHandlingMiddleware(BaseHTTPMiddleware):
                 trace_id=trace_id,
                 exc_info=True
             )
-            
+
             # 构造错误响应
             error_details = None
             if self.debug:
@@ -352,7 +358,7 @@ class ErrorHandlingMiddleware(BaseHTTPMiddleware):
                     "error_type": type(e).__name__,
                     "traceback": traceback.format_exc()
                 }
-            
+
             error_response = ResponseBuilder.error(
                 message="系统内部错误" if not self.debug else str(e),
                 code=500,
@@ -360,7 +366,7 @@ class ErrorHandlingMiddleware(BaseHTTPMiddleware):
                 error_type="InternalError",
                 details=error_details
             )
-            
+
             return JSONResponse(
                 status_code=500,
                 content=error_response
@@ -373,3 +379,7 @@ DEFAULT_RATE_LIMITS = {
     "/api/admin/config": 10,  # 配置接口 10次/分钟
     "/api/admin": 30,  # 管理接口 30次/分钟
 }
+
+DEFAULT_RATE_LIMIT_EXEMPT_PATHS = [
+    "/api/internal/docqa/health",
+]

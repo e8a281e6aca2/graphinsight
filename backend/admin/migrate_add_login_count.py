@@ -1,143 +1,97 @@
 """
-数据库迁移脚本：添加 login_count 字段
+数据库迁移脚本：添加或回滚 login_count 字段。
 """
+from __future__ import annotations
+
+import argparse
 import os
 import sys
 from pathlib import Path
 
-# 添加项目根目录到 Python 路径
+from dotenv import find_dotenv, load_dotenv
+from sqlalchemy import inspect, text
+
+
 backend_dir = Path(__file__).parent.parent
 sys.path.insert(0, str(backend_dir))
 
-from sqlalchemy import text
-from admin.database import engine, SessionLocal
-from dotenv import load_dotenv, find_dotenv
+from admin.database import engine
 
-# 加载环境变量
 load_dotenv(find_dotenv(), override=True)
 
 
-def check_column_exists(table_name: str, column_name: str) -> bool:
-    """检查列是否存在"""
-    with engine.connect() as conn:
-        # PostgreSQL 查询
-        query = text("""
-            SELECT column_name 
-            FROM information_schema.columns 
-            WHERE table_name = :table_name 
-            AND column_name = :column_name
-        """)
-        result = conn.execute(query, {"table_name": table_name, "column_name": column_name})
-        return result.fetchone() is not None
+def _safe_db_url(raw: str) -> str:
+    if "@" not in raw:
+        return raw
+    left, right = raw.split("@", 1)
+    if "://" in left and ":" in left.split("://", 1)[1]:
+        prefix, account = left.split("://", 1)
+        username = account.split(":", 1)[0]
+        return f"{prefix}://{username}:****@{right}"
+    return raw
 
 
-def add_login_count_column():
-    """添加 login_count 列"""
-    print("开始数据库迁移...")
-    
-    try:
-        # 检查列是否已存在
-        if check_column_exists("admin_users", "login_count"):
-            print("✓ login_count 列已存在，无需迁移")
-            return True
-        
-        print("添加 login_count 列...")
-        with engine.connect() as conn:
-            # 添加列，默认值为 0
-            conn.execute(text("""
-                ALTER TABLE admin_users 
-                ADD COLUMN login_count INTEGER DEFAULT 0
-            """))
-            conn.commit()
-            print("✓ 成功添加 login_count 列")
-        
-        # 更新现有记录
-        print("更新现有用户记录...")
-        with engine.connect() as conn:
-            conn.execute(text("""
-                UPDATE admin_users 
-                SET login_count = 0 
-                WHERE login_count IS NULL
-            """))
-            conn.commit()
-            print("✓ 成功更新现有记录")
-        
-        print("\n✓ 数据库迁移完成!")
-        return True
-        
-    except Exception as e:
-        print(f"\n✗ 迁移失败: {str(e)}")
-        return False
+def _column_exists() -> bool:
+    inspector = inspect(engine)
+    columns = inspector.get_columns("admin_users")
+    return any(col.get("name") == "login_count" for col in columns)
 
 
-def verify_migration():
-    """验证迁移结果"""
-    print("\n验证迁移结果...")
-    
-    try:
-        with engine.connect() as conn:
-            # 查询表结构
-            result = conn.execute(text("""
-                SELECT column_name, data_type, column_default
-                FROM information_schema.columns
-                WHERE table_name = 'admin_users'
-                ORDER BY ordinal_position
-            """))
-            
-            print("\nadmin_users 表结构:")
-            print("-" * 60)
-            for row in result:
-                print(f"  {row[0]:<20} {row[1]:<15} {row[2] or ''}")
-            print("-" * 60)
-            
-            # 查询用户数据
-            result = conn.execute(text("""
-                SELECT id, username, login_count
-                FROM admin_users
-                LIMIT 5
-            """))
-            
-            print("\n用户数据示例:")
-            print("-" * 60)
-            rows = result.fetchall()
-            if rows:
-                for row in rows:
-                    print(f"  ID: {row[0]}, 用户名: {row[1]}, 登录次数: {row[2]}")
-            else:
-                print("  (暂无用户数据)")
-            print("-" * 60)
-            
-        return True
-        
-    except Exception as e:
-        print(f"\n✗ 验证失败: {str(e)}")
-        return False
+def _print_plan(action: str) -> None:
+    print("-" * 60)
+    print(f"计划动作: {action}")
+    if action == "migrate":
+        print("- ensure column admin_users.login_count")
+        print("- normalize NULL login_count to 0")
+    else:
+        print("- drop column admin_users.login_count")
+    print("-" * 60)
+
+
+def _run(action: str) -> None:
+    with engine.begin() as conn:
+        if action == "migrate":
+            if _column_exists():
+                print("✓ admin_users.login_count already exists")
+                return
+            conn.execute(text("ALTER TABLE admin_users ADD COLUMN login_count INTEGER DEFAULT 0"))
+            conn.execute(text("UPDATE admin_users SET login_count = 0 WHERE login_count IS NULL"))
+            print("✓ added column admin_users.login_count")
+            return
+
+        if action == "rollback":
+            if not _column_exists():
+                print("✓ admin_users.login_count already absent")
+                return
+            conn.execute(text("ALTER TABLE admin_users DROP COLUMN login_count"))
+            print("✓ dropped column admin_users.login_count")
+            return
+
+    raise RuntimeError(f"unsupported action: {action}")
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Migrate or rollback admin_users.login_count")
+    parser.add_argument("--action", choices=("migrate", "rollback"), default="migrate")
+    parser.add_argument("--dry-run", action="store_true")
+    return parser.parse_args()
+
+
+def main() -> int:
+    args = parse_args()
+    print("=" * 60)
+    print("GraphInsight admin_users login_count migration")
+    print("=" * 60)
+    print(f"数据库: {_safe_db_url(os.getenv('ADMIN_DATABASE_URL', '未配置'))}")
+    print(f"方言: {engine.dialect.name}")
+    _print_plan(args.action)
+    if args.dry_run:
+        print("✓ dry-run completed, database not modified")
+        return 0
+    _run(args.action)
+    print(f"✓ admin_users login_count {args.action} completed")
+    return 0
 
 
 if __name__ == "__main__":
-    print("=" * 60)
-    print("数据库迁移工具 - 添加 login_count 字段")
-    print("=" * 60)
-    print()
-    
-    # 显示数据库连接信息
-    db_url = os.getenv("ADMIN_DATABASE_URL", "未配置")
-    # 隐藏密码
-    if "@" in db_url:
-        parts = db_url.split("@")
-        user_part = parts[0].split("://")[1].split(":")[0]
-        db_url_display = f"postgresql://{user_part}:****@{parts[1]}"
-    else:
-        db_url_display = db_url
-    
-    print(f"数据库: {db_url_display}")
-    print()
-    
-    # 执行迁移
-    if add_login_count_column():
-        verify_migration()
-        print("\n✓ 所有操作完成!")
-        sys.exit(0)
-    else:
-        print("\n✗ 迁移失败，请检查错误信息")
-        sys.exit(1)
+    raise SystemExit(main())

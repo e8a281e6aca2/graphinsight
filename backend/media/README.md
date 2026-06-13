@@ -37,4 +37,4 @@
      audios: ["expert_intro.mp3"]
    })
    ```
-3. 前端通过 `/api/media/{filename}` 访问文件
+3. 前端通过 `/api/media/{filename}` 访问文件；统一后端模式下该入口由 Go 对外提供，Python 仅在兼容直调模式下可选挂载同一路径。

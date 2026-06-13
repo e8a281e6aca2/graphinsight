@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 
+ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CASES = ["health", "docqa-health", "nl2cypher-status"]
 RELEASE_CASES = ["health", "query", "docqa-health", "nl2cypher-status", "docqa", "graph-build"]
 
@@ -85,7 +86,8 @@ def _request(
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             status = resp.status
             route_owner = resp.headers.get("X-GraphInsight-Route-Owner", "")
-            _json_or_raw(resp.read().decode("utf-8", errors="replace"))
+            response_body = _json_or_raw(resp.read().decode("utf-8", errors="replace"))
+            _cleanup_probe_side_effect(base_url=base_url, token=token, timeout=timeout, case=case, body=response_body)
     except urllib.error.HTTPError as exc:
         status = exc.code
         route_owner = exc.headers.get("X-GraphInsight-Route-Owner", "")
@@ -109,6 +111,43 @@ def _request(
     )
 
 
+def _cleanup_probe_side_effect(
+    *,
+    base_url: str,
+    token: str,
+    timeout: float,
+    case: ProbeCase,
+    body: Any,
+) -> None:
+    if case.name != "graph-build" or not token.strip() or not isinstance(body, dict):
+        return
+
+    data = body.get("data")
+    if not isinstance(data, dict):
+        return
+    job_id = data.get("job_id")
+    if not isinstance(job_id, int):
+        return
+
+    url = base_url.rstrip("/") + f"/api/v1/admin/jobs/{job_id}:cancel"
+    req = urllib.request.Request(
+        url=url,
+        data=b"{}",
+        method="POST",
+        headers={
+            "Accept": "application/json",
+            "Authorization": f"Bearer {token.strip()}",
+            "Content-Type": "application/json",
+            "X-Trace-Id": "perf-probe-cleanup-" + uuid.uuid4().hex,
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=min(timeout, 5.0)) as resp:
+            resp.read()
+    except Exception:
+        return
+
+
 def _login(base_url: str, username: str, password: str, timeout: float) -> str:
     payload = json.dumps({"username": username, "password": password}).encode("utf-8")
     req = urllib.request.Request(
@@ -124,6 +163,22 @@ def _login(base_url: str, username: str, password: str, timeout: float) -> str:
     if not token:
         raise RuntimeError("login response did not include data.token")
     return str(token)
+
+
+def _issue_local_token(email: str) -> str:
+    sys.path.insert(0, str(ROOT))
+    from admin.database import SessionLocal
+    from admin.models import AdminUser
+    from admin.services.auth_service import auth_service
+
+    db = SessionLocal()
+    try:
+        user = db.query(AdminUser).filter(AdminUser.email == email).first()
+        if user is None:
+            raise RuntimeError(f"admin user not found: {email}")
+        return auth_service.create_access_token({"sub": user.email or user.username})
+    finally:
+        db.close()
 
 
 def _percentile(values: list[float], percentile: float) -> float:
@@ -180,9 +235,9 @@ def _build_cases(args: argparse.Namespace) -> list[ProbeCase]:
         "health": ProbeCase("health", "GET", "/health", None, "go-native"),
         "query": ProbeCase("query", "POST", "/api/query", payload_query, "go-native"),
         "docqa-health": ProbeCase("docqa-health", "GET", "/api/docqa/health?probe_llm=false", None, "go-orchestrator"),
-        "nl2cypher-status": ProbeCase("nl2cypher-status", "GET", "/api/nl2cypher/status", None, "go-orchestrator"),
+        "nl2cypher-status": ProbeCase("nl2cypher-status", "GET", "/api/nl2cypher/status", None, "go-native"),
         "docqa": ProbeCase("docqa", "POST", "/api/docqa", payload_docqa, "go-orchestrator"),
-        "graph-build": ProbeCase("graph-build", "POST", "/api/graph/build", payload_build, "go-orchestrator"),
+        "graph-build": ProbeCase("graph-build", "POST", "/api/graph/build", payload_build, "go-native"),
     }
     if args.case:
         selected = args.case
@@ -275,6 +330,12 @@ def main() -> int:
         except Exception as exc:  # noqa: BLE001
             print(f"LOGIN_INIT_FAIL {exc}")
             return 1
+    if not token:
+        try:
+            token = _issue_local_token(args.admin_email)
+            print("ADMIN_TOKEN_READY source=local")
+        except Exception as exc:  # noqa: BLE001
+            print(f"LOCAL_TOKEN_INIT_SKIP {exc}")
 
     cases = _build_cases(args)
     report: dict[str, Any] = {

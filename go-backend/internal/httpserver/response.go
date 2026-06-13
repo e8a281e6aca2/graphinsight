@@ -11,9 +11,17 @@ const routeOwnerHeader = "X-GraphInsight-Route-Owner"
 type APIResponse struct {
 	Code      int         `json:"code"`
 	Message   string      `json:"message"`
-	Data      interface{} `json:"data,omitempty"`
+	Data      interface{} `json:"data"`
 	Timestamp string      `json:"timestamp"`
 	TraceID   string      `json:"trace_id,omitempty"`
+}
+
+type adminPaginatedData struct {
+	Items      interface{} `json:"items"`
+	Total      int         `json:"total"`
+	Page       int         `json:"page"`
+	PageSize   int         `json:"page_size"`
+	TotalPages int         `json:"total_pages"`
 }
 
 func markRouteOwner(w http.ResponseWriter, owner string) {

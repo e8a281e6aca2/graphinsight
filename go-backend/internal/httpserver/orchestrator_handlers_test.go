@@ -1,138 +1,213 @@
 package httpserver
 
 import (
+	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"log/slog"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
+	"graphinsight/go-backend/internal/adminstore"
 	"graphinsight/go-backend/internal/config"
+	"graphinsight/go-backend/internal/graph"
 	"graphinsight/go-backend/internal/orchestrator"
 )
 
-func TestOrchestratorBuildRoute(t *testing.T) {
+type fakeUnifiedGraphBuildStore struct {
+	*fakeAdminUserStore
+	*fakeAdminConfigStore
+	*fakeAdminJobStore
+	*fakeAdminLogStore
+	createCalls int32
+}
+
+func (s *fakeUnifiedGraphBuildStore) CreateJob(ctx context.Context, req adminstore.JobCreateRequest) (adminstore.JobItem, error) {
+	atomic.AddInt32(&s.createCalls, 1)
+	return s.fakeAdminJobStore.CreateJob(ctx, req)
+}
+
+func TestGraphBuildRouteCreatesNativeJob(t *testing.T) {
 	t.Parallel()
 
-	var gotUserID, gotPermission string
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/graph/build" {
-			t.Fatalf("unexpected upstream path: %s", r.URL.Path)
+	wakeCalled := false
+	pythonWakeClient := newProxyClientForTest(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/internal/jobs/wake" {
+			t.Fatalf("unexpected wake path: %s", r.URL.Path)
 		}
-		gotUserID = r.Header.Get("x-auth-user-id")
-		gotPermission = r.Header.Get("x-authz-permission")
+		if r.Method != http.MethodPost {
+			t.Fatalf("unexpected wake method: %s", r.Method)
+		}
+		if r.Header.Get("X-Go-Proxy") != "graphinsight-go" {
+			t.Fatalf("expected go control header, got %q", r.Header.Get("X-Go-Proxy"))
+		}
+		wakeCalled = true
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"code":200,"message":"已触发建图"}`))
-	}))
-	defer upstream.Close()
-
-	orc, err := orchestrator.New(config.Config{PythonBackendBaseURL: upstream.URL, PythonBackendTimeoutSeconds: 2})
-	if err != nil {
-		t.Fatalf("new orchestrator client: %v", err)
-	}
+		_, _ = w.Write([]byte(`{"code":200,"message":"ok","data":{"accepted":true}}`))
+	})
 
 	mux := http.NewServeMux()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	cfg := config.Config{AppName: "GraphInsight Go API", Version: "test", RBACEnforceBusinessAPI: false}
-	registerRoutes(mux, cfg, logger, nil, nil, nil, nil, nil, nil, orc, nil)
+	createdAt := time.Date(2026, 6, 7, 9, 0, 0, 0, time.UTC)
+	store := &fakeUnifiedGraphBuildStore{
+		fakeAdminUserStore: &fakeAdminUserStore{},
+		fakeAdminConfigStore: &fakeAdminConfigStore{
+			values: map[string]map[string]string{
+				"ai_service": {
+					"graph_extract_reasoning_profile":         "fast",
+					"graph_extract_complex_reasoning_profile": "balanced",
+				},
+			},
+		},
+		fakeAdminLogStore: &fakeAdminLogStore{},
+		fakeAdminJobStore: &fakeAdminJobStore{
+			createResult: adminstore.JobItem{
+				ID:         31,
+				JobType:    "build_graph",
+				Status:     "pending",
+				Payload:    map[string]interface{}{"source": "documents", "force": false, "doc_ids": []interface{}{"doc-1"}},
+				RetryCount: 0,
+				MaxRetries: 3,
+				CreatedAt:  createdAt,
+			},
+		},
+	}
+	registerRoutes(mux, cfg, logger, nil, nil, pythonWakeClient, nil, nil, nil, store)
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/graph/build", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/graph/build?tenant_id=tenant-a&project_id=project-a&kb_id=kb-a", strings.NewReader(`{"source":"documents","force":false,"doc_ids":["doc-1"],"note":"smoke"}`))
 	req.Header.Set("x-auth-user-id", "12")
-	req.Header.Set("x-authz-permission", "graph:build")
+	req.Header.Set(traceHeader, "trace-build-job")
+	req.Header.Set("Content-Type", "application/json")
 	mux.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", rec.Code)
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
 	}
-	if body := rec.Body.String(); body == "" {
-		t.Fatalf("expected response body")
+	if rec.Header().Get(routeOwnerHeader) != "go-native" {
+		t.Fatalf("unexpected route owner: %s", rec.Header().Get(routeOwnerHeader))
 	}
-	if gotUserID != "12" || gotPermission != "graph:build" {
-		t.Fatalf("expected auth context headers forwarded, got user_id=%s permission=%s", gotUserID, gotPermission)
+	if store.fakeAdminJobStore.createReq.JobType != "build_graph" {
+		t.Fatalf("unexpected job type: %#v", store.fakeAdminJobStore.createReq)
+	}
+	if store.fakeAdminJobStore.createReq.RequestedBy == nil || *store.fakeAdminJobStore.createReq.RequestedBy != 12 {
+		t.Fatalf("unexpected requested_by: %#v", store.fakeAdminJobStore.createReq.RequestedBy)
+	}
+	if store.fakeAdminJobStore.createReq.TraceID == nil || *store.fakeAdminJobStore.createReq.TraceID != "trace-build-job" {
+		t.Fatalf("unexpected trace id: %#v", store.fakeAdminJobStore.createReq.TraceID)
+	}
+	if store.fakeAdminJobStore.createReq.TenantID == nil || *store.fakeAdminJobStore.createReq.TenantID != "tenant-a" {
+		t.Fatalf("unexpected tenant id: %#v", store.fakeAdminJobStore.createReq.TenantID)
+	}
+	if store.fakeAdminJobStore.createReq.ProjectID == nil || *store.fakeAdminJobStore.createReq.ProjectID != "project-a" {
+		t.Fatalf("unexpected project id: %#v", store.fakeAdminJobStore.createReq.ProjectID)
+	}
+	if store.fakeAdminJobStore.createReq.KBID == nil || *store.fakeAdminJobStore.createReq.KBID != "kb-a" {
+		t.Fatalf("unexpected kb id: %#v", store.fakeAdminJobStore.createReq.KBID)
+	}
+	if store.fakeAdminJobStore.createReq.Payload["source"] != "documents" {
+		t.Fatalf("unexpected payload source: %#v", store.fakeAdminJobStore.createReq.Payload)
+	}
+	if store.fakeAdminJobStore.createReq.Payload["reasoning_profile"] != "fast" {
+		t.Fatalf("expected default graph_extract reasoning profile, got %#v", store.fakeAdminJobStore.createReq.Payload["reasoning_profile"])
+	}
+	docIDs, ok := store.fakeAdminJobStore.createReq.Payload["doc_ids"].([]string)
+	if !ok || len(docIDs) != 1 || docIDs[0] != "doc-1" {
+		t.Fatalf("unexpected payload doc_ids: %#v", store.fakeAdminJobStore.createReq.Payload["doc_ids"])
+	}
+	if !wakeCalled {
+		t.Fatalf("expected python wake to be triggered")
+	}
+
+	var resp APIResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	data, ok := resp.Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected response data object, got %#v", resp.Data)
+	}
+	if data["status"] != "queued" {
+		t.Fatalf("unexpected status: %#v", data["status"])
+	}
+	if int(data["job_id"].(float64)) != 31 {
+		t.Fatalf("unexpected job_id: %#v", data["job_id"])
 	}
 }
 
-func TestOrchestratorBuildRouteIdempotencyReplay(t *testing.T) {
+func TestGraphBuildRouteInjectsComplexScenarioReasoningProfileFromConfig(t *testing.T) {
 	t.Parallel()
 
-	var calls int32
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		n := atomic.AddInt32(&calls, 1)
+	pythonWakeClient := newProxyClientForTest(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(fmt.Sprintf(`{"code":200,"message":"build-%d"}`, n)))
-	}))
-	defer upstream.Close()
-
-	orc, err := orchestrator.New(config.Config{PythonBackendBaseURL: upstream.URL, PythonBackendTimeoutSeconds: 2})
-	if err != nil {
-		t.Fatalf("new orchestrator client: %v", err)
-	}
+		_, _ = w.Write([]byte(`{"code":200,"message":"ok","data":{"accepted":true}}`))
+	})
 
 	mux := http.NewServeMux()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	cfg := config.Config{AppName: "GraphInsight Go API", Version: "test", RBACEnforceBusinessAPI: false}
-	registerRoutes(mux, cfg, logger, nil, nil, nil, nil, nil, nil, orc, nil)
-
-	reqBody := `{"source":"documents","force":false}`
-
-	rec1 := httptest.NewRecorder()
-	req1 := httptest.NewRequest(http.MethodPost, "/api/graph/build", strings.NewReader(reqBody))
-	req1.Header.Set("Idempotency-Key", "build-123")
-	req1.Header.Set("Content-Type", "application/json")
-	mux.ServeHTTP(rec1, req1)
-
-	rec2 := httptest.NewRecorder()
-	req2 := httptest.NewRequest(http.MethodPost, "/api/graph/build", strings.NewReader(reqBody))
-	req2.Header.Set("Idempotency-Key", "build-123")
-	req2.Header.Set("Content-Type", "application/json")
-	mux.ServeHTTP(rec2, req2)
-
-	if rec1.Code != http.StatusOK || rec2.Code != http.StatusOK {
-		t.Fatalf("expected both 200, got %d and %d", rec1.Code, rec2.Code)
+	store := &fakeUnifiedGraphBuildStore{
+		fakeAdminUserStore: &fakeAdminUserStore{},
+		fakeAdminConfigStore: &fakeAdminConfigStore{
+			values: map[string]map[string]string{
+				"ai_service": {
+					"graph_extract_reasoning_profile":         "fast",
+					"graph_extract_complex_reasoning_profile": "balanced",
+				},
+			},
+		},
+		fakeAdminLogStore: &fakeAdminLogStore{},
+		fakeAdminJobStore: &fakeAdminJobStore{
+			createResult: adminstore.JobItem{ID: 52, JobType: "build_graph", Status: "pending", Payload: map[string]interface{}{"force": false}, RetryCount: 0, MaxRetries: 3, CreatedAt: time.Date(2026, 6, 7, 11, 0, 0, 0, time.UTC)},
+		},
 	}
-	if rec1.Body.String() != rec2.Body.String() {
-		t.Fatalf("expected replayed response to match, got %s vs %s", rec1.Body.String(), rec2.Body.String())
+	registerRoutes(mux, cfg, logger, nil, nil, pythonWakeClient, nil, nil, nil, store)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/graph/build", strings.NewReader(`{"force":false,"complex_extraction":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
 	}
-	if rec1.Body.String() != `{"code":200,"message":"build-1"}` {
-		t.Fatalf("unexpected body: %s", rec1.Body.String())
+	if store.fakeAdminJobStore.createReq.Payload["reasoning_profile"] != "balanced" {
+		t.Fatalf("expected complex graph_extract reasoning profile=balanced, got %#v", store.fakeAdminJobStore.createReq.Payload["reasoning_profile"])
 	}
-	if atomic.LoadInt32(&calls) != 1 {
-		t.Fatalf("expected upstream called once, got %d", calls)
-	}
-	if rec2.Header().Get("X-Idempotency-Key") != "build-123" {
-		t.Fatalf("expected X-Idempotency-Key response header")
+	if store.fakeAdminJobStore.createReq.Payload["complex_extraction"] != true {
+		t.Fatalf("expected complex_extraction=true, got %#v", store.fakeAdminJobStore.createReq.Payload["complex_extraction"])
 	}
 }
 
-func TestOrchestratorBuildRouteIdempotencyConflict(t *testing.T) {
+func TestGraphBuildRouteIdempotencyReplay(t *testing.T) {
 	t.Parallel()
 
-	var calls int32
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt32(&calls, 1)
+	pythonWakeClient := newProxyClientForTest(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"code":200,"message":"ok"}`))
-	}))
-	defer upstream.Close()
-
-	orc, err := orchestrator.New(config.Config{PythonBackendBaseURL: upstream.URL, PythonBackendTimeoutSeconds: 2})
-	if err != nil {
-		t.Fatalf("new orchestrator client: %v", err)
-	}
+		_, _ = w.Write([]byte(`{"code":200,"message":"ok","data":{"accepted":true}}`))
+	})
 
 	mux := http.NewServeMux()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	cfg := config.Config{AppName: "GraphInsight Go API", Version: "test", RBACEnforceBusinessAPI: false}
-	registerRoutes(mux, cfg, logger, nil, nil, nil, nil, nil, nil, orc, nil)
+	createdAt := time.Date(2026, 6, 7, 10, 0, 0, 0, time.UTC)
+	store := &fakeUnifiedGraphBuildStore{
+		fakeAdminUserStore:   &fakeAdminUserStore{},
+		fakeAdminConfigStore: &fakeAdminConfigStore{},
+		fakeAdminLogStore:    &fakeAdminLogStore{},
+		fakeAdminJobStore: &fakeAdminJobStore{
+			createResult: adminstore.JobItem{ID: 45, JobType: "build_graph", Status: "pending", Payload: map[string]interface{}{"force": false}, RetryCount: 0, MaxRetries: 3, CreatedAt: createdAt},
+		},
+	}
+	registerRoutes(mux, cfg, logger, nil, nil, pythonWakeClient, nil, nil, nil, store)
 
 	rec1 := httptest.NewRecorder()
 	req1 := httptest.NewRequest(http.MethodPost, "/api/graph/build", strings.NewReader(`{"force":false}`))
@@ -144,94 +219,190 @@ func TestOrchestratorBuildRouteIdempotencyConflict(t *testing.T) {
 	}
 
 	rec2 := httptest.NewRecorder()
-	req2 := httptest.NewRequest(http.MethodPost, "/api/graph/build", strings.NewReader(`{"force":true}`))
+	req2 := httptest.NewRequest(http.MethodPost, "/api/graph/build", strings.NewReader(`{"force":false}`))
 	req2.Header.Set("Idempotency-Key", "build-456")
+	req2.Header.Set("Content-Type", "application/json")
+	mux.ServeHTTP(rec2, req2)
+
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("expected 200 replay, got %d", rec2.Code)
+	}
+	if rec1.Body.String() != rec2.Body.String() {
+		t.Fatalf("expected replayed response to match, got %s vs %s", rec1.Body.String(), rec2.Body.String())
+	}
+	if atomic.LoadInt32(&store.createCalls) != 1 {
+		t.Fatalf("expected create job called once, got %d", atomic.LoadInt32(&store.createCalls))
+	}
+	if rec2.Header().Get("X-Idempotency-Key") != "build-456" {
+		t.Fatalf("expected X-Idempotency-Key response header")
+	}
+}
+
+func TestGraphBuildRouteIdempotencyConflict(t *testing.T) {
+	t.Parallel()
+
+	pythonWakeClient := newProxyClientForTest(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":200,"message":"ok","data":{"accepted":true}}`))
+	})
+
+	mux := http.NewServeMux()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	cfg := config.Config{AppName: "GraphInsight Go API", Version: "test", RBACEnforceBusinessAPI: false}
+	store := &fakeUnifiedGraphBuildStore{
+		fakeAdminUserStore:   &fakeAdminUserStore{},
+		fakeAdminConfigStore: &fakeAdminConfigStore{},
+		fakeAdminLogStore:    &fakeAdminLogStore{},
+		fakeAdminJobStore: &fakeAdminJobStore{
+			createResult: adminstore.JobItem{ID: 46, JobType: "build_graph", Status: "pending", Payload: map[string]interface{}{"force": false}, RetryCount: 0, MaxRetries: 3, CreatedAt: time.Date(2026, 6, 7, 10, 5, 0, 0, time.UTC)},
+		},
+	}
+	registerRoutes(mux, cfg, logger, nil, nil, pythonWakeClient, nil, nil, nil, store)
+
+	rec1 := httptest.NewRecorder()
+	req1 := httptest.NewRequest(http.MethodPost, "/api/graph/build", strings.NewReader(`{"force":false}`))
+	req1.Header.Set("Idempotency-Key", "build-789")
+	req1.Header.Set("Content-Type", "application/json")
+	mux.ServeHTTP(rec1, req1)
+	if rec1.Code != http.StatusOK {
+		t.Fatalf("first request expected 200, got %d", rec1.Code)
+	}
+
+	rec2 := httptest.NewRecorder()
+	req2 := httptest.NewRequest(http.MethodPost, "/api/graph/build", strings.NewReader(`{"force":true}`))
+	req2.Header.Set("Idempotency-Key", "build-789")
 	req2.Header.Set("Content-Type", "application/json")
 	mux.ServeHTTP(rec2, req2)
 
 	if rec2.Code != http.StatusConflict {
 		t.Fatalf("expected 409, got %d", rec2.Code)
 	}
-	if atomic.LoadInt32(&calls) != 1 {
-		t.Fatalf("expected upstream called once, got %d", calls)
+	if atomic.LoadInt32(&store.createCalls) != 1 {
+		t.Fatalf("expected create job called once, got %d", atomic.LoadInt32(&store.createCalls))
 	}
 }
 
 func TestOrchestratorDocumentsRoutes(t *testing.T) {
 	t.Parallel()
 
-	var seen []string
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		seen = append(seen, r.Method+" "+r.URL.Path+"?"+r.URL.RawQuery)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"code":200,"message":"ok"}`))
-	}))
-	defer upstream.Close()
-
-	orc, err := orchestrator.New(config.Config{PythonBackendBaseURL: upstream.URL, PythonBackendTimeoutSeconds: 2})
-	if err != nil {
-		t.Fatalf("new orchestrator client: %v", err)
-	}
-
 	mux := http.NewServeMux()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	cfg := config.Config{AppName: "GraphInsight Go API", Version: "test", RBACEnforceBusinessAPI: false}
-	registerRoutes(mux, cfg, logger, nil, nil, nil, nil, nil, nil, orc, nil)
+	docDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(docDir, "alpha.txt"), []byte("alpha"), 0o644); err != nil {
+		t.Fatalf("write temp document: %v", err)
+	}
+	graphSvc := &stubGraphService{
+		docTotals:       graph.DocumentGraphStats{Documents: 1, Chunks: 2, Relations: 3, Entities: 4},
+		docClearPreview: graph.DocumentGraphStats{Documents: 1, Chunks: 2, Relations: 3},
+		docClear:        graph.DocumentGraphStats{Documents: 1, Chunks: 2, Relations: 3, OrphanEntities: 1},
+	}
+	cfg := config.Config{
+		AppName:                     "GraphInsight Go API",
+		Version:                     "test",
+		RBACEnforceBusinessAPI:      false,
+		DocumentStoragePath:         docDir,
+		DocumentStorageFallbackPath: docDir,
+	}
+	registerRoutes(mux, cfg, logger, graphSvc, nil, nil, nil, nil, nil, nil)
 
-	cases := []struct {
+	getCases := []struct {
 		method string
 		path   string
+		owner  string
 	}{
-		{method: http.MethodGet, path: "/api/documents"},
-		{method: http.MethodDelete, path: "/api/documents?purge_graph=true"},
-		{method: http.MethodDelete, path: "/api/documents/doc-123?purge_graph=true"},
+		{method: http.MethodGet, path: "/api/documents", owner: "go-native"},
+		{method: http.MethodGet, path: "/api/documents/deleted", owner: "go-native"},
 	}
-	for _, tc := range cases {
+	for _, tc := range getCases {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest(tc.method, tc.path, nil)
 		mux.ServeHTTP(rec, req)
 		if rec.Code != http.StatusOK {
 			t.Fatalf("request %s %s expected 200, got %d", tc.method, tc.path, rec.Code)
 		}
+		if rec.Header().Get(routeOwnerHeader) != tc.owner {
+			t.Fatalf("request %s %s unexpected route owner: %s", tc.method, tc.path, rec.Header().Get(routeOwnerHeader))
+		}
 	}
 
-	if len(seen) != 3 {
-		t.Fatalf("expected 3 upstream requests, got %d", len(seen))
+	var listBody struct {
+		Code int `json:"code"`
+		Data struct {
+			Items []map[string]interface{} `json:"items"`
+		} `json:"data"`
 	}
-	if seen[0] != "GET /api/documents?" {
-		t.Fatalf("unexpected upstream request[0]: %s", seen[0])
+	recList := httptest.NewRecorder()
+	reqList := httptest.NewRequest(http.MethodGet, "/api/documents", nil)
+	mux.ServeHTTP(recList, reqList)
+	if err := json.Unmarshal(recList.Body.Bytes(), &listBody); err != nil {
+		t.Fatalf("unmarshal list response: %v", err)
 	}
-	if seen[1] != "DELETE /api/documents?purge_graph=true" {
-		t.Fatalf("unexpected upstream request[1]: %s", seen[1])
+	if len(listBody.Data.Items) != 1 || listBody.Data.Items[0]["name"] != "alpha.txt" {
+		t.Fatalf("unexpected document list payload: %s", recList.Body.String())
 	}
-	if seen[2] != "DELETE /api/documents/doc-123?purge_graph=true" {
-		t.Fatalf("unexpected upstream request[2]: %s", seen[2])
+
+	recClear := httptest.NewRecorder()
+	docID, _ := listBody.Data.Items[0]["id"].(string)
+	if strings.TrimSpace(docID) == "" {
+		t.Fatalf("expected alpha doc id in list payload: %s", recList.Body.String())
+	}
+
+	recDelete := httptest.NewRecorder()
+	reqDelete := httptest.NewRequest(http.MethodDelete, "/api/documents/"+docID+"?purge_graph=false&soft_delete=true&dry_run=false&verify_after=true", nil)
+	mux.ServeHTTP(recDelete, reqDelete)
+	if recDelete.Code != http.StatusOK {
+		t.Fatalf("request DELETE /api/documents/{id} expected 200, got %d body=%s", recDelete.Code, recDelete.Body.String())
+	}
+	if recDelete.Header().Get(routeOwnerHeader) != "go-native" {
+		t.Fatalf("request DELETE /api/documents/{id} unexpected route owner: %s", recDelete.Header().Get(routeOwnerHeader))
+	}
+
+	recRestore := httptest.NewRecorder()
+	reqRestore := httptest.NewRequest(http.MethodPost, "/api/documents/"+docID+"/restore", nil)
+	mux.ServeHTTP(recRestore, reqRestore)
+	if recRestore.Code != http.StatusOK {
+		t.Fatalf("request POST /api/documents/{id}/restore expected 200, got %d body=%s", recRestore.Code, recRestore.Body.String())
+	}
+	if recRestore.Header().Get(routeOwnerHeader) != "go-native" {
+		t.Fatalf("request POST /api/documents/{id}/restore unexpected route owner: %s", recRestore.Header().Get(routeOwnerHeader))
+	}
+
+	reqClear := httptest.NewRequest(http.MethodDelete, "/api/documents?purge_graph=true", nil)
+	mux.ServeHTTP(recClear, reqClear)
+	if recClear.Code != http.StatusOK {
+		t.Fatalf("request DELETE /api/documents expected 200, got %d body=%s", recClear.Code, recClear.Body.String())
+	}
+	if recClear.Header().Get(routeOwnerHeader) != "go-native" {
+		t.Fatalf("request DELETE /api/documents unexpected route owner: %s", recClear.Header().Get(routeOwnerHeader))
+	}
+
+	if _, err := os.Stat(filepath.Join(docDir, "alpha.txt")); !os.IsNotExist(err) {
+		t.Fatalf("expected document to be removed from active directory, err=%v", err)
+	}
+	trashDir := filepath.Join(docDir, documentsSoftDeleteDirName)
+	metaFiles, err := filepath.Glob(filepath.Join(trashDir, "*"+documentsSoftDeleteMetaExt))
+	if err != nil {
+		t.Fatalf("glob trash meta files: %v", err)
+	}
+	if len(metaFiles) != 1 {
+		t.Fatalf("expected one trash metadata file after clear, got %d", len(metaFiles))
 	}
 }
 
 func TestOrchestratorUploadRoute(t *testing.T) {
 	t.Parallel()
 
-	var gotPath, gotContentType string
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotPath = r.URL.Path
-		gotContentType = r.Header.Get("Content-Type")
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"code":200,"message":"上传完成"}`))
-	}))
-	defer upstream.Close()
-
-	orc, err := orchestrator.New(config.Config{PythonBackendBaseURL: upstream.URL, PythonBackendTimeoutSeconds: 2})
-	if err != nil {
-		t.Fatalf("new orchestrator client: %v", err)
-	}
-
 	mux := http.NewServeMux()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	cfg := config.Config{AppName: "GraphInsight Go API", Version: "test", RBACEnforceBusinessAPI: false}
-	registerRoutes(mux, cfg, logger, nil, nil, nil, nil, nil, nil, orc, nil)
+	docDir := t.TempDir()
+	cfg := config.Config{
+		AppName:                     "GraphInsight Go API",
+		Version:                     "test",
+		RBACEnforceBusinessAPI:      false,
+		DocumentStoragePath:         docDir,
+		DocumentStorageFallbackPath: docDir,
+	}
+	registerRoutes(mux, cfg, logger, nil, nil, nil, nil, nil, nil, nil)
 
 	var b strings.Builder
 	writer := multipart.NewWriter(&b)
@@ -247,11 +418,34 @@ func TestOrchestratorUploadRoute(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)
 	}
-	if gotPath != "/api/documents/upload" {
-		t.Fatalf("unexpected upstream path: %s", gotPath)
+	if rec.Header().Get(routeOwnerHeader) != "go-native" {
+		t.Fatalf("unexpected route owner: %s", rec.Header().Get(routeOwnerHeader))
 	}
-	if !strings.HasPrefix(gotContentType, "multipart/form-data; boundary=") {
-		t.Fatalf("unexpected upstream content-type: %s", gotContentType)
+
+	var payload struct {
+		Code int `json:"code"`
+		Data struct {
+			Uploaded []map[string]interface{} `json:"uploaded"`
+			Skipped  []map[string]interface{} `json:"skipped"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal upload response: %v", err)
+	}
+	if payload.Code != http.StatusOK {
+		t.Fatalf("unexpected response code in body: %d", payload.Code)
+	}
+	if len(payload.Data.Uploaded) != 1 {
+		t.Fatalf("expected 1 uploaded item, got %d body=%s", len(payload.Data.Uploaded), rec.Body.String())
+	}
+	if len(payload.Data.Skipped) != 0 {
+		t.Fatalf("expected 0 skipped items, got %d body=%s", len(payload.Data.Skipped), rec.Body.String())
+	}
+	if payload.Data.Uploaded[0]["name"] != "a.txt" {
+		t.Fatalf("unexpected uploaded name: %v", payload.Data.Uploaded[0]["name"])
+	}
+	if _, err := os.Stat(filepath.Join(docDir, "a.txt")); err != nil {
+		t.Fatalf("expected uploaded file written to disk: %v", err)
 	}
 }
 
@@ -259,7 +453,7 @@ func TestOrchestratorMetricsRoute(t *testing.T) {
 	t.Parallel()
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/docqa/health" {
+		if r.URL.Path == "/api/internal/docqa/health" {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(`{"code":200,"message":"ok"}`))
@@ -283,7 +477,7 @@ func TestOrchestratorMetricsRoute(t *testing.T) {
 	mux := http.NewServeMux()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	cfg := config.Config{AppName: "GraphInsight Go API", Version: "test", RBACEnforceBusinessAPI: false}
-	registerRoutes(mux, cfg, logger, nil, nil, nil, nil, nil, nil, orc, nil)
+	registerRoutes(mux, cfg, logger, nil, nil, nil, nil, orc, nil, nil)
 
 	recCall := httptest.NewRecorder()
 	reqCall := httptest.NewRequest(http.MethodGet, "/api/docqa/health", nil)
@@ -334,18 +528,18 @@ func TestOrchestratorMetricsRoute(t *testing.T) {
 	foundSuccess := false
 	found5xx := false
 	for _, route := range payload.Data.Routes {
-		if route.Route == "/api/docqa/health" && route.Method == http.MethodGet && route.ErrorTaxonomy["success"] >= 1 {
+		if route.Route == "/api/internal/docqa/health" && route.Method == http.MethodGet && route.ErrorTaxonomy["success"] >= 1 {
 			foundSuccess = true
 		}
-		if route.Route == "/api/docqa/deep-research" && route.Method == http.MethodPost && route.ErrorTaxonomy["upstream_5xx"] >= 1 {
+		if route.Route == "/api/internal/docqa/deep-research" && route.Method == http.MethodPost && route.ErrorTaxonomy["upstream_5xx"] >= 1 {
 			found5xx = true
 		}
 	}
 	if !foundSuccess {
-		t.Fatalf("expected success taxonomy for /api/docqa/health")
+		t.Fatalf("expected success taxonomy for /api/internal/docqa/health")
 	}
 	if !found5xx {
-		t.Fatalf("expected upstream_5xx taxonomy for /api/docqa/deep-research")
+		t.Fatalf("expected upstream_5xx taxonomy for /api/internal/docqa/deep-research")
 	}
 }
 
@@ -370,57 +564,629 @@ func TestOrchestratorNL2CypherRoutes(t *testing.T) {
 
 	mux := http.NewServeMux()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	cfg := config.Config{AppName: "GraphInsight Go API", Version: "test", RBACEnforceBusinessAPI: false}
-	registerRoutes(mux, cfg, logger, nil, nil, nil, nil, nil, nil, orc, nil)
+	cfg := config.Config{AppName: "GraphInsight Go API", Version: "test", RBACEnforceBusinessAPI: false, AIModel: "gpt-4o-mini", AIAPIKey: "sk-test"}
+	store := &fakeUnifiedGraphBuildStore{
+		fakeAdminUserStore: &fakeAdminUserStore{},
+		fakeAdminConfigStore: &fakeAdminConfigStore{
+			values: map[string]map[string]string{
+				"nl2cypher": {
+					"enabled":   "true",
+					"max_limit": "88",
+				},
+			},
+		},
+		fakeAdminLogStore: &fakeAdminLogStore{},
+	}
+	registerRoutes(mux, cfg, logger, nil, nil, nil, nil, orc, nil, store)
 
-	cases := []struct {
-		method     string
-		path       string
-		permission string
-		body       string
-	}{
-		{method: http.MethodPost, path: "/api/nl2cypher", permission: "nl2cypher:use", body: `{"natural_language":"查找小麦"}`},
-		{method: http.MethodGet, path: "/api/nl2cypher/examples", permission: "", body: ""},
-		{method: http.MethodGet, path: "/api/nl2cypher/status", permission: "config:read", body: ""},
+	postRec := httptest.NewRecorder()
+	postReq := httptest.NewRequest(http.MethodPost, "/api/nl2cypher", strings.NewReader(`{"natural_language":"查找小麦"}`))
+	postReq.Header.Set("Content-Type", "application/json")
+	postReq.Header.Set("x-authz-permission", "nl2cypher:use")
+	mux.ServeHTTP(postRec, postReq)
+	if postRec.Code != http.StatusOK {
+		t.Fatalf("request POST /api/nl2cypher expected 200, got %d", postRec.Code)
+	}
+	if postRec.Header().Get(routeOwnerHeader) != "go-orchestrator" {
+		t.Fatalf("request POST /api/nl2cypher unexpected route owner: %s", postRec.Header().Get(routeOwnerHeader))
 	}
 
-	for _, tc := range cases {
-		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))
-		if tc.body != "" {
-			req.Header.Set("Content-Type", "application/json")
-		}
-		if tc.permission != "" {
-			req.Header.Set("x-authz-permission", tc.permission)
-		}
-		mux.ServeHTTP(rec, req)
+	examplesRec := httptest.NewRecorder()
+	examplesReq := httptest.NewRequest(http.MethodGet, "/api/nl2cypher/examples", nil)
+	mux.ServeHTTP(examplesRec, examplesReq)
+	if examplesRec.Code != http.StatusOK {
+		t.Fatalf("request GET /api/nl2cypher/examples expected 200, got %d", examplesRec.Code)
+	}
+	if examplesRec.Header().Get(routeOwnerHeader) != "go-native" {
+		t.Fatalf("request GET /api/nl2cypher/examples unexpected route owner: %s", examplesRec.Header().Get(routeOwnerHeader))
+	}
 
-		if rec.Code != http.StatusOK {
-			t.Fatalf("request %s %s expected 200, got %d", tc.method, tc.path, rec.Code)
-		}
-		if rec.Header().Get(routeOwnerHeader) != "go-orchestrator" {
-			t.Fatalf("request %s %s unexpected route owner: %s", tc.method, tc.path, rec.Header().Get(routeOwnerHeader))
-		}
+	var examplesBody map[string]interface{}
+	if err := json.Unmarshal(examplesRec.Body.Bytes(), &examplesBody); err != nil {
+		t.Fatalf("decode examples response: %v", err)
+	}
+	if examplesBody["success"] != true {
+		t.Fatalf("expected examples success=true, got body=%s", examplesRec.Body.String())
+	}
+
+	statusRec := httptest.NewRecorder()
+	statusReq := httptest.NewRequest(http.MethodGet, "/api/nl2cypher/status", nil)
+	statusReq.Header.Set("x-authz-permission", "config:read")
+	mux.ServeHTTP(statusRec, statusReq)
+	if statusRec.Code != http.StatusOK {
+		t.Fatalf("request GET /api/nl2cypher/status expected 200, got %d", statusRec.Code)
+	}
+	if statusRec.Header().Get(routeOwnerHeader) != "go-native" {
+		t.Fatalf("request GET /api/nl2cypher/status unexpected route owner: %s", statusRec.Header().Get(routeOwnerHeader))
+	}
+
+	var statusBody map[string]interface{}
+	if err := json.Unmarshal(statusRec.Body.Bytes(), &statusBody); err != nil {
+		t.Fatalf("decode status response: %v", err)
+	}
+	if statusBody["config_source"] != "go-native" {
+		t.Fatalf("expected go-native config_source, got body=%s", statusRec.Body.String())
+	}
+	if statusBody["max_limit"] != float64(88) {
+		t.Fatalf("expected max_limit=88, got body=%s", statusRec.Body.String())
 	}
 
 	wantSeen := []string{
-		"POST /api/nl2cypher",
-		"GET /api/nl2cypher/examples",
-		"GET /api/nl2cypher/status",
+		"POST /api/internal/nl2cypher",
 	}
 	for i, want := range wantSeen {
 		if seen[i] != want {
 			t.Fatalf("request[%d] expected %s, got %s", i, want, seen[i])
 		}
 	}
+	if len(seen) != 1 {
+		t.Fatalf("expected only POST path to hit python upstream, got %v", seen)
+	}
 	if permissions[0] != "nl2cypher:use" {
 		t.Fatalf("expected nl2cypher permission, got %s", permissions[0])
 	}
-	if permissions[1] != "" {
-		t.Fatalf("expected no permission header for examples, got %s", permissions[1])
+	if store.fakeAdminLogStore.businessAuditReq.Action != "nl2cypher_generate" {
+		t.Fatalf("expected nl2cypher business audit, got %#v", store.fakeAdminLogStore.businessAuditReq)
 	}
-	if permissions[2] != "config:read" {
-		t.Fatalf("expected config:read permission, got %s", permissions[2])
+	if store.fakeAdminLogStore.businessAuditReq.Status != "success" {
+		t.Fatalf("expected successful nl2cypher audit, got %#v", store.fakeAdminLogStore.businessAuditReq)
+	}
+}
+
+func TestNL2CypherRouteRejectsInvalidJSONBeforeUpstream(t *testing.T) {
+	t.Parallel()
+
+	upstreamCalled := false
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamCalled = true
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"success":true}`))
+	}))
+	defer upstream.Close()
+
+	orc, err := orchestrator.New(config.Config{PythonBackendBaseURL: upstream.URL, PythonBackendTimeoutSeconds: 2})
+	if err != nil {
+		t.Fatalf("new orchestrator client: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	cfg := config.Config{AppName: "GraphInsight Go API", Version: "test", RBACEnforceBusinessAPI: false}
+	store := &fakeUnifiedGraphBuildStore{
+		fakeAdminUserStore:   &fakeAdminUserStore{},
+		fakeAdminConfigStore: &fakeAdminConfigStore{},
+		fakeAdminLogStore:    &fakeAdminLogStore{},
+	}
+	registerRoutes(mux, cfg, logger, nil, nil, nil, nil, orc, nil, store)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/nl2cypher", strings.NewReader(`{"natural_language":`))
+	req.Header.Set("Content-Type", "application/json")
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if rec.Header().Get(routeOwnerHeader) != "go-orchestrator" {
+		t.Fatalf("unexpected route owner: %s", rec.Header().Get(routeOwnerHeader))
+	}
+	if upstreamCalled {
+		t.Fatalf("expected invalid JSON to be rejected before upstream call")
+	}
+	if store.fakeAdminLogStore.businessAuditReq.Action != "nl2cypher_generate" {
+		t.Fatalf("expected invalid request audit, got %#v", store.fakeAdminLogStore.businessAuditReq)
+	}
+	if store.fakeAdminLogStore.businessAuditReq.Status != "failed" {
+		t.Fatalf("expected failed audit status, got %#v", store.fakeAdminLogStore.businessAuditReq)
+	}
+}
+
+func TestNL2CypherRouteRejectsBlankNaturalLanguageBeforeUpstream(t *testing.T) {
+	t.Parallel()
+
+	upstreamCalled := false
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamCalled = true
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"success":true}`))
+	}))
+	defer upstream.Close()
+
+	orc, err := orchestrator.New(config.Config{PythonBackendBaseURL: upstream.URL, PythonBackendTimeoutSeconds: 2})
+	if err != nil {
+		t.Fatalf("new orchestrator client: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	cfg := config.Config{AppName: "GraphInsight Go API", Version: "test", RBACEnforceBusinessAPI: false}
+	store := &fakeUnifiedGraphBuildStore{
+		fakeAdminUserStore:   &fakeAdminUserStore{},
+		fakeAdminConfigStore: &fakeAdminConfigStore{},
+		fakeAdminLogStore:    &fakeAdminLogStore{},
+	}
+	registerRoutes(mux, cfg, logger, nil, nil, nil, nil, orc, nil, store)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/nl2cypher", strings.NewReader(`{"natural_language":"   "}`))
+	req.Header.Set("Content-Type", "application/json")
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if rec.Header().Get(routeOwnerHeader) != "go-orchestrator" {
+		t.Fatalf("unexpected route owner: %s", rec.Header().Get(routeOwnerHeader))
+	}
+	if upstreamCalled {
+		t.Fatalf("expected blank natural_language to be rejected before upstream call")
+	}
+	if store.fakeAdminLogStore.businessAuditReq.Action != "nl2cypher_generate" {
+		t.Fatalf("expected blank request audit, got %#v", store.fakeAdminLogStore.businessAuditReq)
+	}
+	if store.fakeAdminLogStore.businessAuditReq.Status != "failed" {
+		t.Fatalf("expected failed audit status, got %#v", store.fakeAdminLogStore.businessAuditReq)
+	}
+}
+
+func TestDocQARouteWritesBusinessAudit(t *testing.T) {
+	t.Parallel()
+
+	var seen []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = append(seen, r.Method+" "+r.URL.Path)
+		if r.URL.Path != "/api/internal/docqa" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"code":200,"message":"ok","data":{"answer":"ok","citations":[]}}`))
+	}))
+	defer upstream.Close()
+
+	orc, err := orchestrator.New(config.Config{PythonBackendBaseURL: upstream.URL, PythonBackendTimeoutSeconds: 2})
+	if err != nil {
+		t.Fatalf("new orchestrator client: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	cfg := config.Config{AppName: "GraphInsight Go API", Version: "test", RBACEnforceBusinessAPI: false}
+	store := &fakeUnifiedGraphBuildStore{
+		fakeAdminUserStore:   &fakeAdminUserStore{},
+		fakeAdminConfigStore: &fakeAdminConfigStore{},
+		fakeAdminLogStore:    &fakeAdminLogStore{},
+	}
+	registerRoutes(mux, cfg, logger, nil, nil, nil, nil, orc, nil, store)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/docqa", strings.NewReader(`{"question":"你好","top_k":3,"require_citation":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-authz-permission", "qa:ask")
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if rec.Header().Get(routeOwnerHeader) != "go-orchestrator" {
+		t.Fatalf("unexpected route owner: %s", rec.Header().Get(routeOwnerHeader))
+	}
+	if len(seen) != 1 || seen[0] != "POST /api/internal/docqa" {
+		t.Fatalf("unexpected upstream calls: %v", seen)
+	}
+	if store.fakeAdminLogStore.businessAuditReq.Action != "docqa_ask" {
+		t.Fatalf("expected docqa business audit, got %#v", store.fakeAdminLogStore.businessAuditReq)
+	}
+	if store.fakeAdminLogStore.businessAuditReq.Status != "success" {
+		t.Fatalf("expected successful docqa audit, got %#v", store.fakeAdminLogStore.businessAuditReq)
+	}
+}
+
+func TestDocQARouteRejectsInvalidJSONBeforeUpstream(t *testing.T) {
+	t.Parallel()
+
+	upstreamCalled := false
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamCalled = true
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"success":true}`))
+	}))
+	defer upstream.Close()
+
+	orc, err := orchestrator.New(config.Config{PythonBackendBaseURL: upstream.URL, PythonBackendTimeoutSeconds: 2})
+	if err != nil {
+		t.Fatalf("new orchestrator client: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	cfg := config.Config{AppName: "GraphInsight Go API", Version: "test", RBACEnforceBusinessAPI: false}
+	store := &fakeUnifiedGraphBuildStore{
+		fakeAdminUserStore:   &fakeAdminUserStore{},
+		fakeAdminConfigStore: &fakeAdminConfigStore{},
+		fakeAdminLogStore:    &fakeAdminLogStore{},
+	}
+	registerRoutes(mux, cfg, logger, nil, nil, nil, nil, orc, nil, store)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/docqa", strings.NewReader(`{"question":`))
+	req.Header.Set("Content-Type", "application/json")
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if rec.Header().Get(routeOwnerHeader) != "go-orchestrator" {
+		t.Fatalf("unexpected route owner: %s", rec.Header().Get(routeOwnerHeader))
+	}
+	if upstreamCalled {
+		t.Fatalf("expected invalid JSON to be rejected before upstream call")
+	}
+	if store.fakeAdminLogStore.businessAuditReq.Action != "docqa_ask" {
+		t.Fatalf("expected invalid request audit, got %#v", store.fakeAdminLogStore.businessAuditReq)
+	}
+	if store.fakeAdminLogStore.businessAuditReq.Status != "failed" {
+		t.Fatalf("expected failed audit status, got %#v", store.fakeAdminLogStore.businessAuditReq)
+	}
+}
+
+func TestDocQARouteRejectsBlankQuestionBeforeUpstream(t *testing.T) {
+	t.Parallel()
+
+	upstreamCalled := false
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamCalled = true
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"success":true}`))
+	}))
+	defer upstream.Close()
+
+	orc, err := orchestrator.New(config.Config{PythonBackendBaseURL: upstream.URL, PythonBackendTimeoutSeconds: 2})
+	if err != nil {
+		t.Fatalf("new orchestrator client: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	cfg := config.Config{AppName: "GraphInsight Go API", Version: "test", RBACEnforceBusinessAPI: false}
+	store := &fakeUnifiedGraphBuildStore{
+		fakeAdminUserStore:   &fakeAdminUserStore{},
+		fakeAdminConfigStore: &fakeAdminConfigStore{},
+		fakeAdminLogStore:    &fakeAdminLogStore{},
+	}
+	registerRoutes(mux, cfg, logger, nil, nil, nil, nil, orc, nil, store)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/docqa", strings.NewReader(`{"question":"   "}`))
+	req.Header.Set("Content-Type", "application/json")
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if rec.Header().Get(routeOwnerHeader) != "go-orchestrator" {
+		t.Fatalf("unexpected route owner: %s", rec.Header().Get(routeOwnerHeader))
+	}
+	if upstreamCalled {
+		t.Fatalf("expected blank question to be rejected before upstream call")
+	}
+	if store.fakeAdminLogStore.businessAuditReq.Action != "docqa_ask" {
+		t.Fatalf("expected blank request audit, got %#v", store.fakeAdminLogStore.businessAuditReq)
+	}
+	if store.fakeAdminLogStore.businessAuditReq.Status != "failed" {
+		t.Fatalf("expected failed audit status, got %#v", store.fakeAdminLogStore.businessAuditReq)
+	}
+}
+
+func TestDeepResearchRouteWritesBusinessAudit(t *testing.T) {
+	t.Parallel()
+
+	var seen []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = append(seen, r.Method+" "+r.URL.Path)
+		if r.URL.Path != "/api/internal/docqa/deep-research" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"code":200,"message":"ok","data":{"question":"x","summary":"ok","final_conclusion":"ok","report":"ok","sub_questions":[],"citations":[],"confidence":{},"evidence_stats":{}}}`))
+	}))
+	defer upstream.Close()
+
+	orc, err := orchestrator.New(config.Config{PythonBackendBaseURL: upstream.URL, PythonBackendTimeoutSeconds: 2})
+	if err != nil {
+		t.Fatalf("new orchestrator client: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	cfg := config.Config{AppName: "GraphInsight Go API", Version: "test", RBACEnforceBusinessAPI: false}
+	store := &fakeUnifiedGraphBuildStore{
+		fakeAdminUserStore:   &fakeAdminUserStore{},
+		fakeAdminConfigStore: &fakeAdminConfigStore{},
+		fakeAdminLogStore:    &fakeAdminLogStore{},
+	}
+	registerRoutes(mux, cfg, logger, nil, nil, nil, nil, orc, nil, store)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/docqa/deep-research", strings.NewReader(`{"question":"你好","top_k":8,"max_sub_questions":4}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-authz-permission", "qa:ask")
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if rec.Header().Get(routeOwnerHeader) != "go-orchestrator" {
+		t.Fatalf("unexpected route owner: %s", rec.Header().Get(routeOwnerHeader))
+	}
+	if len(seen) != 1 || seen[0] != "POST /api/internal/docqa/deep-research" {
+		t.Fatalf("unexpected upstream calls: %v", seen)
+	}
+	if store.fakeAdminLogStore.businessAuditReq.Action != "docqa_deep_research" {
+		t.Fatalf("expected deep research business audit, got %#v", store.fakeAdminLogStore.businessAuditReq)
+	}
+	if store.fakeAdminLogStore.businessAuditReq.Status != "success" {
+		t.Fatalf("expected successful deep research audit, got %#v", store.fakeAdminLogStore.businessAuditReq)
+	}
+}
+
+func TestDocQARouteInjectsScenarioReasoningProfileFromConfig(t *testing.T) {
+	t.Parallel()
+
+	var bodyBytes []byte
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var err error
+		bodyBytes, err = io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"code":200,"message":"ok","data":{"answer":"ok","citations":[]}}`))
+	}))
+	defer upstream.Close()
+
+	orc, err := orchestrator.New(config.Config{PythonBackendBaseURL: upstream.URL, PythonBackendTimeoutSeconds: 2})
+	if err != nil {
+		t.Fatalf("new orchestrator client: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	cfg := config.Config{AppName: "GraphInsight Go API", Version: "test", RBACEnforceBusinessAPI: false}
+	store := &fakeUnifiedGraphBuildStore{
+		fakeAdminUserStore: &fakeAdminUserStore{},
+		fakeAdminConfigStore: &fakeAdminConfigStore{
+			values: map[string]map[string]string{
+				"ai_service": {
+					"docqa_reasoning_profile": "fast",
+				},
+			},
+		},
+		fakeAdminLogStore: &fakeAdminLogStore{},
+	}
+	registerRoutes(mux, cfg, logger, nil, nil, nil, nil, orc, nil, store)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/docqa", strings.NewReader(`{"question":"你好"}`))
+	req.Header.Set("Content-Type", "application/json")
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(string(bodyBytes), `"reasoning_profile":"fast"`) {
+		t.Fatalf("expected forwarded body to include configured reasoning profile, got %s", string(bodyBytes))
+	}
+}
+
+func TestDeepResearchRouteInjectsScenarioReasoningProfileFromConfig(t *testing.T) {
+	t.Parallel()
+
+	var bodyBytes []byte
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var err error
+		bodyBytes, err = io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"code":200,"message":"ok","data":{"question":"x","summary":"ok","final_conclusion":"ok","report":"ok","sub_questions":[],"citations":[],"confidence":{},"evidence_stats":{}}}`))
+	}))
+	defer upstream.Close()
+
+	orc, err := orchestrator.New(config.Config{PythonBackendBaseURL: upstream.URL, PythonBackendTimeoutSeconds: 2})
+	if err != nil {
+		t.Fatalf("new orchestrator client: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	cfg := config.Config{AppName: "GraphInsight Go API", Version: "test", RBACEnforceBusinessAPI: false}
+	store := &fakeUnifiedGraphBuildStore{
+		fakeAdminUserStore: &fakeAdminUserStore{},
+		fakeAdminConfigStore: &fakeAdminConfigStore{
+			values: map[string]map[string]string{
+				"ai_service": {
+					"deep_research_reasoning_profile": "balanced",
+				},
+			},
+		},
+		fakeAdminLogStore: &fakeAdminLogStore{},
+	}
+	registerRoutes(mux, cfg, logger, nil, nil, nil, nil, orc, nil, store)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/docqa/deep-research", strings.NewReader(`{"question":"你好"}`))
+	req.Header.Set("Content-Type", "application/json")
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(string(bodyBytes), `"reasoning_profile":"balanced"`) {
+		t.Fatalf("expected forwarded body to include configured reasoning profile, got %s", string(bodyBytes))
+	}
+}
+
+func TestDeepResearchRouteRejectsInvalidJSONBeforeUpstream(t *testing.T) {
+	t.Parallel()
+
+	upstreamCalled := false
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamCalled = true
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"success":true}`))
+	}))
+	defer upstream.Close()
+
+	orc, err := orchestrator.New(config.Config{PythonBackendBaseURL: upstream.URL, PythonBackendTimeoutSeconds: 2})
+	if err != nil {
+		t.Fatalf("new orchestrator client: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	cfg := config.Config{AppName: "GraphInsight Go API", Version: "test", RBACEnforceBusinessAPI: false}
+	store := &fakeUnifiedGraphBuildStore{
+		fakeAdminUserStore:   &fakeAdminUserStore{},
+		fakeAdminConfigStore: &fakeAdminConfigStore{},
+		fakeAdminLogStore:    &fakeAdminLogStore{},
+	}
+	registerRoutes(mux, cfg, logger, nil, nil, nil, nil, orc, nil, store)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/docqa/deep-research", strings.NewReader(`{"question":`))
+	req.Header.Set("Content-Type", "application/json")
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if rec.Header().Get(routeOwnerHeader) != "go-orchestrator" {
+		t.Fatalf("unexpected route owner: %s", rec.Header().Get(routeOwnerHeader))
+	}
+	if upstreamCalled {
+		t.Fatalf("expected invalid JSON to be rejected before upstream call")
+	}
+	if store.fakeAdminLogStore.businessAuditReq.Action != "docqa_deep_research" {
+		t.Fatalf("expected invalid request audit, got %#v", store.fakeAdminLogStore.businessAuditReq)
+	}
+	if store.fakeAdminLogStore.businessAuditReq.Status != "failed" {
+		t.Fatalf("expected failed audit status, got %#v", store.fakeAdminLogStore.businessAuditReq)
+	}
+}
+
+func TestDeepResearchRouteRejectsBlankQuestionBeforeUpstream(t *testing.T) {
+	t.Parallel()
+
+	upstreamCalled := false
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamCalled = true
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"success":true}`))
+	}))
+	defer upstream.Close()
+
+	orc, err := orchestrator.New(config.Config{PythonBackendBaseURL: upstream.URL, PythonBackendTimeoutSeconds: 2})
+	if err != nil {
+		t.Fatalf("new orchestrator client: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	cfg := config.Config{AppName: "GraphInsight Go API", Version: "test", RBACEnforceBusinessAPI: false}
+	store := &fakeUnifiedGraphBuildStore{
+		fakeAdminUserStore:   &fakeAdminUserStore{},
+		fakeAdminConfigStore: &fakeAdminConfigStore{},
+		fakeAdminLogStore:    &fakeAdminLogStore{},
+	}
+	registerRoutes(mux, cfg, logger, nil, nil, nil, nil, orc, nil, store)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/docqa/deep-research", strings.NewReader(`{"question":"   "}`))
+	req.Header.Set("Content-Type", "application/json")
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if rec.Header().Get(routeOwnerHeader) != "go-orchestrator" {
+		t.Fatalf("unexpected route owner: %s", rec.Header().Get(routeOwnerHeader))
+	}
+	if upstreamCalled {
+		t.Fatalf("expected blank question to be rejected before upstream call")
+	}
+	if store.fakeAdminLogStore.businessAuditReq.Action != "docqa_deep_research" {
+		t.Fatalf("expected blank request audit, got %#v", store.fakeAdminLogStore.businessAuditReq)
+	}
+	if store.fakeAdminLogStore.businessAuditReq.Status != "failed" {
+		t.Fatalf("expected failed audit status, got %#v", store.fakeAdminLogStore.businessAuditReq)
+	}
+}
+
+func TestDocQAHealthRejectsInvalidProbeLLMBeforeUpstream(t *testing.T) {
+	t.Parallel()
+
+	upstreamCalled := false
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamCalled = true
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"code":200,"message":"ok"}`))
+	}))
+	defer upstream.Close()
+
+	orc, err := orchestrator.New(config.Config{PythonBackendBaseURL: upstream.URL, PythonBackendTimeoutSeconds: 2})
+	if err != nil {
+		t.Fatalf("new orchestrator client: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	cfg := config.Config{AppName: "GraphInsight Go API", Version: "test", RBACEnforceBusinessAPI: false}
+	registerRoutes(mux, cfg, logger, nil, nil, nil, nil, orc, nil, nil)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/docqa/health?probe_llm=not-bool", nil)
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if rec.Header().Get(routeOwnerHeader) != "go-orchestrator" {
+		t.Fatalf("unexpected route owner: %s", rec.Header().Get(routeOwnerHeader))
+	}
+	if upstreamCalled {
+		t.Fatalf("expected invalid probe_llm to be rejected before upstream call")
 	}
 }
 
@@ -430,7 +1196,7 @@ func TestOrchestratorDocQAOptionalSafeRetry(t *testing.T) {
 	var attempts int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		current := atomic.AddInt32(&attempts, 1)
-		if r.URL.Path != "/api/docqa" {
+		if r.URL.Path != "/api/internal/docqa" {
 			t.Fatalf("unexpected path: %s", r.URL.Path)
 		}
 		if current == 1 {
@@ -464,7 +1230,7 @@ func TestOrchestratorDocQAOptionalSafeRetry(t *testing.T) {
 		RBACEnforceBusinessAPI:     false,
 		OrchestratorSafeRetryDocQA: true,
 	}
-	registerRoutes(mux, cfg, logger, nil, nil, nil, nil, nil, nil, orc, nil)
+	registerRoutes(mux, cfg, logger, nil, nil, nil, nil, orc, nil, nil)
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/docqa", strings.NewReader(`{"question":"你好"}`))

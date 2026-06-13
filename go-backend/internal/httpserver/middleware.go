@@ -55,16 +55,24 @@ func Recovery(logger *slog.Logger, next http.Handler) http.Handler {
 	})
 }
 
-func RequestLogging(logger *slog.Logger, next http.Handler) http.Handler {
+func RequestLogging(logger *slog.Logger, next http.Handler, metricsOpt ...*apiMetrics) http.Handler {
+	var metrics *apiMetrics
+	if len(metricsOpt) > 0 {
+		metrics = metricsOpt[0]
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		recorder := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(recorder, r)
+		duration := time.Since(start)
+		if metrics != nil {
+			metrics.Observe(r.Method, r.URL.Path, recorder.status, duration)
+		}
 		logger.Info("request",
 			"method", r.Method,
 			"path", r.URL.Path,
 			"status", recorder.status,
-			"duration_ms", time.Since(start).Milliseconds(),
+			"duration_ms", duration.Milliseconds(),
 			"remote_addr", r.RemoteAddr,
 		)
 	})

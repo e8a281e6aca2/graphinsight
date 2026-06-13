@@ -21,8 +21,8 @@ from ..schemas.qa_traces import (
     QATraceItem,
     QATraceQuery,
 )
-from .config_service import config_service
 from core import get_logger
+from services.runtime_config import get_ai_cost_runtime_config
 
 logger = get_logger()
 
@@ -227,23 +227,22 @@ class QATraceService:
         )
 
     def _load_pricing(self, db: Session) -> dict[str, Any]:
-        raw = (
-            config_service.get_config(db, "ai_cost", "model_pricing_json", default=None)
-            or os.getenv("AI_COST_MODEL_PRICING_JSON", "")
-        )
+        pricing_config = get_ai_cost_runtime_config()
+        raw = pricing_config.get("model_pricing_json") or os.getenv("AI_COST_MODEL_PRICING_JSON", "")
+        currency = pricing_config.get("currency") or os.getenv("AI_COST_CURRENCY", "USD")
         if not raw:
-            return {"currency": os.getenv("AI_COST_CURRENCY", "USD"), "source": "not_configured", "models": {}}
+            return {"currency": currency, "source": "not_configured", "models": {}}
         try:
             parsed = json.loads(raw)
         except Exception:
             logger.warning("AI cost pricing config is not valid JSON")
-            return {"currency": os.getenv("AI_COST_CURRENCY", "USD"), "source": "invalid_config", "models": {}}
+            return {"currency": currency, "source": "invalid_config", "models": {}}
 
         if not isinstance(parsed, dict):
-            return {"currency": os.getenv("AI_COST_CURRENCY", "USD"), "source": "invalid_config", "models": {}}
+            return {"currency": currency, "source": "invalid_config", "models": {}}
         models = parsed.get("models") if isinstance(parsed.get("models"), dict) else parsed
         return {
-            "currency": str(parsed.get("currency") or os.getenv("AI_COST_CURRENCY", "USD")),
+            "currency": str(parsed.get("currency") or currency),
             "source": "admin_config_or_env",
             "models": models if isinstance(models, dict) else {},
         }

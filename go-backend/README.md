@@ -6,7 +6,8 @@ Current execution model:
 
 1. Go is the default external API entry.
 2. Python remains the upstream capability layer for AI, document parsing, and model-facing flows.
-3. Known admin routes are owned by Go at the entry layer and proxied to Python until their implementations are pulled into Go.
+3. Admin control-plane routes are owned by Go at the entry layer.
+4. Python executes capability work and background admin jobs by polling `admin_jobs` from the shared admin database.
 
 ## Features in this bootstrap
 
@@ -19,7 +20,7 @@ Current execution model:
 7. Contract-compatible graph endpoints: `POST /api/expand`, `GET /api/node/{id}`
 8. RBAC guard on Go native business APIs (compatible with admin token flow)
 9. Go orchestrated extraction routes (Python keeps extraction algorithms)
-10. Hybrid proxy routes to Python backend (media flow and known admin modules only)
+10. Hybrid orchestration to Python internal capability routes only; `/api/media/**` is served natively by Go in unified mode
 
 ## Run locally
 
@@ -30,11 +31,16 @@ go run ./cmd/api
 
 Default address: `0.0.0.0:8081`
 
+The default port is not exclusive. If `8081` is already occupied by another non-GraphInsight service, the repository startup script will fall back to another port and write the resolved address to `logs/dev/runtime.env`.
+
 Recommended local startup order:
 
 1. Start Python backend first on `http://127.0.0.1:8001`
 2. Start Go gateway on `http://127.0.0.1:8081`
 3. Point frontend and smoke checks to Go
+
+When using `scripts/dev-backend.sh`, treat `logs/dev/runtime.env` as the source of truth for `GO_BASE_URL` and `PYTHON_BASE_URL`.
+For browser-driven local QA, prefer `VITE_API_BASE_URL=same-origin` so the browser uses the current frontend origin instead of hard-coding a cross-origin backend URL. For Node-side E2E helpers and smoke checks, use `ADMIN_BASE_URL` or `E2E_API_BASE_URL` explicitly.
 
 ## Run tests
 
@@ -59,7 +65,7 @@ Local hybrid development note:
 
 1. Go will first try `go-backend/.env`.
 2. If that file does not exist, it will fall back to `backend/.env`.
-3. When falling back to `backend/.env`, Go ignores Python listener keys such as `API_HOST` and `API_PORT`; this prevents Python's `8001` port from overriding Go's default `8081`.
+3. 本地 Linux 开发优先使用 `scripts/dev-backend.sh`，该脚本会显式注入本地 Docker PostgreSQL 与 Neo4j 配置，不依赖 `backend/.env` 中的历史值。
 4. Explicit shell environment variables still take precedence.
 
 Key vars:
@@ -72,25 +78,38 @@ Key vars:
 6. `NEO4J_USER`
 7. `NEO4J_PASSWORD`
 8. `NEO4J_DATABASE`
-9. `NEO4J_CONFIG_SOURCE`: `env` (default), `admin`, or `auto`
-10. `GO_ADMIN_CONFIG_TOKEN`: bearer token used when `NEO4J_CONFIG_SOURCE=admin|auto`
-11. `PYTHON_BACKEND_BASE_URL`
-12. `PYTHON_BACKEND_TIMEOUT_SECONDS`
-13. `GRAPH_BUILD_TIMEOUT_SECONDS`
-14. `PYTHON_BACKEND_FORWARD_AUTH`
-15. `HTTP_WRITE_TIMEOUT_SECONDS`
-16. `ORCHESTRATOR_RETRY_MAX`
-17. `ORCHESTRATOR_RETRY_BACKOFF_MS`
-18. `ORCHESTRATOR_RETRY_MAX_BACKOFF_MS`
-19. `ORCHESTRATOR_SAFE_RETRY_DOCQA`
-20. `IDEMPOTENCY_CACHE_TTL_SECONDS`
-21. `RBAC_ENFORCE_BUSINESS_API` (default: `true`; set `false` only for local migration diagnostics)
+9. `NEO4J_CONFIG_SOURCE`: `env`, `admin`, or `auto` (recommended unified dev default)
+10. `PYTHON_BACKEND_BASE_URL`
+11. `PYTHON_BACKEND_TIMEOUT_SECONDS`
+12. `GRAPH_BUILD_TIMEOUT_SECONDS`
+13. `PYTHON_BACKEND_FORWARD_AUTH`
+14. `HTTP_WRITE_TIMEOUT_SECONDS`
+15. `ORCHESTRATOR_RETRY_MAX`
+16. `ORCHESTRATOR_RETRY_BACKOFF_MS`
+17. `ORCHESTRATOR_RETRY_MAX_BACKOFF_MS`
+18. `ORCHESTRATOR_SAFE_RETRY_DOCQA`
+19. `IDEMPOTENCY_CACHE_TTL_SECONDS`
+20. `RBAC_ENFORCE_BUSINESS_API` (default: `true`; set `false` only for local migration diagnostics)
+21. `RBAC_AUTHZ_MODE`: `go_db` (default and recommended unified mode) or `local_jwt_soft`. `local_jwt` is normalized to `local_jwt_soft`; unsupported values fall back to `go_db`.
+22. `ADMIN_SECRET_KEY`: shared HS256 secret used when `RBAC_AUTHZ_MODE=local_jwt_soft|go_db`; it must match Python's `ADMIN_SECRET_KEY`.
+23. `ADMIN_DATABASE_URL`: admin PostgreSQL database used by `RBAC_AUTHZ_MODE=go_db` and `NEO4J_CONFIG_SOURCE=admin|auto`.
+
+Default local CORS allowlist also includes `http://localhost:1234` and `http://127.0.0.1:1234` so browser QA can run against the current verified local frontend port without extra manual env changes.
+
+RBAC authz mode:
+
+- `local_jwt_soft`: migration-only mode. Go validates the JWT signature and expiry locally, then sets `x-authz-reason=local_jwt_soft_allow`. It does not check user activation or role bindings because current Python admin tokens only contain `sub` and `exp`.
+- `go_db`: recommended unified mode. Go validates the JWT locally, resolves the active admin user by `sub`, and evaluates RBAC bindings from the admin database using read-only queries.
+
+If `RBAC_AUTHZ_MODE` is omitted, Go now defaults to `go_db` so unified deployments do not silently fall back to Python compatibility authz.
 
 Neo4j config source:
 
 - `env`: Go reads `NEO4J_URI`, `NEO4J_USER` / `NEO4J_USERNAME`, `NEO4J_PASSWORD`, and `NEO4J_DATABASE`.
-- `admin`: Go reads Python `/api/v1/admin/config/neo4j/all` during startup. `GO_ADMIN_CONFIG_TOKEN` must contain an admin bearer token.
-- `auto`: Go tries admin config first, then falls back to env if Python/admin config is unavailable.
+- `admin`: Go reads `admin_configs` directly from the admin PostgreSQL database during startup.
+- `auto`: Go tries admin database config first, then falls back to env if the admin DB config is unavailable or incomplete.
+
+Unified local development started through [scripts/dev-backend.sh](/home/yuanhuan/GraphInsight/scripts/dev-backend.sh) now writes `NEO4J_CONFIG_SOURCE=auto` by default so the admin console can take over Neo4j connection settings without losing env fallback.
 
 Admin config is resolved at Go startup. Restart the Go gateway after changing Neo4j settings in the admin console.
 
@@ -134,26 +153,50 @@ curl -X POST http://localhost:8081/api/expand \
 
 ## Current route ownership
 
-1. `go-native`: `/health`, `/api/query`, `/api/expand`, `/api/node/{id}`.
-2. `go-orchestrator`: document, graph build, DocQA, deep research, and NL2Cypher business routes.
-3. `go-admin-proxy`: known admin modules such as auth, config, monitor, jobs, QA traces, logs, RBAC, users, and profile.
-4. `python-proxy`: media compatibility routes under `/api/media/**` only.
+1. `go-native`: `/health`, `/api/query`, `/api/expand`, `/api/node/{id}`, `/api/media/**`, `/api/client-logs`, `/api/proxy-media`, `/api/proxy-image`, `/api/video-thumbnail`, and current Go-owned admin routes.
+2. `go-orchestrator`: DocQA, deep research, and `POST /api/nl2cypher`.
 
-Unknown `/api/v1/**` routes are not proxied. Known admin modules are explicitly registered as `go-admin-proxy`; unknown admin paths return Go-owned 404 responses.
+Python public business routes are no longer part of the Python runtime surface. Go calls Python `/api/internal/*` capability entrypoints directly.
+
+In unified deployment, only `/api/internal/*` remains usable as the Python capability plane. Any direct hit to the old Python public business paths returns `404`.
+
+Unknown `/api/v1/**` routes are not proxied. Unknown admin paths return Go-owned 404 responses.
 
 Go marks responses with `X-GraphInsight-Route-Owner` so smoke tests and operators can see which layer owns a request.
 
 ## Orchestrated Routes (Go -> Python)
 
-1. `POST /api/graph/build`
-2. `POST /api/docqa`
-3. `POST /api/docqa/deep-research`
-4. `GET /api/docqa/health`
-5. `GET /api/documents`
-6. `DELETE /api/documents`
-7. `DELETE /api/documents/{doc_id}`
-8. `POST /api/documents/upload`
-9. `GET /api/monitor/orchestrator` (Go side upstream metrics)
+1. `POST /api/docqa`
+2. `POST /api/docqa/deep-research`
+3. `GET /api/docqa/health`
+
+Current Python upstream targets for DocQA:
+
+1. `POST /api/internal/docqa`
+2. `POST /api/internal/docqa/deep-research`
+3. `GET /api/internal/docqa/health`
+
+Current Python upstream targets for documents and graph build:
+
+1. `POST /api/internal/jobs/wake`
+
+Current Python upstream targets for NL2Cypher:
+
+1. `POST /api/internal/nl2cypher`
+
+Go keeps the public business routes under `/api/docqa*`; the internal Python routes are capability-only entrypoints and should not be called directly by frontend code.
+Go also owns these public business routes natively:
+
+1. `GET /api/documents`
+2. `GET /api/documents/deleted`
+3. `DELETE /api/documents`
+4. `DELETE /api/documents/{doc_id}`
+5. `POST /api/documents/{doc_id}/restore`
+6. `POST /api/documents/upload`
+7. `POST /api/graph/build`
+8. `GET /api/nl2cypher/examples`
+9. `GET /api/nl2cypher/status`
+10. `GET /api/monitor/orchestrator` (Go side upstream metrics)
 
 ## Auth Context Propagation
 
@@ -217,7 +260,7 @@ Orchestrated upstream retries are enabled for `GET` routes only:
 
 Recommended timeout knobs:
 
-1. `GRAPH_BUILD_TIMEOUT_SECONDS`: upstream Python build timeout for the Go orchestrator route. Default `300`.
+1. `GRAPH_BUILD_TIMEOUT_SECONDS`: Go build-job submission path and downstream worker processing timeout knob. Default `300`.
 2. `HTTP_WRITE_TIMEOUT_SECONDS`: Go gateway response write timeout. Default `300`.
 3. `PYTHON_BACKEND_TIMEOUT_SECONDS`: shared upstream timeout for regular orchestrated routes. Default `60`.
 
@@ -231,6 +274,11 @@ Recommended timeout knobs:
 4. Last status / last error
 
 `GET /health` also includes a lightweight `orchestrator_metrics` summary.
+
+Its `authz` payload now reports the actual permission mode in use:
+
+1. `mode=go_db`: permission checks are resolved locally by Go against admin tables.
+2. `mode=local_jwt_soft`: permission checks are local compatibility mode without upstream authz calls.
 
 ## Next migration step
 

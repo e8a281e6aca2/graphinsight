@@ -14,7 +14,6 @@ $ErrorActionPreference = "Stop"
 $RepoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $BackendRoot = Join-Path $RepoRoot "backend"
 $GoRoot = Join-Path $RepoRoot "go-backend"
-$PythonExe = Join-Path $BackendRoot "venv\Scripts\python.exe"
 $SmokeSuite = Join-Path $BackendRoot "tests\run_backend_smoke_suite.py"
 $GoSmokeScript = Join-Path $GoRoot "scripts\smoke_orchestrated_routes.py"
 $GoPort = [string]([System.Uri]$BaseUrl).Port
@@ -114,6 +113,21 @@ $startedPythonProcess = $null
 $startedGoProcess = $null
 $startedPythonHere = $false
 $startedGoHere = $false
+
+function Resolve-PythonExe {
+    $candidates = @(
+        (Join-Path $BackendRoot ".venv\Scripts\python.exe"),
+        (Join-Path $BackendRoot "venv\Scripts\python.exe")
+    )
+    foreach ($candidate in $candidates) {
+        if (Test-Path $candidate) {
+            return $candidate
+        }
+    }
+    return $null
+}
+
+$PythonExe = Resolve-PythonExe
 
 try {
     if (-not $AdminToken -and -not $AdminPassword) {

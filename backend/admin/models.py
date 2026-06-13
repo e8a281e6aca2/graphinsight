@@ -30,6 +30,7 @@ class AdminUser(Base):
     avatar = Column(String(255))  # 头像URL
     phone = Column(String(20))
     department = Column(String(100))
+    preferred_home_path = Column(String(64), default="/admin/dashboard")
     
     # 状态
     is_active = Column(Boolean, default=True)
@@ -169,6 +170,9 @@ class AdminJob(Base):
     max_retries = Column(Integer, nullable=False, default=3)
     requested_by = Column(Integer, ForeignKey("admin_users.id"), nullable=True, index=True)
     trace_id = Column(String(100), nullable=True, index=True)
+    claimed_by = Column(String(100), nullable=True, index=True)
+    claim_expires_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    last_heartbeat_at = Column(DateTime(timezone=True), nullable=True, index=True)
     started_at = Column(DateTime(timezone=True), nullable=True)
     finished_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)

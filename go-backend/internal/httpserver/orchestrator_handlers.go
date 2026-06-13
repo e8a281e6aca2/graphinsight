@@ -1,6 +1,8 @@
 package httpserver
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"io"
 	"log/slog"
@@ -199,6 +201,60 @@ func buildOrchestratorPassthroughPathHandler(
 	}
 }
 
+func buildOrchestratorMappedPathHandler(
+	logger *slog.Logger,
+	client *orchestrator.Client,
+	clientErr error,
+	metrics *orchestratorMetrics,
+	method string,
+	publicPrefix string,
+	targetPrefix string,
+) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		markRouteOwner(w, "go-orchestrator")
+		start := time.Now()
+		recorded := false
+		record := func(status int, err error) {
+			if recorded {
+				return
+			}
+			recorded = true
+			metrics.Observe(targetPrefix, method, status, err, time.Since(start))
+		}
+
+		if r.Method != method {
+			record(http.StatusMethodNotAllowed, nil)
+			WriteJSON(w, http.StatusMethodNotAllowed, "Method not allowed", nil)
+			return
+		}
+		if client == nil {
+			record(http.StatusServiceUnavailable, clientErr)
+			logger.Error("orchestrator unavailable", "path", r.URL.Path, "init_error", clientErr)
+			WriteJSON(w, http.StatusServiceUnavailable, "上游服务不可用", map[string]interface{}{
+				"error_code": "UPSTREAM_UNAVAILABLE",
+				"upstream":   "python-backend",
+			})
+			return
+		}
+		if !strings.HasPrefix(r.URL.Path, publicPrefix) {
+			record(http.StatusNotFound, nil)
+			WriteJSON(w, http.StatusNotFound, "资源不存在", map[string]string{"error_code": "NOT_FOUND"})
+			return
+		}
+
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			record(http.StatusBadRequest, err)
+			WriteJSON(w, http.StatusBadRequest, "无效请求体", map[string]interface{}{"error_code": "INVALID_REQUEST"})
+			return
+		}
+
+		targetPath := targetPrefix + strings.TrimPrefix(r.URL.Path, publicPrefix)
+		status, forwardErr := forwardOrchestratorJSON(w, r, logger, client, targetPath, body, false)
+		record(status, forwardErr)
+	}
+}
+
 func buildOrchestratorUploadHandler(
 	logger *slog.Logger,
 	client *orchestrator.Client,
@@ -298,18 +354,30 @@ func forwardOrchestratorJSON(
 }
 
 func buildForwardHeaders(r *http.Request) map[string]string {
+	traceID := strings.TrimSpace(r.Header.Get("X-Trace-Id"))
+	if traceID == "" {
+		traceID = newForwardTraceID()
+	}
 	return map[string]string{
 		"Authorization":      r.Header.Get("Authorization"),
 		"x-tenant-id":        r.Header.Get("x-tenant-id"),
 		"x-project-id":       r.Header.Get("x-project-id"),
 		"x-kb-id":            r.Header.Get("x-kb-id"),
-		"X-Trace-Id":         r.Header.Get("X-Trace-Id"),
+		"X-Trace-Id":         traceID,
 		"x-auth-user-id":     r.Header.Get("x-auth-user-id"),
 		"x-auth-user-name":   r.Header.Get("x-auth-user-name"),
 		"x-auth-user-email":  r.Header.Get("x-auth-user-email"),
 		"x-authz-permission": r.Header.Get("x-authz-permission"),
 		"x-authz-reason":     r.Header.Get("x-authz-reason"),
 	}
+}
+
+func newForwardTraceID() string {
+	var buf [16]byte
+	if _, err := rand.Read(buf[:]); err == nil {
+		return hex.EncodeToString(buf[:])
+	}
+	return time.Now().UTC().Format("20060102T150405.000000000")
 }
 
 func getIdempotencyKey(r *http.Request) string {

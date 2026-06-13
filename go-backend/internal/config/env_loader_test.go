@@ -63,3 +63,34 @@ func TestLoadEnvFileAllowsListenerKeysForGoEnv(t *testing.T) {
 		t.Fatalf("API_HOST should be loaded from Go env, got %q", got)
 	}
 }
+
+func TestLoadEnvFileResolvesRelativeStoragePathsAgainstEnvFile(t *testing.T) {
+	t.Setenv("DOCUMENT_STORAGE_PATH", "")
+	t.Setenv("MEDIA_STORAGE_PATH", "")
+	os.Unsetenv("DOCUMENT_STORAGE_PATH")
+	os.Unsetenv("MEDIA_STORAGE_PATH")
+
+	envDir := filepath.Join(t.TempDir(), "backend")
+	if err := os.MkdirAll(envDir, 0o755); err != nil {
+		t.Fatalf("mkdir env dir: %v", err)
+	}
+
+	envPath := filepath.Join(envDir, ".env")
+	content := "DOCUMENT_STORAGE_PATH=./documents\nMEDIA_STORAGE_PATH=./media\n"
+	if err := os.WriteFile(envPath, []byte(content), 0o600); err != nil {
+		t.Fatalf("write env file: %v", err)
+	}
+
+	if !loadEnvFile(envPath, true) {
+		t.Fatal("expected backend fallback env file to load")
+	}
+
+	expectedDocuments := filepath.Join(envDir, "documents")
+	expectedMedia := filepath.Join(envDir, "media")
+	if got := os.Getenv("DOCUMENT_STORAGE_PATH"); got != expectedDocuments {
+		t.Fatalf("DOCUMENT_STORAGE_PATH should resolve against env file, got %q want %q", got, expectedDocuments)
+	}
+	if got := os.Getenv("MEDIA_STORAGE_PATH"); got != expectedMedia {
+		t.Fatalf("MEDIA_STORAGE_PATH should resolve against env file, got %q want %q", got, expectedMedia)
+	}
+}

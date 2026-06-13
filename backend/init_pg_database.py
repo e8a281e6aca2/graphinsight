@@ -43,7 +43,7 @@ def main():
         print("2. 数据库连接信息错误")
         print("3. 数据库不存在")
         print("4. 用户权限不足")
-        print("\n请检查 .env 文件中的 ADMIN_DATABASE_URL 配置")
+        print("\n请优先检查本地 Docker PostgreSQL 是否已启动，以及 ADMIN_DATABASE_URL 是否指向 127.0.0.1:5434")
         sys.exit(1)
 
 if __name__ == "__main__":

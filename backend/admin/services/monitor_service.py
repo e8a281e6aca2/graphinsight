@@ -28,6 +28,7 @@ from ..schemas.monitor import (
     AIServiceStatus,
 )
 from core import get_logger, SystemException, get_api_observability, get_qa_observability
+from services.runtime_config import get_ai_runtime_config, get_neo4j_runtime_config
 
 logger = get_logger()
 
@@ -37,7 +38,7 @@ _start_time = time.time()
 
 class MonitorService:
     """监控服务类"""
-    
+
     def __init__(self):
         self.start_time = _start_time
         self.api_metrics = get_api_observability()
@@ -64,7 +65,7 @@ class MonitorService:
         if self.cache_ttl_seconds > 0:
             self._cache[key] = (time.time() + self.cache_ttl_seconds, value)
         return value
-    
+
     def get_system_stats(self) -> SystemStats:
         """获取系统统计信息"""
         cached = self._get_cached("system_stats")
@@ -84,26 +85,26 @@ class MonitorService:
                 uptime_seconds=round(time.time() - self.start_time, 2),
                 timestamp=datetime.utcnow()
             ))
-        
+
         try:
             # CPU 使用率
             cpu_percent = psutil.cpu_percent(interval=None)
-            
+
             # 内存信息
             memory = psutil.virtual_memory()
             memory_percent = memory.percent
             memory_used_mb = memory.used / (1024 * 1024)
             memory_total_mb = memory.total / (1024 * 1024)
-            
+
             # 磁盘信息
             disk = psutil.disk_usage('/')
             disk_percent = disk.percent
             disk_used_gb = disk.used / (1024 * 1024 * 1024)
             disk_total_gb = disk.total / (1024 * 1024 * 1024)
-            
+
             # 运行时间
             uptime_seconds = time.time() - self.start_time
-            
+
             return self._set_cached("system_stats", SystemStats(
                 cpu_percent=round(cpu_percent, 2),
                 memory_percent=round(memory_percent, 2),
@@ -118,20 +119,20 @@ class MonitorService:
         except Exception as e:
             logger.error(f"获取系统统计失败: {str(e)}", exc_info=True)
             raise SystemException("获取系统统计失败")
-    
+
     def check_database_status(self, db: Session) -> DatabaseStatus:
         """检查数据库状态"""
         try:
             # 尝试执行简单查询
             result = db.execute(text("SELECT 1")).scalar()
-            
+
             if result == 1:
                 # 获取表数量
                 tables_result = db.execute(text(
                     "SELECT COUNT(*) FROM information_schema.tables "
                     "WHERE table_schema = 'public'"
                 )).scalar()
-                
+
                 return DatabaseStatus(
                     connected=True,
                     database=engine.url.database or "unknown",
@@ -153,7 +154,7 @@ class MonitorService:
                 tables_count=None,
                 error=str(e)
             )
-    
+
     def check_neo4j_status(self, db: Session) -> Neo4jStatus:
         """检查 Neo4j 状态"""
         cached = self._get_cached("neo4j_status")
@@ -162,21 +163,20 @@ class MonitorService:
 
         try:
             from services.neo4j_service import get_neo4j_service
-            from .config_service import config_service
-            
+
             # 获取 Neo4j 配置
-            neo4j_config = config_service.get_neo4j_config(db)
+            neo4j_config = get_neo4j_runtime_config()
             uri = neo4j_config.get("uri", "bolt://localhost:7687")
             database = neo4j_config.get("database", "neo4j")
-            
+
             # 尝试连接并获取统计
             try:
                 neo4j_service = get_neo4j_service()
-                
+
                 neo4j_service.ensure_connected()
                 with neo4j_service.session() as session:
                     session.run("RETURN 1 AS ok").single()
-                
+
                 return self._set_cached("neo4j_status", Neo4jStatus(
                     connected=True,
                     uri=uri,
@@ -205,18 +205,17 @@ class MonitorService:
                 relationships_count=None,
                 error=str(e)
             ))
-    
+
     def check_ai_service_status(self, db: Session) -> AIServiceStatus:
         """检查AI服务状态"""
         try:
-            from .config_service import config_service
-            
             # 获取AI服务配置
-            provider = config_service.get_config(db, "ai_service", "provider", "openai")
-            enabled = config_service.get_config(db, "ai_service", "enabled", "true").lower() == "true"
-            api_key = config_service.get_config(db, "ai_service", "api_key", "")
-            model = config_service.get_config(db, "ai_service", "model", "gpt-3.5-turbo")
-            
+            ai_config = get_ai_runtime_config()
+            provider = str(ai_config.get("provider") or "openai")
+            enabled = bool(ai_config.get("enabled", True))
+            api_key = str(ai_config.get("api_key") or "")
+            model = str(ai_config.get("model") or "gpt-3.5-turbo")
+
             # 检查是否启用
             if not enabled:
                 return AIServiceStatus(
@@ -226,10 +225,10 @@ class MonitorService:
                     api_key_configured=False,
                     error="AI服务未启用"
                 )
-            
+
             # 检查API Key是否配置
             api_key_configured = bool(api_key and api_key.strip() and api_key != "your-api-key-here")
-            
+
             if not api_key_configured:
                 return AIServiceStatus(
                     connected=False,
@@ -238,7 +237,7 @@ class MonitorService:
                     api_key_configured=False,
                     error="API Key未配置"
                 )
-            
+
             # 根据不同的 provider 检查格式
             if provider == "openai":
                 if api_key.startswith("sk-"):
@@ -292,7 +291,7 @@ class MonitorService:
                 api_key_configured=False,
                 error=str(e)
             )
-    
+
     def get_health_status(self, db: Session) -> HealthStatus:
         """获取健康状态"""
         cached = self._get_cached("health_status")
@@ -302,19 +301,19 @@ class MonitorService:
         try:
             # 检查数据库
             database_status = self.check_database_status(db)
-            
+
             # 检查 Neo4j
             neo4j_status = self.check_neo4j_status(db)
-            
+
             # 检查AI服务
             ai_service_status = self.check_ai_service_status(db)
-            
+
             # 获取系统统计
             try:
                 system_stats = self.get_system_stats()
             except:
                 system_stats = None
-            
+
             # 检查项
             checks = {
                 "database": database_status.connected,
@@ -323,7 +322,7 @@ class MonitorService:
                 "disk_space": system_stats.disk_percent < 90 if system_stats else True,
                 "memory": system_stats.memory_percent < 90 if system_stats else True,
             }
-            
+
             # 确定整体状态
             if all(checks.values()):
                 status = "healthy"
@@ -331,7 +330,7 @@ class MonitorService:
                 status = "degraded"
             else:
                 status = "unhealthy"
-            
+
             return self._set_cached("health_status", HealthStatus(
                 status=status,
                 timestamp=datetime.utcnow(),
@@ -344,7 +343,7 @@ class MonitorService:
         except Exception as e:
             logger.error(f"获取健康状态失败: {str(e)}", exc_info=True)
             raise SystemException("获取健康状态失败")
-    
+
     def get_performance_metrics(self, window_seconds: int = 900) -> Dict:
         """获取 API 性能指标"""
         metrics = self.api_metrics.snapshot(window_seconds=window_seconds)

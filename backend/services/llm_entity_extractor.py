@@ -4,10 +4,11 @@ from __future__ import annotations
 import json
 import re
 import time
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from config import get_settings
 from core import get_logger
+from services.model_runtime_policy import apply_reasoning_profile, reasoning_max_tokens
 from services.openai_client_factory import build_openai_client
 
 logger = get_logger()
@@ -33,7 +34,7 @@ class LLMEntityExtractor:
                 timeout=30.0,
             )
 
-    def extract(self, text: str) -> List[str]:
+    def extract(self, text: str, reasoning_profile: Optional[str] = None) -> List[str]:
         if not self.enabled or not self._client:
             return []
         if self._disabled_until > time.time():
@@ -50,15 +51,16 @@ class LLMEntityExtractor:
         )
 
         try:
-            response = self._client.chat.completions.create(
-                model=self._resolved_model,
-                messages=[
+            payload: Dict[str, Any] = {
+                "model": self._resolved_model,
+                "messages": [
                     {"role": "system", "content": prompt},
                     {"role": "user", "content": text[:1500]},
                 ],
-                temperature=self.temperature,
-                max_tokens=200,
-            )
+                "temperature": self.temperature,
+                "max_tokens": reasoning_max_tokens(reasoning_profile, fast=200, balanced=240, deep=280),
+            }
+            response = self._client.chat.completions.create(**apply_reasoning_profile(payload, reasoning_profile))
             content = response.choices[0].message.content or ""
             entities = self._parse_entities(content)
             if entities:
@@ -72,7 +74,7 @@ class LLMEntityExtractor:
             self._disabled_until = time.time() + 120
             logger.warning(
                 "LLM 抽取失败，回退规则",
-                context={"error": error_text, "model": self._resolved_model},
+                context={"error": error_text, "model": self._resolved_model, "reasoning_profile": reasoning_profile or ""},
             )
             return []
 

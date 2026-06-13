@@ -154,6 +154,22 @@ def _request_upload(
         return exc.code, _json_or_raw(text), {k.lower(): v for k, v in exc.headers.items()}
 
 
+def _extract_doc_id_from_upload(payload: Any) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        return ""
+    uploaded = data.get("uploaded")
+    if not isinstance(uploaded, list) or not uploaded:
+        return ""
+    first = uploaded[0]
+    if not isinstance(first, dict):
+        return ""
+    value = first.get("doc_id") or first.get("id")
+    return str(value or "").strip()
+
+
 def _envelope_code(payload: Any) -> Any:
     if isinstance(payload, dict):
         return payload.get("code")
@@ -214,7 +230,7 @@ def main() -> int:
         else:
             results.append(StepResult("health", True, status, f"route_owner={owner}, orchestrator={_as_json(orch)}"))
 
-    # 2) Documents list (orchestrated)
+    # 2) Documents list (go-native read path)
     status, docs, docs_headers = _request_with_headers(
         base_url=args.go_base_url,
         method="GET",
@@ -223,7 +239,7 @@ def main() -> int:
         timeout=args.timeout,
     )
     docs_owner = _route_owner(docs_headers)
-    ok_docs = status == 200 and isinstance(docs, dict) and docs_owner == "go-orchestrator"
+    ok_docs = status == 200 and isinstance(docs, dict) and docs_owner == "go-native"
     detail_docs = f"route_owner={docs_owner or '<missing>'}, envelope_code={_envelope_code(docs)}"
     results.append(StepResult("documents.list", ok_docs, status, detail_docs))
 
@@ -242,7 +258,7 @@ def main() -> int:
     detail_qa = f"route_owner={qa_owner or '<missing>'}, envelope_code={_envelope_code(qa_health)}, status={qa_status or '<missing>'}"
     results.append(StepResult("docqa.health", ok_qa, status, detail_qa))
 
-    # 4) NL2Cypher read-only contract checks (orchestrated)
+    # 4) NL2Cypher read-only contract checks (go-native)
     status, nl_examples, nl_examples_headers = _request_with_headers(
         base_url=args.go_base_url,
         method="GET",
@@ -251,7 +267,7 @@ def main() -> int:
         timeout=args.timeout,
     )
     nl_examples_owner = _route_owner(nl_examples_headers)
-    ok_nl_examples = status == 200 and isinstance(nl_examples, dict) and nl_examples_owner == "go-orchestrator"
+    ok_nl_examples = status == 200 and isinstance(nl_examples, dict) and nl_examples_owner == "go-native"
     detail_nl_examples = f"route_owner={nl_examples_owner or '<missing>'}, success={nl_examples.get('success') if isinstance(nl_examples, dict) else None}"
     results.append(StepResult("nl2cypher.examples", ok_nl_examples, status, detail_nl_examples))
 
@@ -263,11 +279,11 @@ def main() -> int:
         timeout=args.timeout,
     )
     nl_status_owner = _route_owner(nl_status_headers)
-    ok_nl_status = status == 200 and isinstance(nl_status, dict) and nl_status_owner == "go-orchestrator"
+    ok_nl_status = status == 200 and isinstance(nl_status, dict) and nl_status_owner == "go-native"
     detail_nl_status = f"route_owner={nl_status_owner or '<missing>'}, enabled={nl_status.get('enabled') if isinstance(nl_status, dict) else None}"
     results.append(StepResult("nl2cypher.status", ok_nl_status, status, detail_nl_status))
 
-    # 5) Optional graph build trigger (orchestrated)
+    # 5) Optional graph build trigger (go-native job submission)
     if args.with_build:
         status, build, build_headers = _request_with_headers(
             base_url=args.go_base_url,
@@ -278,11 +294,11 @@ def main() -> int:
             timeout=max(args.timeout, 60.0),
         )
         build_owner = _route_owner(build_headers)
-        ok_build = status == 200 and isinstance(build, dict) and build_owner == "go-orchestrator"
+        ok_build = status == 200 and isinstance(build, dict) and build_owner == "go-native"
         detail_build = f"route_owner={build_owner or '<missing>'}, envelope_code={_envelope_code(build)}"
         results.append(StepResult("graph.build", ok_build, status, detail_build))
 
-    # 6) Optional upload (orchestrated stream)
+    # 6) Optional upload (go-native write path)
     if args.with_upload:
         status, upload, upload_headers = _request_upload(
             base_url=args.go_base_url,
@@ -292,9 +308,23 @@ def main() -> int:
             content=b"GraphInsight smoke upload test\n",
         )
         upload_owner = _route_owner(upload_headers)
-        ok_upload = status == 200 and isinstance(upload, dict) and upload_owner == "go-orchestrator"
+        ok_upload = status == 200 and isinstance(upload, dict) and upload_owner == "go-native"
         detail_upload = f"route_owner={upload_owner or '<missing>'}, envelope_code={_envelope_code(upload)}"
         results.append(StepResult("documents.upload", ok_upload, status, detail_upload))
+
+        upload_doc_id = _extract_doc_id_from_upload(upload)
+        if upload_doc_id:
+            delete_status, delete_body, delete_headers = _request_with_headers(
+                base_url=args.go_base_url,
+                method="DELETE",
+                path=f"/api/documents/{upload_doc_id}?purge_graph=false&soft_delete=false&dry_run=false&verify_after=false",
+                token=token,
+                timeout=args.timeout,
+            )
+            delete_owner = _route_owner(delete_headers)
+            ok_delete = delete_status == 200 and isinstance(delete_body, dict) and delete_owner == "go-native"
+            detail_delete = f"route_owner={delete_owner or '<missing>'}, envelope_code={_envelope_code(delete_body)}"
+            results.append(StepResult("documents.delete", ok_delete, delete_status, detail_delete))
 
     print("Smoke results:")
     for item in results:

@@ -5,14 +5,20 @@ import json
 import re
 from typing import Any, Dict, List, Optional
 
+from neo4j import Query
+
 from config import get_settings
 from core import get_logger
 from services.document_graph_service import DocumentGraphService
+from services.model_runtime_policy import apply_reasoning_profile, normalize_reasoning_profile
 from services.openai_client_factory import build_openai_client
 from services.neo4j_service import get_neo4j_service
 
 logger = get_logger()
 settings = get_settings()
+
+DOCQA_DIAG_CONNECT_TIMEOUT_SECONDS = 3.0
+DOCQA_DIAG_QUERY_TIMEOUT_SECONDS = 4.0
 
 
 class DocQAService:
@@ -30,8 +36,9 @@ class DocQAService:
                 timeout=30.0,
             )
 
-    def answer(self, question: str, top_k: int) -> Dict[str, Any]:
+    def answer(self, question: str, top_k: int, reasoning_profile: Optional[str] = None) -> Dict[str, Any]:
         citations = self._retrieve_chunks(question, top_k)
+        active_profile = normalize_reasoning_profile(reasoning_profile, "balanced")
         trace = {
             "retrieval": {
                 "query": question,
@@ -43,6 +50,7 @@ class DocQAService:
                 "mode": "not_started",
                 "model": self.model,
                 "base_url": settings.llm_base_url or "default",
+                "reasoning_profile": active_profile,
             },
         }
         if not citations:
@@ -81,7 +89,7 @@ class DocQAService:
                     "content": f"问题：{question}\n\n上下文：\n" + "\n\n".join(context_blocks),
                 },
             ]
-            parsed = self._request_llm_json(messages)
+            parsed = self._request_llm_json(messages, reasoning_profile=active_profile)
             usage = parsed.get("_usage") if isinstance(parsed, dict) else None
             answer = parsed.get("answer") or "已生成答案。"
             used_ids = [str(item) for item in (parsed.get("used_chunk_ids") or [])]
@@ -89,6 +97,7 @@ class DocQAService:
                 "mode": "llm_success",
                 "model": self.model,
                 "base_url": settings.llm_base_url or "default",
+                "reasoning_profile": active_profile,
                 "used_chunk_ids": used_ids,
                 "context_chunk_ids": [str(item.get("id")) for item in citations[: self.max_context]],
                 "usage": usage,
@@ -109,6 +118,7 @@ class DocQAService:
                     "error": str(exc),
                     "model": self.model,
                     "base_url": settings.llm_base_url or "default",
+                    "reasoning_profile": active_profile,
                 },
             )
             answer = self._fallback_answer(question, citations)
@@ -116,6 +126,7 @@ class DocQAService:
                 "mode": "fallback_llm_error",
                 "model": self.model,
                 "base_url": settings.llm_base_url or "default",
+                "reasoning_profile": active_profile,
                 "error": str(exc),
             }
             trace["response"] = {
@@ -128,7 +139,13 @@ class DocQAService:
                 "trace": trace,
             }
 
-    def deep_research(self, question: str, top_k: int = 8, max_sub_questions: int = 4) -> Dict[str, Any]:
+    def deep_research(
+        self,
+        question: str,
+        top_k: int = 8,
+        max_sub_questions: int = 4,
+        reasoning_profile: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """深度调研：问题拆解 + 多轮检索 + 结构化报告。"""
         normalized_question = (question or "").strip()
         if not normalized_question:
@@ -261,6 +278,7 @@ class DocQAService:
             "unique_citations": len(citations),
             "avg_citation_confidence": round(avg_citation_confidence, 3),
         }
+        active_profile = normalize_reasoning_profile(reasoning_profile, "deep")
         trace = {
             "retrieval": {
                 "query": normalized_question,
@@ -274,6 +292,7 @@ class DocQAService:
                 "mode": "not_started",
                 "model": self.model,
                 "base_url": settings.llm_base_url or "default",
+                "reasoning_profile": active_profile,
             },
             "evidence_stats": evidence_stats,
         }
@@ -313,7 +332,12 @@ class DocQAService:
             }
 
         try:
-            llm_result = self._generate_deep_report(normalized_question, sub_questions, top_citations)
+            llm_result = self._generate_deep_report(
+                normalized_question,
+                sub_questions,
+                top_citations,
+                reasoning_profile=active_profile,
+            )
             usage = llm_result.get("_usage") if isinstance(llm_result, dict) else None
             used_ids = [str(item) for item in llm_result.get("used_chunk_ids") or []]
             if used_ids:
@@ -326,6 +350,7 @@ class DocQAService:
                 "mode": "llm_success",
                 "model": self.model,
                 "base_url": settings.llm_base_url or "default",
+                "reasoning_profile": active_profile,
                 "used_chunk_ids": used_ids,
                 "sub_questions": sub_questions,
                 "usage": usage,
@@ -386,6 +411,7 @@ class DocQAService:
                     "error": str(exc),
                     "model": self.model,
                     "base_url": settings.llm_base_url or "default",
+                    "reasoning_profile": active_profile,
                 },
             )
             report = self._fallback_deep_report(normalized_question, sub_questions, top_citations)
@@ -393,6 +419,7 @@ class DocQAService:
                 "mode": "fallback_llm_error",
                 "model": self.model,
                 "base_url": settings.llm_base_url or "default",
+                "reasoning_profile": active_profile,
                 "error": str(exc),
             }
             return {
@@ -438,13 +465,22 @@ class DocQAService:
             result["neo4j"] = {"ok": True}
             with service.driver.session() as session:
                 doc_count = session.run(
-                    "MATCH (d:Document {source:'document_ingest'}) RETURN count(d) AS c"
+                    Query(
+                        "MATCH (d:Document {source:'document_ingest'}) RETURN count(d) AS c",
+                        timeout=DOCQA_DIAG_QUERY_TIMEOUT_SECONDS,
+                    )
                 ).single()
                 chunk_count = session.run(
-                    "MATCH (c:Chunk {source:'document_ingest'}) RETURN count(c) AS c"
+                    Query(
+                        "MATCH (c:Chunk {source:'document_ingest'}) RETURN count(c) AS c",
+                        timeout=DOCQA_DIAG_QUERY_TIMEOUT_SECONDS,
+                    )
                 ).single()
                 entity_count = session.run(
-                    "MATCH (e:Entity {source:'document_ingest'}) RETURN count(e) AS c"
+                    Query(
+                        "MATCH (e:Entity {source:'document_ingest'}) RETURN count(e) AS c",
+                        timeout=DOCQA_DIAG_QUERY_TIMEOUT_SECONDS,
+                    )
                 ).single()
                 result["documents"] = {"count": int((doc_count or {}).get("c") or 0)}
                 result["chunks"] = {"count": int((chunk_count or {}).get("c") or 0)}
@@ -552,6 +588,7 @@ class DocQAService:
         question: str,
         sub_questions: List[str],
         citations: List[Dict[str, Any]],
+        reasoning_profile: Optional[str] = None,
     ) -> Dict[str, Any]:
         context_blocks: List[str] = []
         for item in citations[: max(self.max_context * 3, 8)]:
@@ -596,9 +633,18 @@ class DocQAService:
                 ),
             },
         ]
-        return self._request_llm_json(messages, max_tokens=max(self.max_tokens, 1600))
+        return self._request_llm_json(
+            messages,
+            max_tokens=max(self.max_tokens, 1600),
+            reasoning_profile=reasoning_profile,
+        )
 
-    def _request_llm_json(self, messages: List[Dict[str, str]], max_tokens: Optional[int] = None) -> Dict[str, Any]:
+    def _request_llm_json(
+        self,
+        messages: List[Dict[str, str]],
+        max_tokens: Optional[int] = None,
+        reasoning_profile: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """兼容不同 OpenAI 兼容网关：有些模型不接受 temperature / max_tokens。"""
         if not self._client:
             return {}
@@ -625,7 +671,7 @@ class DocQAService:
         attempt_errors: List[str] = []
         for idx, payload in enumerate(request_payloads, start=1):
             try:
-                response = self._client.chat.completions.create(**payload)
+                response = self._client.chat.completions.create(**apply_reasoning_profile(payload, reasoning_profile))
                 usage = self._extract_usage(response)
                 content = self._extract_message_content(response)
                 parsed = self._parse_json(content)
@@ -832,27 +878,33 @@ class DocQAService:
         with service.driver.session() as session:
             try:
                 result = session.run(
-                    """
-                    CALL db.index.fulltext.queryNodes('chunkText', $q) YIELD node, score
-                    OPTIONAL MATCH (d:Document)-[:HAS_CHUNK]->(node)
-                    OPTIONAL MATCH (node)-[:MENTIONS]->(e:Entity)
-                    WITH node, d, score, collect(DISTINCT e.name) AS entity_names
-                    RETURN node AS c, d, score, entity_names
-                    ORDER BY score DESC
-                    LIMIT $limit
-                    """,
+                    Query(
+                        """
+                        CALL db.index.fulltext.queryNodes('chunkText', $q) YIELD node, score
+                        OPTIONAL MATCH (d:Document)-[:HAS_CHUNK]->(node)
+                        OPTIONAL MATCH (node)-[:MENTIONS]->(e:Entity)
+                        WITH node, d, score, collect(DISTINCT e.name) AS entity_names
+                        RETURN node AS c, d, score, entity_names
+                        ORDER BY score DESC
+                        LIMIT $limit
+                        """,
+                        timeout=DOCQA_DIAG_QUERY_TIMEOUT_SECONDS,
+                    ),
                     {"q": query, "limit": top_k},
                 )
             except Exception:
                 result = session.run(
-                    """
-                    MATCH (d:Document)-[:HAS_CHUNK]->(c:Chunk)
-                    WHERE c.text CONTAINS $q
-                    OPTIONAL MATCH (c)-[:MENTIONS]->(e:Entity)
-                    WITH c, d, collect(DISTINCT e.name) AS entity_names
-                    RETURN c, d, entity_names
-                    LIMIT $limit
-                    """,
+                    Query(
+                        """
+                        MATCH (d:Document)-[:HAS_CHUNK]->(c:Chunk)
+                        WHERE c.text CONTAINS $q
+                        OPTIONAL MATCH (c)-[:MENTIONS]->(e:Entity)
+                        WITH c, d, collect(DISTINCT e.name) AS entity_names
+                        RETURN c, d, entity_names
+                        LIMIT $limit
+                        """,
+                        timeout=DOCQA_DIAG_QUERY_TIMEOUT_SECONDS,
+                    ),
                     {"q": query, "limit": top_k},
                 )
 

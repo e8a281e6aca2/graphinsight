@@ -21,6 +21,11 @@ var backendFallbackIgnoredKeys = map[string]struct{}{
 	"API_PORT": {},
 }
 
+var relativePathEnvKeys = map[string]struct{}{
+	"MEDIA_STORAGE_PATH":    {},
+	"DOCUMENT_STORAGE_PATH": {},
+}
+
 func loadLocalEnv() {
 	loadLocalEnvOnce.Do(func() {
 		for _, candidate := range candidateEnvFiles() {
@@ -91,6 +96,7 @@ func loadEnvFile(path string, backendFallback bool) bool {
 		}
 		value = strings.TrimSpace(value)
 		value = strings.Trim(value, `"'`)
+		value = normalizeEnvValue(path, key, value)
 		if err := os.Setenv(key, value); err == nil {
 			loaded = true
 		}
@@ -102,4 +108,19 @@ func loadEnvFile(path string, backendFallback bool) bool {
 func shouldIgnoreBackendFallbackKey(key string) bool {
 	_, ignored := backendFallbackIgnoredKeys[strings.ToUpper(strings.TrimSpace(key))]
 	return ignored
+}
+
+func normalizeEnvValue(envPath string, key string, value string) string {
+	trimmedKey := strings.ToUpper(strings.TrimSpace(key))
+	if _, ok := relativePathEnvKeys[trimmedKey]; !ok {
+		return value
+	}
+
+	trimmedValue := strings.TrimSpace(value)
+	if trimmedValue == "" || filepath.IsAbs(trimmedValue) {
+		return trimmedValue
+	}
+
+	baseDir := filepath.Dir(filepath.Clean(envPath))
+	return filepath.Clean(filepath.Join(baseDir, trimmedValue))
 }

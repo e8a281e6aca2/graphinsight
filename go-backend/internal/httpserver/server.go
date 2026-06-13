@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"time"
 
-	"graphinsight/go-backend/internal/authz"
+	"graphinsight/go-backend/internal/adminstore"
 	"graphinsight/go-backend/internal/config"
 	"graphinsight/go-backend/internal/graph"
 	"graphinsight/go-backend/internal/orchestrator"
@@ -20,10 +20,12 @@ type Server struct {
 	logger       *slog.Logger
 	httpServer   *http.Server
 	graphService *graph.Service
+	adminStore   *adminstore.Client
 }
 
 func New(cfg config.Config, logger *slog.Logger) *Server {
 	mux := http.NewServeMux()
+	apiMetrics := newAPIMetrics(5000)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
@@ -38,9 +40,15 @@ func New(cfg config.Config, logger *slog.Logger) *Server {
 		logger.Warn("python proxy init failed, extraction routes will return 503", "error", proxyInitErr.Error())
 	}
 
-	authzClient, authzInitErr := authz.New(cfg)
-	if authzInitErr != nil {
-		logger.Warn("authz client init failed, business auth may degrade", "error", authzInitErr.Error())
+	adminStore, adminStoreErr := adminstore.New(cfg)
+	if adminStoreErr != nil {
+		logger.Warn("admin store init failed, rbac native reads may return 503", "error", adminStoreErr.Error())
+	} else {
+		adminCtx, adminCancel := context.WithTimeout(context.Background(), 3*time.Second)
+		if err := adminStore.CheckHealth(adminCtx); err != nil {
+			logger.Warn("admin store health check failed, rbac native reads may return 503", "error", err.Error())
+		}
+		adminCancel()
 	}
 
 	orchestratorClient, orchestratorInitErr := orchestrator.New(cfg)
@@ -56,14 +64,14 @@ func New(cfg config.Config, logger *slog.Logger) *Server {
 		graphInitErr,
 		proxyClient,
 		proxyInitErr,
-		authzClient,
-		authzInitErr,
 		orchestratorClient,
 		orchestratorInitErr,
+		adminStore,
+		apiMetrics,
 	)
 
 	handler := CORS(cfg.AllowedOrigins, mux)
-	handler = RequestLogging(logger, handler)
+	handler = RequestLogging(logger, handler, apiMetrics)
 	handler = Recovery(logger, handler)
 	handler = Trace(handler)
 
@@ -84,6 +92,7 @@ func New(cfg config.Config, logger *slog.Logger) *Server {
 		logger:       logger,
 		httpServer:   httpServer,
 		graphService: graphSvc,
+		adminStore:   adminStore,
 	}
 }
 
@@ -101,6 +110,11 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	if s.graphService != nil {
 		if err := s.graphService.Close(ctx); err != nil {
 			s.logger.Warn("close neo4j failed", "error", err.Error())
+		}
+	}
+	if s.adminStore != nil {
+		if err := s.adminStore.Close(); err != nil {
+			s.logger.Warn("close admin store failed", "error", err.Error())
 		}
 	}
 	return s.httpServer.Shutdown(ctx)

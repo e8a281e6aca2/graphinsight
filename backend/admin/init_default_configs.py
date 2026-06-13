@@ -89,6 +89,41 @@ def init_default_configs():
             },
             {
                 "category": "ai_service",
+                "key": "docqa_reasoning_profile",
+                "value": os.getenv("AI_SERVICE_DOCQA_REASONING_PROFILE", "balanced"),
+                "description": "文档问答默认推理档位",
+                "is_sensitive": False
+            },
+            {
+                "category": "ai_service",
+                "key": "deep_research_reasoning_profile",
+                "value": os.getenv("AI_SERVICE_DEEP_RESEARCH_REASONING_PROFILE", "deep"),
+                "description": "深度调研默认推理档位",
+                "is_sensitive": False
+            },
+            {
+                "category": "ai_service",
+                "key": "model_probe_reasoning_profile",
+                "value": os.getenv("AI_SERVICE_MODEL_PROBE_REASONING_PROFILE", "fast"),
+                "description": "模型连通性测试默认推理档位",
+                "is_sensitive": False
+            },
+            {
+                "category": "ai_service",
+                "key": "graph_extract_reasoning_profile",
+                "value": os.getenv("AI_SERVICE_GRAPH_EXTRACT_REASONING_PROFILE", "fast"),
+                "description": "图谱抽取默认推理档位",
+                "is_sensitive": False
+            },
+            {
+                "category": "ai_service",
+                "key": "graph_extract_complex_reasoning_profile",
+                "value": os.getenv("AI_SERVICE_GRAPH_EXTRACT_COMPLEX_REASONING_PROFILE", "balanced"),
+                "description": "复杂图谱抽取默认推理档位",
+                "is_sensitive": False
+            },
+            {
+                "category": "ai_service",
                 "key": "max_tokens",
                 "value": os.getenv("OPENAI_MAX_TOKENS", "2000"),
                 "description": "最大 Token 数",

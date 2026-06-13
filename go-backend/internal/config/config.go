@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -28,7 +29,14 @@ type Config struct {
 	PythonBackendTimeoutSeconds int
 	GraphBuildTimeoutSeconds    int
 	PythonBackendForwardAuth    bool
-	AdminConfigToken            string
+	MediaStoragePath            string
+	DocumentStoragePath         string
+	DocumentStorageFallbackPath string
+	AdminDatabaseURL            string
+
+	AIProvider string
+	AIModel    string
+	AIAPIKey   string
 
 	HTTPWriteTimeoutSeconds int
 
@@ -38,19 +46,34 @@ type Config struct {
 	OrchestratorSafeRetryDocQA    bool
 	IdempotencyCacheTTLSeconds    int
 
-	RBACEnforceBusinessAPI bool
+	RBACEnforceBusinessAPI  bool
+	RBACAuthzMode           string
+	RBACEnable              bool
+	RBACFailOpenWhenUnbound bool
+	AdminSecretKey          string
 }
 
 func Load() Config {
 	loadLocalEnv()
 
 	return Config{
-		AppName:        envOrDefault("APP_NAME", "GraphInsight Go API"),
-		Version:        envOrDefault("APP_VERSION", "0.1.0"),
-		Host:           envOrDefault("API_HOST", "0.0.0.0"),
-		Port:           envIntOrDefault("API_PORT", 8081),
-		LogLevel:       strings.ToLower(envOrDefault("LOG_LEVEL", "info")),
-		AllowedOrigins: csvOrDefault("CORS_ALLOWED_ORIGINS", []string{"http://localhost:5173", "http://localhost:5174", "http://localhost:3000"}),
+		AppName:  envOrDefault("APP_NAME", "GraphInsight Go API"),
+		Version:  envOrDefault("APP_VERSION", "0.1.0"),
+		Host:     envOrDefault("API_HOST", "0.0.0.0"),
+		Port:     envIntOrDefault("API_PORT", 8081),
+		LogLevel: strings.ToLower(envOrDefault("LOG_LEVEL", "info")),
+		AllowedOrigins: csvOrDefault("CORS_ALLOWED_ORIGINS", []string{
+			"http://localhost:3000",
+			"http://localhost:1234",
+			"http://localhost:4173",
+			"http://localhost:5173",
+			"http://localhost:5174",
+			"http://127.0.0.1:3000",
+			"http://127.0.0.1:1234",
+			"http://127.0.0.1:4173",
+			"http://127.0.0.1:5173",
+			"http://127.0.0.1:5174",
+		}),
 
 		Neo4jURI:      envOrDefault("NEO4J_URI", "bolt://localhost:7687"),
 		Neo4jUser:     envOrDefault("NEO4J_USER", envOrDefault("NEO4J_USERNAME", "neo4j")),
@@ -65,7 +88,13 @@ func Load() Config {
 		PythonBackendTimeoutSeconds:   envIntOrDefault("PYTHON_BACKEND_TIMEOUT_SECONDS", 60),
 		GraphBuildTimeoutSeconds:      envIntOrDefault("GRAPH_BUILD_TIMEOUT_SECONDS", 300),
 		PythonBackendForwardAuth:      envBoolOrDefault("PYTHON_BACKEND_FORWARD_AUTH", true),
-		AdminConfigToken:              envOrDefault("GO_ADMIN_CONFIG_TOKEN", envOrDefault("ADMIN_TOKEN", "")),
+		MediaStoragePath:              resolvePath(envOrDefault("MEDIA_STORAGE_PATH", "../backend/media")),
+		DocumentStoragePath:           resolvePath(envOrDefault("DOCUMENT_STORAGE_PATH", "../backend/documents")),
+		DocumentStorageFallbackPath:   resolvePath("../backend/documents"),
+		AdminDatabaseURL:              envOrDefault("ADMIN_DATABASE_URL", "postgresql://graphinsight:graphinsight-dev-password@127.0.0.1:5434/graphinsight_admin"),
+		AIProvider:                    envOrDefault("AI_PROVIDER", "openai"),
+		AIModel:                       envOrDefault("LLM_QA_MODEL", envOrDefault("LLM_MODEL", envOrDefault("OPENAI_MODEL", ""))),
+		AIAPIKey:                      envOrDefault("LLM_API_KEY", envOrDefault("OPENAI_API_KEY", "")),
 		HTTPWriteTimeoutSeconds:       envIntOrDefault("HTTP_WRITE_TIMEOUT_SECONDS", 300),
 		OrchestratorRetryMax:          envIntOrDefault("ORCHESTRATOR_RETRY_MAX", 2),
 		OrchestratorRetryBackoffMS:    envIntOrDefault("ORCHESTRATOR_RETRY_BACKOFF_MS", 200),
@@ -73,7 +102,22 @@ func Load() Config {
 		OrchestratorSafeRetryDocQA:    envBoolOrDefault("ORCHESTRATOR_SAFE_RETRY_DOCQA", false),
 		IdempotencyCacheTTLSeconds:    envIntOrDefault("IDEMPOTENCY_CACHE_TTL_SECONDS", 600),
 
-		RBACEnforceBusinessAPI: envBoolOrDefault("RBAC_ENFORCE_BUSINESS_API", true),
+		RBACEnforceBusinessAPI:  envBoolOrDefault("RBAC_ENFORCE_BUSINESS_API", true),
+		RBACAuthzMode:           normalizeRBACAuthzMode(envOrDefault("RBAC_AUTHZ_MODE", "go_db")),
+		RBACEnable:              envBoolOrDefault("RBAC_ENABLE", true),
+		RBACFailOpenWhenUnbound: envBoolOrDefault("RBAC_FAIL_OPEN_WHEN_UNBOUND", false),
+		AdminSecretKey:          envOrDefault("ADMIN_SECRET_KEY", "your-secret-key-change-in-production"),
+	}
+}
+
+func normalizeRBACAuthzMode(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "go_db":
+		return "go_db"
+	case "local_jwt", "local_jwt_soft":
+		return "local_jwt_soft"
+	default:
+		return "go_db"
 	}
 }
 
@@ -131,4 +175,19 @@ func csvOrDefault(key string, fallback []string) []string {
 		return fallback
 	}
 	return result
+}
+
+func resolvePath(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return trimmed
+	}
+	if filepath.IsAbs(trimmed) {
+		return filepath.Clean(trimmed)
+	}
+	abs, err := filepath.Abs(trimmed)
+	if err != nil {
+		return filepath.Clean(trimmed)
+	}
+	return abs
 }

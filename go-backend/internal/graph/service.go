@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/neo4j/neo4j-go-driver/v5/neo4j"
@@ -16,9 +17,14 @@ import (
 )
 
 type Service struct {
-	driver   neo4j.DriverWithContext
-	database string
-	logger   *slog.Logger
+	driver         neo4j.DriverWithContext
+	database       string
+	logger         *slog.Logger
+	cfg            config.Config
+	activeSig      string
+	lastRefreshAt  time.Time
+	refreshEvery   time.Duration
+	connectionLock sync.RWMutex
 }
 
 var ErrNodeNotFound = errors.New("node not found")
@@ -32,29 +38,172 @@ func NewService(ctx context.Context, cfg config.Config, logger *slog.Logger) (*S
 	if cfg.Neo4jConfigSource == "admin" && strings.TrimSpace(cfg.Neo4jConfigResolutionErr) != "" {
 		return nil, fmt.Errorf("resolve neo4j admin config failed: %s", cfg.Neo4jConfigResolutionErr)
 	}
-	driver, err := neo4j.NewDriverWithContext(cfg.Neo4jURI, neo4j.BasicAuth(cfg.Neo4jUser, cfg.Neo4jPassword, ""))
+	service := &Service{
+		logger:       logger,
+		cfg:          cfg,
+		refreshEvery: 5 * time.Second,
+	}
+	if err := service.refreshConnection(ctx, true); err != nil {
+		return nil, err
+	}
+	return service, nil
+}
+
+func (s *Service) newSession(ctx context.Context) (neo4j.SessionWithContext, error) {
+	if s == nil {
+		return nil, errors.New("neo4j service is not initialized")
+	}
+	if err := s.ensureConnection(ctx); err != nil {
+		return nil, err
+	}
+
+	s.connectionLock.RLock()
+	driver := s.driver
+	database := s.database
+	s.connectionLock.RUnlock()
+	if driver == nil {
+		return nil, errors.New("neo4j driver is not initialized")
+	}
+	return driver.NewSession(ctx, neo4j.SessionConfig{DatabaseName: database}), nil
+}
+
+func (s *Service) ensureConnection(ctx context.Context) error {
+	if s == nil {
+		return errors.New("neo4j service is not initialized")
+	}
+
+	s.connectionLock.RLock()
+	driverReady := s.driver != nil
+	shouldRefresh := time.Since(s.lastRefreshAt) >= s.refreshEvery
+	s.connectionLock.RUnlock()
+
+	if !driverReady {
+		return s.refreshConnection(ctx, true)
+	}
+	if shouldRefresh {
+		return s.refreshConnection(ctx, false)
+	}
+	return nil
+}
+
+func (s *Service) refreshConnection(ctx context.Context, force bool) error {
+	s.connectionLock.Lock()
+	defer s.connectionLock.Unlock()
+
+	if !force && s.driver != nil && time.Since(s.lastRefreshAt) < s.refreshEvery {
+		return nil
+	}
+
+	resolved, err := config.ResolveNeo4jConfig(ctx, s.cfg)
 	if err != nil {
-		return nil, fmt.Errorf("create neo4j driver failed: %w", err)
+		if s.driver != nil {
+			s.lastRefreshAt = time.Now()
+			if s.logger != nil {
+				s.logger.Warn("refresh neo4j config failed; keeping current driver", "error", err.Error())
+			}
+			return nil
+		}
+		return fmt.Errorf("resolve neo4j config failed: %w", err)
+	}
+
+	signature := neo4jSignature(resolved)
+	if !force && s.driver != nil && s.activeSig == signature {
+		s.cfg = resolved
+		s.lastRefreshAt = time.Now()
+		return nil
+	}
+
+	driver, err := neo4j.NewDriverWithContext(
+		resolved.Neo4jURI,
+		neo4j.BasicAuth(resolved.Neo4jUser, resolved.Neo4jPassword, ""),
+	)
+	if err != nil {
+		if s.driver != nil && !force {
+			s.lastRefreshAt = time.Now()
+			if s.logger != nil {
+				s.logger.Warn("create refreshed neo4j driver failed; keeping current driver", "error", err.Error())
+			}
+			return nil
+		}
+		return fmt.Errorf("create neo4j driver failed: %w", err)
 	}
 	if err := driver.VerifyConnectivity(ctx); err != nil {
 		_ = driver.Close(ctx)
-		return nil, fmt.Errorf("verify neo4j connectivity failed: %w", err)
+		if s.driver != nil && !force {
+			s.lastRefreshAt = time.Now()
+			if s.logger != nil {
+				s.logger.Warn("verify refreshed neo4j connectivity failed; keeping current driver", "error", err.Error())
+			}
+			return nil
+		}
+		return fmt.Errorf("verify neo4j connectivity failed: %w", err)
 	}
-	return &Service{driver: driver, database: cfg.Neo4jDatabase, logger: logger}, nil
+
+	oldDriver := s.driver
+	s.driver = driver
+	s.database = resolved.Neo4jDatabase
+	s.cfg = resolved
+	s.activeSig = signature
+	s.lastRefreshAt = time.Now()
+
+	if oldDriver != nil {
+		_ = oldDriver.Close(ctx)
+	}
+	return nil
+}
+
+func neo4jSignature(cfg config.Config) string {
+	return strings.Join(
+		[]string{
+			strings.TrimSpace(cfg.Neo4jURI),
+			strings.TrimSpace(cfg.Neo4jUser),
+			strings.TrimSpace(cfg.Neo4jPassword),
+			strings.TrimSpace(cfg.Neo4jDatabase),
+			strings.TrimSpace(cfg.Neo4jConfigResolvedSource),
+		},
+		"|",
+	)
+}
+
+func firstNonEmptyDatabase(value string) string {
+	if trimmed := strings.TrimSpace(value); trimmed != "" {
+		return trimmed
+	}
+	return "neo4j"
 }
 
 func (s *Service) Close(ctx context.Context) error {
-	if s == nil || s.driver == nil {
+	if s == nil {
+		return nil
+	}
+	s.connectionLock.Lock()
+	defer s.connectionLock.Unlock()
+	if s.driver == nil {
 		return nil
 	}
 	return s.driver.Close(ctx)
 }
 
-func (s *Service) CheckHealth(ctx context.Context) error {
-	if s == nil || s.driver == nil {
-		return errors.New("neo4j driver is not initialized")
+func (s *Service) RuntimeConnectionInfo() RuntimeConnectionInfo {
+	if s == nil {
+		return RuntimeConnectionInfo{}
 	}
-	session := s.driver.NewSession(ctx, neo4j.SessionConfig{DatabaseName: s.database})
+	s.connectionLock.RLock()
+	defer s.connectionLock.RUnlock()
+	return RuntimeConnectionInfo{
+		URI:             strings.TrimSpace(s.cfg.Neo4jURI),
+		Database:        firstNonEmptyDatabase(s.cfg.Neo4jDatabase),
+		ConfigMode:      strings.TrimSpace(s.cfg.Neo4jConfigSource),
+		ConfigSource:    strings.TrimSpace(s.cfg.Neo4jConfigResolvedSource),
+		ResolutionError: strings.TrimSpace(s.cfg.Neo4jConfigResolutionErr),
+	}
+}
+
+func (s *Service) CheckHealth(ctx context.Context) error {
+	session, err := s.newSession(ctx)
+	if err != nil {
+		return err
+	}
 	defer func() { _ = session.Close(ctx) }()
 
 	result, err := session.Run(
@@ -76,6 +225,283 @@ func (s *Service) CheckHealth(ctx context.Context) error {
 	return result.Err()
 }
 
+func (s *Service) CountGraph(ctx context.Context) (GraphCounts, error) {
+	session, err := s.newSession(ctx)
+	if err != nil {
+		return GraphCounts{}, err
+	}
+	defer func() { _ = session.Close(ctx) }()
+
+	result, err := session.Run(ctx, `
+CALL {
+  MATCH (n)
+  RETURN count(n) AS node_count
+}
+CALL {
+  MATCH ()-[r]->()
+  RETURN count(r) AS relationship_count
+}
+RETURN node_count, relationship_count
+`, nil, neo4j.WithTxTimeout(5*time.Second), neo4j.WithTxMetadata(map[string]any{"app": "graphinsight", "operation": "monitor.countGraph"}))
+	if err != nil {
+		return GraphCounts{}, err
+	}
+	if !result.Next(ctx) {
+		if err := result.Err(); err != nil {
+			return GraphCounts{}, err
+		}
+		return GraphCounts{}, nil
+	}
+	record := result.Record()
+	if err := result.Err(); err != nil {
+		return GraphCounts{}, err
+	}
+	return GraphCounts{
+		NodeCount:         int64FromRecord(record, "node_count"),
+		RelationshipCount: int64FromRecord(record, "relationship_count"),
+	}, nil
+}
+
+func (s *Service) GetDocumentGraphTotals(ctx context.Context) (DocumentGraphStats, error) {
+	session, err := s.newSession(ctx)
+	if err != nil {
+		return DocumentGraphStats{}, err
+	}
+	defer func() { _ = session.Close(ctx) }()
+
+	return s.getDocumentGraphTotals(ctx, session)
+}
+
+func (s *Service) PreviewDeleteDocumentGraph(ctx context.Context, docID string) (DocumentGraphStats, error) {
+	docID = strings.TrimSpace(docID)
+	if docID == "" {
+		return DocumentGraphStats{}, fmt.Errorf("doc id is empty")
+	}
+
+	session, err := s.newSession(ctx)
+	if err != nil {
+		return DocumentGraphStats{}, err
+	}
+	defer func() { _ = session.Close(ctx) }()
+
+	relations, err := s.countDocumentRelationsForDoc(ctx, session, docID)
+	if err != nil {
+		return DocumentGraphStats{}, err
+	}
+	chunks, err := scalarCount(ctx, session, "MATCH (c:Chunk {doc_id: $doc_id}) RETURN count(c) AS c", map[string]any{"doc_id": docID}, "documents.previewDelete.chunks")
+	if err != nil {
+		return DocumentGraphStats{}, err
+	}
+	documents, err := scalarCount(ctx, session, "MATCH (d:Document {doc_id: $doc_id}) RETURN count(d) AS c", map[string]any{"doc_id": docID}, "documents.previewDelete.documents")
+	if err != nil {
+		return DocumentGraphStats{}, err
+	}
+
+	return DocumentGraphStats{
+		Documents:      documents,
+		Chunks:         chunks,
+		Relations:      relations,
+		OrphanEntities: 0,
+	}, nil
+}
+
+func (s *Service) DeleteDocumentGraph(ctx context.Context, docID string) (DocumentGraphStats, error) {
+	docID = strings.TrimSpace(docID)
+	if docID == "" {
+		return DocumentGraphStats{}, fmt.Errorf("doc id is empty")
+	}
+
+	session, err := s.newSession(ctx)
+	if err != nil {
+		return DocumentGraphStats{}, err
+	}
+	defer func() { _ = session.Close(ctx) }()
+
+	statsAny, err := session.ExecuteWrite(ctx, func(tx neo4j.ManagedTransaction) (any, error) {
+		relations, err := scalarCountTx(ctx, tx, `
+MATCH (:Document {doc_id: $doc_id})-[r:HAS_CHUNK]->(:Chunk)
+RETURN count(r) AS c
+`, map[string]any{"doc_id": docID}, "documents.delete.relations.hasChunk")
+		if err != nil {
+			return nil, err
+		}
+		mentions, err := scalarCountTx(ctx, tx, `
+MATCH (:Chunk {doc_id: $doc_id})-[r:MENTIONS]->(:Entity)
+RETURN count(r) AS c
+`, map[string]any{"doc_id": docID}, "documents.delete.relations.mentions")
+		if err != nil {
+			return nil, err
+		}
+		entityRelations, err := scalarCountTx(ctx, tx, `
+MATCH (:Entity)-[r]->(:Entity)
+WHERE r.doc_id = $doc_id
+RETURN count(r) AS c
+`, map[string]any{"doc_id": docID}, "documents.delete.relations.entities")
+		if err != nil {
+			return nil, err
+		}
+		relations += mentions + entityRelations
+
+		if relations > 0 {
+			if _, err := tx.Run(ctx, `
+MATCH (:Entity)-[r]->(:Entity)
+WHERE r.doc_id = $doc_id
+DELETE r
+`, map[string]any{"doc_id": docID}); err != nil {
+				return nil, err
+			}
+		}
+
+		chunks, err := scalarCountTx(ctx, tx, "MATCH (c:Chunk {doc_id: $doc_id}) RETURN count(c) AS c", map[string]any{"doc_id": docID}, "documents.delete.chunks")
+		if err != nil {
+			return nil, err
+		}
+		if chunks > 0 {
+			if _, err := tx.Run(ctx, "MATCH (c:Chunk {doc_id: $doc_id}) DETACH DELETE c", map[string]any{"doc_id": docID}); err != nil {
+				return nil, err
+			}
+		}
+
+		documents, err := scalarCountTx(ctx, tx, "MATCH (d:Document {doc_id: $doc_id}) RETURN count(d) AS c", map[string]any{"doc_id": docID}, "documents.delete.documents")
+		if err != nil {
+			return nil, err
+		}
+		if documents > 0 {
+			if _, err := tx.Run(ctx, "MATCH (d:Document {doc_id: $doc_id}) DETACH DELETE d", map[string]any{"doc_id": docID}); err != nil {
+				return nil, err
+			}
+		}
+
+		orphanEntities, err := cleanupOrphanEntitiesTx(ctx, tx)
+		if err != nil {
+			return nil, err
+		}
+
+		return DocumentGraphStats{
+			Documents:      documents,
+			Chunks:         chunks,
+			Relations:      relations,
+			OrphanEntities: orphanEntities,
+		}, nil
+	})
+	if err != nil {
+		return DocumentGraphStats{}, err
+	}
+	stats, _ := statsAny.(DocumentGraphStats)
+	return stats, nil
+}
+
+func (s *Service) PreviewClearDocumentGraph(ctx context.Context) (DocumentGraphStats, error) {
+	session, err := s.newSession(ctx)
+	if err != nil {
+		return DocumentGraphStats{}, err
+	}
+	defer func() { _ = session.Close(ctx) }()
+
+	totals, err := s.getDocumentGraphTotals(ctx, session)
+	if err != nil {
+		return DocumentGraphStats{}, err
+	}
+	totals.OrphanEntities = 0
+	return totals, nil
+}
+
+func (s *Service) ClearDocumentGraph(ctx context.Context) (DocumentGraphStats, error) {
+	session, err := s.newSession(ctx)
+	if err != nil {
+		return DocumentGraphStats{}, err
+	}
+	defer func() { _ = session.Close(ctx) }()
+
+	statsAny, err := session.ExecuteWrite(ctx, func(tx neo4j.ManagedTransaction) (any, error) {
+		relations, err := scalarCountTx(ctx, tx, `
+MATCH (:Document {source: 'document_ingest'})-[r:HAS_CHUNK]->(:Chunk)
+RETURN count(r) AS c
+`, nil, "documents.clear.relations.hasChunk")
+		if err != nil {
+			return nil, err
+		}
+		mentions, err := scalarCountTx(ctx, tx, `
+MATCH (c:Chunk)-[r:MENTIONS]->(:Entity)
+WHERE c.source = 'document_ingest' OR c.doc_id IS NOT NULL
+RETURN count(r) AS c
+`, nil, "documents.clear.relations.mentions")
+		if err != nil {
+			return nil, err
+		}
+		entityRelations, err := scalarCountTx(ctx, tx, `
+MATCH (:Entity)-[r]->(:Entity)
+WHERE r.source = 'document_ingest' OR r.doc_id IS NOT NULL
+RETURN count(r) AS c
+`, nil, "documents.clear.relations.entities")
+		if err != nil {
+			return nil, err
+		}
+		relations += mentions + entityRelations
+
+		if relations > 0 {
+			if _, err := tx.Run(ctx, `
+MATCH (:Entity)-[r]->(:Entity)
+WHERE r.source = 'document_ingest' OR r.doc_id IS NOT NULL
+DELETE r
+`, nil); err != nil {
+				return nil, err
+			}
+		}
+
+		chunks, err := scalarCountTx(ctx, tx, `
+MATCH (c:Chunk)
+WHERE c.source = 'document_ingest' OR c.doc_id IS NOT NULL
+RETURN count(c) AS c
+`, nil, "documents.clear.chunks")
+		if err != nil {
+			return nil, err
+		}
+		if chunks > 0 {
+			if _, err := tx.Run(ctx, `
+MATCH (c:Chunk)
+WHERE c.source = 'document_ingest' OR c.doc_id IS NOT NULL
+DETACH DELETE c
+`, nil); err != nil {
+				return nil, err
+			}
+		}
+
+		documents, err := scalarCountTx(ctx, tx, `
+MATCH (d:Document {source: 'document_ingest'})
+RETURN count(d) AS c
+`, nil, "documents.clear.documents")
+		if err != nil {
+			return nil, err
+		}
+		if documents > 0 {
+			if _, err := tx.Run(ctx, `
+MATCH (d:Document {source: 'document_ingest'})
+DETACH DELETE d
+`, nil); err != nil {
+				return nil, err
+			}
+		}
+
+		orphanEntities, err := cleanupOrphanEntitiesTx(ctx, tx)
+		if err != nil {
+			return nil, err
+		}
+
+		return DocumentGraphStats{
+			Documents:      documents,
+			Chunks:         chunks,
+			Relations:      relations,
+			OrphanEntities: orphanEntities,
+		}, nil
+	})
+	if err != nil {
+		return DocumentGraphStats{}, err
+	}
+	stats, _ := statsAny.(DocumentGraphStats)
+	return stats, nil
+}
+
 func (s *Service) ExecuteQuery(ctx context.Context, cypher string, parameters map[string]interface{}) (QueryResponse, error) {
 	if strings.TrimSpace(cypher) == "" {
 		return QueryResponse{}, fmt.Errorf("cypher is empty")
@@ -85,7 +511,10 @@ func (s *Service) ExecuteQuery(ctx context.Context, cypher string, parameters ma
 	}
 
 	start := time.Now()
-	session := s.driver.NewSession(ctx, neo4j.SessionConfig{DatabaseName: s.database})
+	session, err := s.newSession(ctx)
+	if err != nil {
+		return QueryResponse{}, err
+	}
 	defer func() { _ = session.Close(ctx) }()
 
 	result, err := session.Run(
@@ -132,7 +561,10 @@ func (s *Service) ExecuteQuery(ctx context.Context, cypher string, parameters ma
 
 func (s *Service) DiscoverSchema(ctx context.Context) (GraphSchemaResponse, error) {
 	start := time.Now()
-	session := s.driver.NewSession(ctx, neo4j.SessionConfig{DatabaseName: s.database})
+	session, err := s.newSession(ctx)
+	if err != nil {
+		return GraphSchemaResponse{}, err
+	}
 	defer func() { _ = session.Close(ctx) }()
 
 	labels, err := s.discoverLabels(ctx, session)
@@ -174,6 +606,176 @@ func (s *Service) DiscoverSchema(ctx context.Context) (GraphSchemaResponse, erro
 			ExecutionTime: float64(int(elapsed*1000)) / 1000,
 		},
 	}, nil
+}
+
+func (s *Service) getDocumentGraphTotals(ctx context.Context, session neo4j.SessionWithContext) (DocumentGraphStats, error) {
+	relations, err := s.countDocumentRelations(ctx, session)
+	if err != nil {
+		return DocumentGraphStats{}, err
+	}
+	chunks, err := scalarCount(ctx, session, `
+MATCH (c:Chunk)
+WHERE c.source = 'document_ingest' OR c.doc_id IS NOT NULL
+RETURN count(c) AS c
+`, nil, "documents.totals.chunks")
+	if err != nil {
+		return DocumentGraphStats{}, err
+	}
+	documents, err := scalarCount(ctx, session, `
+MATCH (d:Document {source: 'document_ingest'})
+RETURN count(d) AS c
+`, nil, "documents.totals.documents")
+	if err != nil {
+		return DocumentGraphStats{}, err
+	}
+	entities, err := scalarCount(ctx, session, `
+MATCH (e:Entity {source: 'document_ingest'})
+RETURN count(e) AS c
+`, nil, "documents.totals.entities")
+	if err != nil {
+		return DocumentGraphStats{}, err
+	}
+
+	return DocumentGraphStats{
+		Documents: documents,
+		Chunks:    chunks,
+		Relations: relations,
+		Entities:  entities,
+	}, nil
+}
+
+func (s *Service) countDocumentRelationsForDoc(ctx context.Context, session neo4j.SessionWithContext, docID string) (int64, error) {
+	hasChunk, err := scalarCount(ctx, session, `
+MATCH (:Document {doc_id: $doc_id})-[r:HAS_CHUNK]->(:Chunk)
+RETURN count(r) AS c
+`, map[string]any{"doc_id": docID}, "documents.countRelationsForDoc.hasChunk")
+	if err != nil {
+		return 0, err
+	}
+	mentions, err := scalarCount(ctx, session, `
+MATCH (:Chunk {doc_id: $doc_id})-[r:MENTIONS]->(:Entity)
+RETURN count(r) AS c
+`, map[string]any{"doc_id": docID}, "documents.countRelationsForDoc.mentions")
+	if err != nil {
+		return 0, err
+	}
+	entityRelations, err := scalarCount(ctx, session, `
+MATCH (:Entity)-[r]->(:Entity)
+WHERE r.doc_id = $doc_id
+RETURN count(r) AS c
+`, map[string]any{"doc_id": docID}, "documents.countRelationsForDoc.entities")
+	if err != nil {
+		return 0, err
+	}
+	return hasChunk + mentions + entityRelations, nil
+}
+
+func (s *Service) countDocumentRelations(ctx context.Context, session neo4j.SessionWithContext) (int64, error) {
+	hasChunk, err := scalarCount(ctx, session, `
+MATCH (:Document {source: 'document_ingest'})-[r:HAS_CHUNK]->(:Chunk)
+RETURN count(r) AS c
+`, nil, "documents.countRelations.hasChunk")
+	if err != nil {
+		return 0, err
+	}
+	mentions, err := scalarCount(ctx, session, `
+MATCH (c:Chunk)-[r:MENTIONS]->(:Entity)
+WHERE c.source = 'document_ingest' OR c.doc_id IS NOT NULL
+RETURN count(r) AS c
+`, nil, "documents.countRelations.mentions")
+	if err != nil {
+		return 0, err
+	}
+	entityRelations, err := scalarCount(ctx, session, `
+MATCH (:Entity)-[r]->(:Entity)
+WHERE r.source = 'document_ingest' OR r.doc_id IS NOT NULL
+RETURN count(r) AS c
+`, nil, "documents.countRelations.entities")
+	if err != nil {
+		return 0, err
+	}
+	return hasChunk + mentions + entityRelations, nil
+}
+
+func scalarCount(
+	ctx context.Context,
+	session neo4j.SessionWithContext,
+	cypher string,
+	params map[string]any,
+	operation string,
+) (int64, error) {
+	result, err := session.Run(
+		ctx,
+		cypher,
+		params,
+		neo4j.WithTxTimeout(schemaQueryTimeout),
+		neo4j.WithTxMetadata(map[string]any{"app": "graphinsight", "operation": operation}),
+	)
+	if err != nil {
+		return 0, err
+	}
+	if !result.Next(ctx) {
+		if err := result.Err(); err != nil {
+			return 0, err
+		}
+		return 0, nil
+	}
+	record := result.Record()
+	if err := result.Err(); err != nil {
+		return 0, err
+	}
+	return int64FromRecord(record, "c"), nil
+}
+
+func scalarCountTx(
+	ctx context.Context,
+	tx neo4j.ManagedTransaction,
+	cypher string,
+	params map[string]any,
+	operation string,
+) (int64, error) {
+	result, err := tx.Run(
+		ctx,
+		cypher,
+		params,
+	)
+	if err != nil {
+		return 0, err
+	}
+	if !result.Next(ctx) {
+		if err := result.Err(); err != nil {
+			return 0, err
+		}
+		return 0, nil
+	}
+	record := result.Record()
+	if err := result.Err(); err != nil {
+		return 0, err
+	}
+	_ = operation
+	return int64FromRecord(record, "c"), nil
+}
+
+func cleanupOrphanEntitiesTx(ctx context.Context, tx neo4j.ManagedTransaction) (int64, error) {
+	count, err := scalarCountTx(ctx, tx, `
+MATCH (e:Entity {source: 'document_ingest'})
+WHERE NOT (e)--()
+RETURN count(e) AS c
+`, nil, "documents.cleanupOrphanEntities.preview")
+	if err != nil {
+		return 0, err
+	}
+	if count == 0 {
+		return 0, nil
+	}
+	if _, err := tx.Run(ctx, `
+MATCH (e:Entity {source: 'document_ingest'})
+WHERE NOT (e)--()
+DELETE e
+`, nil); err != nil {
+		return 0, err
+	}
+	return count, nil
 }
 
 func (s *Service) discoverLabels(ctx context.Context, session neo4j.SessionWithContext) ([]GraphLabelSummary, error) {
@@ -383,7 +985,10 @@ func (s *Service) GetNodeDetail(ctx context.Context, nodeID string) (NodeDetail,
 	parsedInt, err := strconv.ParseInt(nodeID, 10, 64)
 	hasIntID := err == nil
 
-	session := s.driver.NewSession(ctx, neo4j.SessionConfig{DatabaseName: s.database})
+	session, err := s.newSession(ctx)
+	if err != nil {
+		return NodeDetail{}, err
+	}
 	defer func() { _ = session.Close(ctx) }()
 
 	result, err := session.Run(ctx, `

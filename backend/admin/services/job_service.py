@@ -5,19 +5,17 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import threading
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
-from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
-from fastapi import BackgroundTasks
 from sqlalchemy.orm import Session
 
-from config import get_settings
-from services.document_graph_service import DocumentGraphService, SUPPORTED_EXTS
-from services.neo4j_service import get_neo4j_service
+from services.job_runtime import execute_job
 from ..crud import log_crud
 from ..database import SessionLocal
 from ..models import AdminJob, AdminLog
@@ -26,7 +24,6 @@ from ..schemas.logs import LogCreate
 from core import BusinessException, NotFoundException, ValidationException, get_logger
 
 logger = get_logger()
-settings = get_settings()
 
 JOB_STATUS_PENDING = "pending"
 JOB_STATUS_RUNNING = "running"
@@ -63,6 +60,10 @@ JOB_HEARTBEAT_INTERVAL_SECONDS = _env_int("JOB_HEARTBEAT_INTERVAL_SECONDS", 10, 
 JOB_AUTO_RETRY_ENABLED = _env_bool("JOB_AUTO_RETRY_ENABLED", True)
 JOB_AUTO_RETRY_BASE_DELAY_SECONDS = _env_int("JOB_AUTO_RETRY_BASE_DELAY_SECONDS", 10, 1)
 JOB_AUTO_RETRY_MAX_DELAY_SECONDS = _env_int("JOB_AUTO_RETRY_MAX_DELAY_SECONDS", 300, 5)
+JOB_WORKER_ENABLED = _env_bool("JOB_WORKER_ENABLED", True)
+JOB_WORKER_POLL_INTERVAL_SECONDS = _env_int("JOB_WORKER_POLL_INTERVAL_SECONDS", 2, 1)
+JOB_WORKER_STOP_TIMEOUT_SECONDS = _env_int("JOB_WORKER_STOP_TIMEOUT_SECONDS", 5, 1)
+JOB_WORKER_LEASE_SECONDS = _env_int("JOB_WORKER_LEASE_SECONDS", 30, 5)
 
 
 class JobExecutionTimeoutError(TimeoutError):
@@ -107,35 +108,20 @@ def _to_item(job: AdminJob) -> JobItem:
     )
 
 
-def _resolve_doc_dirs() -> List[Path]:
-    primary = Path(settings.document_storage_path).resolve()
-    primary.mkdir(parents=True, exist_ok=True)
-    fallback = (Path(__file__).resolve().parents[2] / "documents").resolve()
-    if fallback != primary and fallback.exists():
-        return [primary, fallback]
-    return [primary]
-
-
-def _to_bool(value: Any, default: bool = False) -> bool:
-    if isinstance(value, bool):
-        return value
-    if value is None:
-        return default
-    if isinstance(value, (int, float)):
-        return bool(value)
-    if isinstance(value, str):
-        return value.strip().lower() in {"1", "true", "yes", "on"}
-    return default
-
-
-def _safe_index_name(name: str) -> str:
-    normalized = "".join(ch for ch in str(name or "").strip() if ch.isalnum() or ch == "_")
-    if not normalized:
-        return "chunkText"
-    return normalized[:64]
-
-
 class JobService:
+    def __init__(self) -> None:
+        self._worker_lock = threading.Lock()
+        self._worker_stop_event = threading.Event()
+        self._worker_wake_event = threading.Event()
+        self._worker_thread: threading.Thread | None = None
+        self._worker_id = self._build_worker_id()
+
+    def _build_worker_id(self) -> str:
+        host = socket.gethostname().strip() or "localhost"
+        pid = os.getpid()
+        suffix = uuid.uuid4().hex[:8]
+        return f"py-job-worker:{host}:{pid}:{suffix}"
+
     def create_job(
         self,
         db: Session,
@@ -184,8 +170,152 @@ class JobService:
     def should_auto_run(self, item: JobItem) -> bool:
         return item.job_type in RUNNABLE_JOB_TYPES and item.status == JOB_STATUS_PENDING
 
-    def submit_job(self, background_tasks: BackgroundTasks, job_id: int) -> None:
-        background_tasks.add_task(self.run_job, job_id)
+    def start_background_worker(self) -> None:
+        if not JOB_WORKER_ENABLED:
+            logger.info("后台任务 worker 已禁用", context={"enabled": False})
+            return
+
+        with self._worker_lock:
+            if self._worker_thread and self._worker_thread.is_alive():
+                return
+            self._worker_stop_event = threading.Event()
+            self._worker_wake_event = threading.Event()
+            self._worker_thread = threading.Thread(
+                target=self._worker_loop,
+                args=(self._worker_stop_event, self._worker_wake_event),
+                daemon=True,
+                name="admin-job-worker",
+            )
+            self._worker_thread.start()
+        logger.info(
+            "后台任务 worker 已启动",
+            context={
+                "enabled": True,
+                "poll_interval_seconds": JOB_WORKER_POLL_INTERVAL_SECONDS,
+            },
+        )
+
+    def stop_background_worker(self) -> None:
+        with self._worker_lock:
+            thread = self._worker_thread
+            stop_event = self._worker_stop_event
+            wake_event = self._worker_wake_event
+            self._worker_thread = None
+        if not thread:
+            return
+        stop_event.set()
+        wake_event.set()
+        thread.join(timeout=JOB_WORKER_STOP_TIMEOUT_SECONDS)
+        logger.info("后台任务 worker 已停止")
+
+    def wake_worker(self) -> bool:
+        if JOB_WORKER_ENABLED:
+            self.start_background_worker()
+            with self._worker_lock:
+                thread = self._worker_thread
+                wake_event = self._worker_wake_event
+            if thread and thread.is_alive():
+                wake_event.set()
+                return True
+
+        thread = threading.Thread(
+            target=self.run_next_pending_job_once,
+            daemon=True,
+            name="admin-job-worker-wake-once",
+        )
+        thread.start()
+        return True
+
+    def _worker_loop(self, stop_event: threading.Event, wake_event: threading.Event) -> None:
+        while not stop_event.is_set():
+            try:
+                recovered = self.recover_stale_running_jobs_once()
+                processed = self.run_next_pending_job_once()
+            except Exception as exc:  # noqa: BLE001
+                logger.error("后台任务 worker 轮询失败", context={"error": str(exc)}, exc_info=True)
+                recovered = 0
+                processed = False
+            if recovered > 0 or processed:
+                continue
+            wake_event.wait(JOB_WORKER_POLL_INTERVAL_SECONDS)
+            wake_event.clear()
+
+    def recover_stale_running_jobs_once(self) -> int:
+        db = SessionLocal()
+        try:
+            now = datetime.utcnow()
+            rows = (
+                db.query(AdminJob)
+                .filter(
+                    AdminJob.status == JOB_STATUS_RUNNING,
+                    AdminJob.claim_expires_at.is_not(None),
+                    AdminJob.claim_expires_at < now,
+                )
+                .order_by(AdminJob.id.asc())
+                .limit(20)
+                .all()
+            )
+            if not rows:
+                return 0
+
+            recovered = 0
+            for job in rows:
+                previous_claimed_by = job.claimed_by
+                job.status = JOB_STATUS_PENDING
+                job.started_at = None
+                job.finished_at = None
+                job.claimed_by = None
+                job.claim_expires_at = None
+                job.last_heartbeat_at = None
+                job.error_message = (
+                    f"worker lease expired and job was re-queued at {now.isoformat()}Z"
+                )
+                db.flush()
+                self._write_job_log(
+                    db,
+                    job=job,
+                    action="job_requeued_stale_lease",
+                    status_value="success",
+                    details={
+                        "job_type": job.job_type,
+                        "previous_claimed_by": previous_claimed_by,
+                        "recovered_at": now.isoformat() + "Z",
+                    },
+                )
+                recovered += 1
+
+            db.commit()
+            if recovered > 0:
+                logger.warning("检测到过期运行任务并已重新入队", context={"recovered_jobs": recovered})
+            return recovered
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
+
+    def run_next_pending_job_once(self) -> bool:
+        db = SessionLocal()
+        try:
+            now = datetime.utcnow()
+            row = (
+                db.query(AdminJob.id)
+                .filter(
+                    AdminJob.status == JOB_STATUS_PENDING,
+                    AdminJob.job_type.in_(tuple(RUNNABLE_JOB_TYPES)),
+                    ((AdminJob.claim_expires_at.is_(None)) | (AdminJob.claim_expires_at < now)),
+                )
+                .order_by(AdminJob.created_at.asc(), AdminJob.id.asc())
+                .first()
+            )
+            if not row:
+                return False
+            job_id = int(row[0])
+        finally:
+            db.close()
+
+        self.run_job(job_id)
+        return True
 
     def _write_job_log(
         self,
@@ -223,7 +353,7 @@ class JobService:
         raw = JOB_AUTO_RETRY_BASE_DELAY_SECONDS * (2 ** max(retry_attempt - 1, 0))
         return min(raw, JOB_AUTO_RETRY_MAX_DELAY_SECONDS)
 
-    def _schedule_retry(self, job_id: int, delay_seconds: int) -> None:
+    def _schedule_retry(self, job_id: int, retry_attempt: int, delay_seconds: int) -> None:
         def _runner() -> None:
             if delay_seconds > 0:
                 time.sleep(delay_seconds)
@@ -233,15 +363,43 @@ class JobService:
                 row = db.query(AdminJob).filter(AdminJob.id == job_id).first()
                 if not row:
                     return
-                if row.status != JOB_STATUS_PENDING:
+                if row.status != JOB_STATUS_FAILED:
                     logger.info(
                         "自动重试触发时任务状态已变化，跳过",
                         context={"job_id": job_id, "status": row.status},
                     )
                     return
+                if (row.retry_count or 0) != retry_attempt:
+                    logger.info(
+                        "自动重试触发时任务重试次数已变化，跳过",
+                        context={"job_id": job_id, "retry_count": row.retry_count, "expected": retry_attempt},
+                    )
+                    return
+                row.status = JOB_STATUS_PENDING
+                row.started_at = None
+                row.finished_at = None
+                row.error_message = None
+                row.result = None
+                row.claimed_by = None
+                row.claim_expires_at = None
+                row.last_heartbeat_at = None
+                db.commit()
+                self._write_job_log(
+                    db,
+                    job=row,
+                    action="job_retry_queued",
+                    details={
+                        "job_type": row.job_type,
+                        "retry_attempt": retry_attempt,
+                        "delay_seconds": delay_seconds,
+                    },
+                )
             finally:
                 db.close()
 
+            if JOB_WORKER_ENABLED:
+                self.wake_worker()
+                return
             self.run_job(job_id)
 
         thread = threading.Thread(target=_runner, daemon=True, name=f"admin-job-retry-{job_id}")
@@ -251,24 +409,47 @@ class JobService:
         db = SessionLocal()
         started_monotonic: float | None = None
         try:
+            now = datetime.utcnow()
+            lease_expires_at = now + timedelta(seconds=JOB_WORKER_LEASE_SECONDS)
+            claimed = (
+                db.query(AdminJob)
+                .filter(
+                    AdminJob.id == job_id,
+                    AdminJob.status == JOB_STATUS_PENDING,
+                    ((AdminJob.claim_expires_at.is_(None)) | (AdminJob.claim_expires_at < now)),
+                )
+                .update(
+                    {
+                        AdminJob.status: JOB_STATUS_RUNNING,
+                        AdminJob.claimed_by: self._worker_id,
+                        AdminJob.claim_expires_at: lease_expires_at,
+                        AdminJob.last_heartbeat_at: now,
+                        AdminJob.started_at: datetime.utcnow(),
+                        AdminJob.finished_at: None,
+                        AdminJob.error_message: None,
+                    },
+                    synchronize_session=False,
+                )
+            )
+            if claimed != 1:
+                db.rollback()
+                job = db.query(AdminJob).filter(AdminJob.id == job_id).first()
+                if not job:
+                    logger.warning("任务不存在，忽略执行", context={"job_id": job_id})
+                    return
+                logger.info("任务状态非待执行，忽略调度", context={"job_id": job_id, "status": job.status})
+                return
+            db.commit()
+
             job = db.query(AdminJob).filter(AdminJob.id == job_id).first()
             if not job:
                 logger.warning("任务不存在，忽略执行", context={"job_id": job_id})
                 return
-            if job.status != JOB_STATUS_PENDING:
-                logger.info("任务状态非待执行，忽略调度", context={"job_id": job_id, "status": job.status})
-                return
-
-            job.status = JOB_STATUS_RUNNING
-            job.started_at = datetime.utcnow()
-            job.finished_at = None
-            job.error_message = None
-            db.commit()
             self._write_job_log(
                 db,
                 job=job,
                 action="job_started",
-                details={"job_type": job.job_type, "status": job.status},
+                details={"job_type": job.job_type, "status": job.status, "claimed_by": self._worker_id},
             )
             started_monotonic = time.monotonic()
 
@@ -299,6 +480,9 @@ class JobService:
             latest.status = JOB_STATUS_SUCCEEDED
             latest.result = _to_json_text(result)
             latest.error_message = None
+            latest.claimed_by = None
+            latest.claim_expires_at = None
+            latest.last_heartbeat_at = datetime.utcnow()
             latest.finished_at = datetime.utcnow()
             db.commit()
             self._write_job_log(
@@ -324,6 +508,9 @@ class JobService:
                 if failed and failed.status != JOB_STATUS_CANCELLED:
                     failed.status = JOB_STATUS_FAILED
                     failed.error_message = error_message[:2000]
+                    failed.claimed_by = None
+                    failed.claim_expires_at = None
+                    failed.last_heartbeat_at = datetime.utcnow()
                     failed.result = _to_json_text(
                         {
                             "job_id": job_id,
@@ -361,8 +548,6 @@ class JobService:
                         retry_attempt = (failed.retry_count or 0) + 1
                         delay_seconds = self._compute_backoff_delay(retry_attempt)
                         failed.retry_count = retry_attempt
-                        failed.status = JOB_STATUS_PENDING
-                        failed.finished_at = None
                         failed.error_message = (
                             f"{error_message[:800]} | 已计划自动重试({retry_attempt}/{failed.max_retries})，"
                             f"{delay_seconds}s 后执行"
@@ -380,7 +565,7 @@ class JobService:
                                 "reason": error_type,
                             },
                         )
-                        self._schedule_retry(job_id, delay_seconds)
+                        self._schedule_retry(job_id, retry_attempt, delay_seconds)
             except Exception as update_exc:  # noqa: BLE001
                 db.rollback()
                 logger.error(
@@ -399,6 +584,8 @@ class JobService:
                 if not row or row.status != JOB_STATUS_RUNNING:
                     return
                 row.updated_at = datetime.utcnow()
+                row.last_heartbeat_at = datetime.utcnow()
+                row.claim_expires_at = datetime.utcnow() + timedelta(seconds=JOB_WORKER_LEASE_SECONDS)
                 hb_db.commit()
             except Exception as exc:  # noqa: BLE001
                 hb_db.rollback()
@@ -441,134 +628,7 @@ class JobService:
             executor.shutdown(wait=False, cancel_futures=True)
 
     def _execute_job_logic(self, *, job_id: int, job_type: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-        if job_type == "build_graph":
-            return self._execute_build_graph(job_id=job_id, payload=payload)
-        if job_type == "clear_kb":
-            return self._execute_clear_kb(job_id=job_id, payload=payload)
-        if job_type == "reindex":
-            return self._execute_reindex(job_id=job_id, payload=payload)
-        raise ValidationException(f"任务类型暂不支持执行: {job_type}")
-
-    def _execute_build_graph(self, *, job_id: int, payload: Dict[str, Any]) -> Dict[str, Any]:
-        force = _to_bool(payload.get("force"), False)
-        source = str(payload.get("source") or "documents")
-        note = payload.get("note")
-        doc_ids = [str(item).strip() for item in (payload.get("doc_ids") or []) if str(item).strip()]
-
-        try:
-            stats = DocumentGraphService().build_graph(force=force, doc_ids=doc_ids or None)
-        except Exception:
-            try:
-                get_neo4j_service().ensure_connected(force_reconnect=True)
-            except Exception as reconnect_exc:  # noqa: BLE001
-                logger.warning(
-                    "建图失败后刷新 Neo4j 连接失败",
-                    context={"job_id": job_id, "error": str(reconnect_exc)},
-                )
-            raise
-        failures = stats.get("failures", [])
-        processed = stats.get("documents", 0)
-        total = stats.get("total_documents", 0)
-        skipped = stats.get("skipped_documents", 0)
-
-        execution_status = "completed" if processed > 0 else "empty"
-        if processed > 0:
-            message = "构建完成"
-        elif total > 0 and skipped == total:
-            execution_status = "completed"
-            message = "文档未变更，已跳过"
-        elif failures:
-            message = "解析失败，未产出图谱"
-        else:
-            message = "未发现可解析文档"
-
-        return {
-            "job_id": job_id,
-            "job_type": "build_graph",
-            "execution_status": execution_status,
-            "message": message,
-            "source": source,
-            "force": force,
-            "note": note,
-            "doc_ids": doc_ids,
-            "stats": stats,
-            "failures": failures,
-        }
-
-    def _execute_clear_kb(self, *, job_id: int, payload: Dict[str, Any]) -> Dict[str, Any]:
-        purge_graph = _to_bool(payload.get("purge_graph"), True)
-        removed_files = 0
-        removed_errors: List[str] = []
-        for doc_dir in _resolve_doc_dirs():
-            for file in doc_dir.rglob("*"):
-                if not file.is_file():
-                    continue
-                if file.suffix.lower() not in SUPPORTED_EXTS:
-                    continue
-                try:
-                    file.unlink()
-                    removed_files += 1
-                except Exception as exc:  # noqa: BLE001
-                    removed_errors.append(f"{file.name}: {exc}")
-        graph_stats = None
-        if purge_graph:
-            graph_stats = DocumentGraphService().clear_document_graph()
-
-        return {
-            "job_id": job_id,
-            "job_type": "clear_kb",
-            "execution_status": "completed",
-            "message": "知识库已清空",
-            "removed_files": removed_files,
-            "removed_errors": removed_errors[:20],
-            "purge_graph": purge_graph,
-            "graph": graph_stats,
-        }
-
-    def _execute_reindex(self, *, job_id: int, payload: Dict[str, Any]) -> Dict[str, Any]:
-        index_name = _safe_index_name(str(payload.get("index_name") or "chunkText"))
-        neo4j_service = get_neo4j_service()
-        before_state: List[Dict[str, Any]] = []
-        after_state: List[Dict[str, Any]] = []
-
-        neo4j_service.ensure_connected()
-        with neo4j_service.session() as session:
-            try:
-                before_state = [
-                    dict(item)
-                    for item in session.run(
-                        "SHOW INDEXES YIELD name, type, state WHERE name = $name RETURN name, type, state",
-                        {"name": index_name},
-                    )
-                ]
-            except Exception:  # noqa: BLE001
-                before_state = []
-
-            session.run(f"DROP INDEX {index_name} IF EXISTS")
-            session.run(
-                f"CREATE FULLTEXT INDEX {index_name} IF NOT EXISTS FOR (c:Chunk) ON EACH [c.text]"
-            )
-
-            try:
-                after_state = [
-                    dict(item)
-                    for item in session.run(
-                        "SHOW INDEXES YIELD name, type, state WHERE name = $name RETURN name, type, state",
-                        {"name": index_name},
-                    )
-                ]
-            except Exception:  # noqa: BLE001
-                after_state = []
-
-        return {
-            "job_id": job_id,
-            "job_type": "reindex",
-            "execution_status": "completed",
-            "message": "索引重建完成",
-            "index_name": index_name,
-            "before": before_state,
-            "after": after_state,
-        }
+        return execute_job(job_id=job_id, job_type=job_type, payload=payload)
 
     def get_job_logs(
         self,
@@ -669,6 +729,9 @@ class JobService:
             job.result = None
             job.started_at = None
             job.finished_at = None
+            job.claimed_by = None
+            job.claim_expires_at = None
+            job.last_heartbeat_at = None
             job.requested_by = operator_id or job.requested_by
             job.trace_id = trace_id or job.trace_id
             db.commit()
@@ -702,6 +765,9 @@ class JobService:
 
             job.status = JOB_STATUS_CANCELLED
             job.finished_at = datetime.utcnow()
+            job.claimed_by = None
+            job.claim_expires_at = None
+            job.last_heartbeat_at = datetime.utcnow()
             job.trace_id = trace_id or job.trace_id
             db.commit()
             db.refresh(job)

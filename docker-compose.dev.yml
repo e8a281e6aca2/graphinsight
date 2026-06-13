@@ -1,4 +1,27 @@
 services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: graphinsight-postgres
+    restart: unless-stopped
+    ports:
+      - "${GRAPHINSIGHT_ADMIN_DB_PORT:-5434}:5432"
+    environment:
+      POSTGRES_DB: "${GRAPHINSIGHT_ADMIN_DB_NAME:-graphinsight_admin}"
+      POSTGRES_USER: "${GRAPHINSIGHT_ADMIN_DB_USER:-graphinsight}"
+      POSTGRES_PASSWORD: "${GRAPHINSIGHT_ADMIN_DB_PASSWORD:-graphinsight-dev-password}"
+    volumes:
+      - graphinsight_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${GRAPHINSIGHT_ADMIN_DB_USER:-graphinsight} -d ${GRAPHINSIGHT_ADMIN_DB_NAME:-graphinsight_admin} || exit 1",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
   neo4j:
     image: neo4j:5.26.26
     container_name: graphinsight-neo4j
@@ -25,6 +48,7 @@ services:
       start_period: 30s
 
 volumes:
+  graphinsight_postgres_data:
   graphinsight_neo4j_data:
   graphinsight_neo4j_logs:
   graphinsight_neo4j_plugins:

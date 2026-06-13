@@ -2,20 +2,30 @@
 管理系统数据库连接
 """
 import os
+from pathlib import Path
 from sqlalchemy import create_engine
 from sqlalchemy import text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from dotenv import load_dotenv, find_dotenv
 
-# 自动查找并加载 .env 文件
-load_dotenv(find_dotenv(), override=True)
+# Linux 统一启动脚本会通过 GRAPHINSIGHT_BACKEND_ENV_FILE 指向临时开发配置。
+# 这里必须与 backend/config.py 使用同一来源，避免 admin 导入把运行态重新覆盖回 backend/.env。
+_env_override = os.getenv("GRAPHINSIGHT_BACKEND_ENV_FILE", "").strip()
+if _env_override:
+    _env_path = Path(_env_override).expanduser().resolve()
+    if _env_path.exists():
+        load_dotenv(dotenv_path=_env_path, override=True)
+    else:
+        load_dotenv(find_dotenv(), override=True)
+else:
+    load_dotenv(find_dotenv(), override=True)
 
 # PostgreSQL 连接配置
 # 从环境变量读取，如果没有则使用默认值
 ADMIN_DATABASE_URL = os.getenv(
     "ADMIN_DATABASE_URL",
-    "postgresql://user:password@localhost:5432/graphinsight_admin"
+    "postgresql://graphinsight:graphinsight-dev-password@127.0.0.1:5434/graphinsight_admin"
 )
 
 # 创建数据库引擎

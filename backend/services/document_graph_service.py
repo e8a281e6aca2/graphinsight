@@ -85,7 +85,13 @@ class DocumentGraphService:
         with self.neo4j.session() as session:
             self._ensure_schema(session)
 
-    def build_graph(self, force: bool = False, doc_ids: Optional[List[str]] = None) -> Dict[str, object]:
+    def build_graph(
+        self,
+        force: bool = False,
+        doc_ids: Optional[List[str]] = None,
+        reasoning_profile: Optional[str] = None,
+        complex_extraction: bool = False,
+    ) -> Dict[str, object]:
         if self.neo4j is None:
             self.neo4j = get_neo4j_service()
         self.neo4j.ensure_connected()
@@ -121,6 +127,8 @@ class DocumentGraphService:
                 "count": len(documents),
                 "force": force,
                 "doc_ids_count": len(doc_ids or []),
+                "reasoning_profile": reasoning_profile or "",
+                "complex_extraction": complex_extraction,
             },
         )
 
@@ -161,8 +169,11 @@ class DocumentGraphService:
                 chunks = self._chunk_text(text)
                 chunk_payload = []
                 for idx, chunk in enumerate(chunks):
-                    entities = self._extract_entities(chunk)
-                    relations = self._extract_relations(chunk, entities)
+                    entities = self._extract_entities(chunk, reasoning_profile=reasoning_profile)
+                    relation_profile = reasoning_profile
+                    if complex_extraction and not relation_profile:
+                        relation_profile = "balanced"
+                    relations = self._extract_relations(chunk, entities, reasoning_profile=relation_profile)
                     entity_names.update(entities)
                     chunk_payload.append(
                         {
@@ -338,6 +349,8 @@ class DocumentGraphService:
             "failures": failures,
             "scope": "selected_documents" if doc_ids else "all_documents",
             "target_doc_ids": doc_ids or [],
+            "reasoning_profile": reasoning_profile or "",
+            "complex_extraction": complex_extraction,
         }
 
     def delete_document_graph(self, doc_id: str) -> Dict[str, int]:
@@ -716,8 +729,13 @@ class DocumentGraphService:
             start = next_start
         return chunks
 
-    def _extract_entities(self, text: str, max_entities: int = 12) -> List[str]:
-        llm_entities = llm_entity_extractor.extract(text)
+    def _extract_entities(
+        self,
+        text: str,
+        max_entities: int = 12,
+        reasoning_profile: Optional[str] = None,
+    ) -> List[str]:
+        llm_entities = llm_entity_extractor.extract(text, reasoning_profile=reasoning_profile)
         if llm_entities:
             return llm_entities[:max_entities]
 
@@ -732,10 +750,15 @@ class DocumentGraphService:
         result = [token for token, _ in ranked[:max_entities]]
         return result
 
-    def _extract_relations(self, text: str, entities: List[str]) -> List[Dict[str, object]]:
+    def _extract_relations(
+        self,
+        text: str,
+        entities: List[str],
+        reasoning_profile: Optional[str] = None,
+    ) -> List[Dict[str, object]]:
         if len(entities) < 2:
             return []
-        relations = llm_relation_extractor.extract(text, entities)
+        relations = llm_relation_extractor.extract(text, entities, reasoning_profile=reasoning_profile)
         stage_relations = self._extract_stage_relations(text, entities)
         if stage_relations:
             relations = (relations or []) + stage_relations

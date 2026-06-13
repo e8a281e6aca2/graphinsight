@@ -228,7 +228,7 @@ def main() -> int:
                 return 1
 
     unique_suffix = uuid.uuid4().hex[:10]
-    temp_doc = ROOT / "documents" / f"codex_docqa_chain_{int(time.time())}_{unique_suffix}.txt"
+    temp_doc = ROOT / "tmp" / f"codex_docqa_chain_{int(time.time())}_{unique_suffix}.txt"
     temp_doc.parent.mkdir(parents=True, exist_ok=True)
     temp_doc.write_text(
         "\n".join(
@@ -244,6 +244,7 @@ def main() -> int:
     )
 
     created_doc_id: Optional[str] = None
+    created_doc_name: Optional[str] = None
     try:
         print(f"STEP upload file={temp_doc.name}")
         boundary, form_body = _build_multipart(temp_doc)
@@ -264,15 +265,24 @@ def main() -> int:
         if not uploaded:
             print(f"UPLOAD_EMPTY body={upload_body}")
             return 1
+        first_uploaded = uploaded[0] if isinstance(uploaded[0], dict) else {}
+        created_doc_id = str(first_uploaded.get("doc_id") or first_uploaded.get("id") or "")
+        created_doc_name = str(first_uploaded.get("name") or temp_doc.name)
+        if not created_doc_id:
+            print(f"UPLOAD_DOC_ID_MISSING body={upload_body}")
+            return 1
 
         print("STEP list documents")
         docs = _list_documents(base_url, token)
         print(f"LIST_STATUS 200 count={len(docs)}")
-        target = _find_doc(docs, temp_doc.name)
+        target = None
+        for item in docs:
+            if str(item.get("id")) == created_doc_id or str(item.get("doc_id")) == created_doc_id:
+                target = item
+                break
         if not target:
-            print("DOC_NOT_FOUND_AFTER_UPLOAD")
+            print(f"DOC_NOT_FOUND_AFTER_UPLOAD doc_id={created_doc_id} uploaded_name={created_doc_name}")
             return 1
-        created_doc_id = str(target.get("id"))
         print(f"DOC_ID {created_doc_id}")
 
         print("STEP create build job")

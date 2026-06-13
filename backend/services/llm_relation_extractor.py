@@ -4,10 +4,11 @@ from __future__ import annotations
 import json
 import re
 import time
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from config import get_settings
 from core import get_logger
+from services.model_runtime_policy import apply_reasoning_profile, reasoning_max_tokens
 from services.openai_client_factory import build_openai_client
 
 logger = get_logger()
@@ -37,7 +38,12 @@ class LLMRelationExtractor:
                 timeout=30.0,
             )
 
-    def extract(self, text: str, entities: List[str]) -> List[Dict[str, object]]:
+    def extract(
+        self,
+        text: str,
+        entities: List[str],
+        reasoning_profile: Optional[str] = None,
+    ) -> List[Dict[str, object]]:
         if not self.enabled or not self._client:
             return []
         if len(entities) < 2:
@@ -58,18 +64,19 @@ class LLMRelationExtractor:
         )
 
         try:
-            response = self._client.chat.completions.create(
-                model=self._resolved_model,
-                messages=[
+            payload: Dict[str, Any] = {
+                "model": self._resolved_model,
+                "messages": [
                     {"role": "system", "content": prompt},
                     {
                         "role": "user",
                         "content": f"实体列表：{json.dumps(entities, ensure_ascii=False)}\n文本：{text[:1500]}",
                     },
                 ],
-                temperature=self.temperature,
-                max_tokens=280,
-            )
+                "temperature": self.temperature,
+                "max_tokens": reasoning_max_tokens(reasoning_profile, fast=280, balanced=320, deep=360),
+            }
+            response = self._client.chat.completions.create(**apply_reasoning_profile(payload, reasoning_profile))
             content = response.choices[0].message.content or ""
             relations = self._parse_relations(content, set(entities))
             if relations:
@@ -83,7 +90,7 @@ class LLMRelationExtractor:
             self._disabled_until = time.time() + 120
             logger.warning(
                 "LLM 关系抽取失败",
-                context={"error": error_text, "model": self._resolved_model},
+                context={"error": error_text, "model": self._resolved_model, "reasoning_profile": reasoning_profile or ""},
             )
             return []
 

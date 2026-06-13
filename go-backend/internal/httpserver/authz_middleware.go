@@ -1,6 +1,7 @@
 package httpserver
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -12,18 +13,33 @@ import (
 )
 
 type businessPermissionGuard struct {
-	cfg          config.Config
-	logger       *slog.Logger
-	authzClient  *authz.Client
-	authzInitErr error
+	cfg        config.Config
+	logger     *slog.Logger
+	adminStore adminPermissionStore
 }
 
-func newBusinessPermissionGuard(cfg config.Config, logger *slog.Logger, authzClient *authz.Client, authzInitErr error) businessPermissionGuard {
+type adminPermissionStore interface {
+	CheckPermission(ctx context.Context, subject string, permission string, scope map[string]string) (authz.CheckResult, error)
+}
+
+type adminNativeStore interface {
+	adminPermissionStore
+	adminConfigStore
+	adminRbacBindingStore
+	adminUserStore
+	adminProfileStore
+	adminProfileStatsStore
+}
+
+func newBusinessPermissionGuard(cfg config.Config, logger *slog.Logger, adminStoreOpt ...adminPermissionStore) businessPermissionGuard {
+	var adminStore adminPermissionStore
+	if len(adminStoreOpt) > 0 {
+		adminStore = adminStoreOpt[0]
+	}
 	return businessPermissionGuard{
-		cfg:          cfg,
-		logger:       logger,
-		authzClient:  authzClient,
-		authzInitErr: authzInitErr,
+		cfg:        cfg,
+		logger:     logger,
+		adminStore: adminStore,
 	}
 }
 
@@ -49,63 +65,16 @@ func (g businessPermissionGuard) allowRequest(w http.ResponseWriter, r *http.Req
 		return true
 	}
 
-	if g.authzClient == nil {
-		if g.cfg.RBACEnforceBusinessAPI {
-			g.logger.Error("authz check unavailable in enforce mode", "permission", permission, "error", g.authzInitErr)
-			WriteJSON(w, http.StatusServiceUnavailable, "授权服务不可用", map[string]interface{}{
-				"error_code": "AUTHZ_UNAVAILABLE",
-			})
-			return false
-		}
-		g.logger.Warn("authz client unavailable, soft allow", "permission", permission, "error", g.authzInitErr)
-		return true
+	if isLocalJWTSoftMode(g.cfg.RBACAuthzMode) {
+		return g.allowLocalJWTSoftRequest(w, r, token, permission)
 	}
-
-	scopeHeaders := resolveScopeHeaders(r)
-	result, err := g.authzClient.CheckPermission(r.Context(), token, permission, scopeHeaders)
-	if err != nil {
-		if errors.Is(err, authz.ErrUnauthorized) {
-			w.Header().Set("WWW-Authenticate", "Bearer")
-			WriteJSON(w, http.StatusUnauthorized, "Token 已过期或无效", map[string]interface{}{
-				"error_code": "INVALID_TOKEN",
-			})
-			return false
-		}
-		if errors.Is(err, authz.ErrForbidden) {
-			if g.cfg.RBACEnforceBusinessAPI {
-				WriteJSON(w, http.StatusForbidden, "权限不足", map[string]interface{}{
-					"error_code": "PERMISSION_DENIED",
-				})
-				return false
-			}
-			g.logger.Warn("authz denied, soft allow", "permission", permission)
-			return true
-		}
-
-		if g.cfg.RBACEnforceBusinessAPI {
-			g.logger.Error("authz check failed", "permission", permission, "error", err.Error())
-			WriteJSON(w, http.StatusServiceUnavailable, "授权服务不可用", map[string]interface{}{
-				"error_code": "AUTHZ_UNAVAILABLE",
-			})
-			return false
-		}
-
-		g.logger.Warn("authz check failed, soft allow", "permission", permission, "error", err.Error())
-		return true
+	if strings.EqualFold(strings.TrimSpace(g.cfg.RBACAuthzMode), "go_db") {
+		return g.allowGoDBRequest(w, r, token, permission)
 	}
+	return g.allowGoDBRequest(w, r, token, permission)
+}
 
-	if !result.Allowed {
-		if g.cfg.RBACEnforceBusinessAPI {
-			WriteJSON(w, http.StatusForbidden, "权限不足", map[string]interface{}{
-				"error_code": "PERMISSION_DENIED",
-				"reason":     result.Reason,
-			})
-			return false
-		}
-		g.logger.Warn("authz result denied, soft allow", "permission", permission, "reason", result.Reason)
-	}
-
-	// Propagate resolved auth context to upstream orchestrated handlers for auditing.
+func (g businessPermissionGuard) propagateAuthzResult(r *http.Request, permission string, result authz.CheckResult) {
 	r.Header.Set("x-authz-permission", permission)
 	r.Header.Set("x-authz-reason", result.Reason)
 	if result.UserID > 0 {
@@ -117,7 +86,104 @@ func (g businessPermissionGuard) allowRequest(w http.ResponseWriter, r *http.Req
 	if result.Email != "" {
 		r.Header.Set("x-auth-user-email", result.Email)
 	}
+}
+
+func isLocalJWTSoftMode(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "local_jwt_soft", "local_jwt":
+		return true
+	default:
+		return false
+	}
+}
+
+func (g businessPermissionGuard) allowGoDBRequest(w http.ResponseWriter, r *http.Request, token string, permission string) bool {
+	claims, err := newAdminJWTVerifier(g.cfg.AdminSecretKey).verify(token)
+	if err != nil {
+		w.Header().Set("WWW-Authenticate", "Bearer")
+		errorCode := "INVALID_TOKEN"
+		if errors.Is(err, errAdminJWTExpired) {
+			errorCode = "TOKEN_EXPIRED"
+		}
+		WriteJSON(w, http.StatusUnauthorized, "Token 已过期或无效", map[string]interface{}{
+			"error_code": errorCode,
+		})
+		return false
+	}
+	if g.adminStore == nil {
+		if g.cfg.RBACEnforceBusinessAPI {
+			g.logger.Error("admin store unavailable in go_db authz mode", "permission", permission)
+			WriteJSON(w, http.StatusServiceUnavailable, "授权服务不可用", map[string]interface{}{
+				"error_code": "AUTHZ_UNAVAILABLE",
+			})
+			return false
+		}
+		g.logger.Warn("admin store unavailable, soft allow", "permission", permission)
+		g.propagateLocalJWTContext(r, claims, permission, "go_db_store_unavailable_soft_allow")
+		return true
+	}
+
+	result, err := g.adminStore.CheckPermission(r.Context(), claims.Subject, permission, resolveScopeHeaders(r))
+	if err != nil {
+		if errors.Is(err, authz.ErrUnauthorized) {
+			w.Header().Set("WWW-Authenticate", "Bearer")
+			WriteJSON(w, http.StatusUnauthorized, "Token 已过期或无效", map[string]interface{}{
+				"error_code": "INVALID_TOKEN",
+			})
+			return false
+		}
+		if g.cfg.RBACEnforceBusinessAPI {
+			g.logger.Error("go_db authz check failed", "permission", permission, "error", err.Error())
+			WriteJSON(w, http.StatusServiceUnavailable, "授权服务不可用", map[string]interface{}{
+				"error_code": "AUTHZ_UNAVAILABLE",
+			})
+			return false
+		}
+		g.logger.Warn("go_db authz check failed, soft allow", "permission", permission, "error", err.Error())
+		g.propagateLocalJWTContext(r, claims, permission, "go_db_error_soft_allow")
+		return true
+	}
+	if !result.Allowed {
+		if g.cfg.RBACEnforceBusinessAPI {
+			WriteJSON(w, http.StatusForbidden, "权限不足", map[string]interface{}{
+				"error_code": "PERMISSION_DENIED",
+				"reason":     result.Reason,
+			})
+			return false
+		}
+		g.logger.Warn("go_db authz denied, soft allow", "permission", permission, "reason", result.Reason)
+	}
+
+	g.propagateAuthzResult(r, permission, result)
 	return true
+}
+
+func (g businessPermissionGuard) allowLocalJWTSoftRequest(w http.ResponseWriter, r *http.Request, token string, permission string) bool {
+	claims, err := newAdminJWTVerifier(g.cfg.AdminSecretKey).verify(token)
+	if err != nil {
+		w.Header().Set("WWW-Authenticate", "Bearer")
+		message := "Token 已过期或无效"
+		errorCode := "INVALID_TOKEN"
+		if errors.Is(err, errAdminJWTExpired) {
+			errorCode = "TOKEN_EXPIRED"
+		}
+		WriteJSON(w, http.StatusUnauthorized, message, map[string]interface{}{
+			"error_code": errorCode,
+		})
+		return false
+	}
+
+	g.propagateLocalJWTContext(r, claims, permission, "local_jwt_soft_allow")
+	return true
+}
+
+func (g businessPermissionGuard) propagateLocalJWTContext(r *http.Request, claims adminJWTClaims, permission string, reason string) {
+	r.Header.Set("x-authz-permission", permission)
+	r.Header.Set("x-authz-reason", reason)
+	r.Header.Set("x-auth-user-name", claims.Subject)
+	if strings.Contains(claims.Subject, "@") {
+		r.Header.Set("x-auth-user-email", claims.Subject)
+	}
 }
 
 func extractBearerToken(value string) (string, bool) {

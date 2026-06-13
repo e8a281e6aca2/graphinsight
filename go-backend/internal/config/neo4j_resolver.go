@@ -2,13 +2,12 @@ package config
 
 import (
 	"context"
-	"encoding/json"
+	"database/sql"
 	"fmt"
-	"io"
-	"net/http"
-	"net/url"
 	"strings"
 	"time"
+
+	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
 type neo4jConfigPayload struct {
@@ -20,13 +19,12 @@ type neo4jConfigPayload struct {
 	Mode     string
 }
 
-type adminNeo4jEnvelope struct {
-	Code int                    `json:"code"`
-	Data map[string]interface{} `json:"data"`
+type adminConfigValueReader interface {
+	GetValue(ctx context.Context, category string, key string) (string, error)
 }
 
 // ResolveNeo4jConfig returns a copy of cfg with Neo4j fields resolved from
-// env, admin config, or admin-with-env-fallback depending on NEO4J_CONFIG_SOURCE.
+// env, admin database config, or admin-with-env-fallback depending on NEO4J_CONFIG_SOURCE.
 func ResolveNeo4jConfig(ctx context.Context, cfg Config) (Config, error) {
 	mode := normalizeNeo4jConfigSource(cfg.Neo4jConfigSource)
 	cfg.Neo4jConfigSource = mode
@@ -81,95 +79,97 @@ func normalizeNeo4jConfigSource(value string) string {
 }
 
 func fetchAdminNeo4jConfig(ctx context.Context, cfg Config) (neo4jConfigPayload, error) {
-	token := strings.TrimSpace(cfg.AdminConfigToken)
-	if token == "" {
-		return neo4jConfigPayload{}, fmt.Errorf("GO_ADMIN_CONFIG_TOKEN or ADMIN_TOKEN is required when reading admin Neo4j config")
+	rawURL := strings.TrimSpace(cfg.AdminDatabaseURL)
+	if rawURL == "" {
+		return neo4jConfigPayload{}, fmt.Errorf("ADMIN_DATABASE_URL is required when reading admin Neo4j config")
 	}
 
-	target, err := adminConfigURL(cfg.PythonBackendBaseURL)
+	db, err := sql.Open("pgx", rawURL)
+	if err != nil {
+		return neo4jConfigPayload{}, fmt.Errorf("open admin database failed: %w", err)
+	}
+	defer db.Close()
+
+	db.SetMaxOpenConns(2)
+	db.SetMaxIdleConns(1)
+	db.SetConnMaxLifetime(5 * time.Minute)
+
+	return fetchAdminNeo4jConfigFromReader(ctx, sqlAdminConfigReader{db: db}, cfg)
+}
+
+func fetchAdminNeo4jConfigFromReader(ctx context.Context, reader adminConfigValueReader, cfg Config) (neo4jConfigPayload, error) {
+	uri, err := readAdminConfigValue(ctx, reader, "neo4j", "uri")
+	if err != nil {
+		return neo4jConfigPayload{}, err
+	}
+	user, err := readAdminConfigValue(ctx, reader, "neo4j", "user")
+	if err != nil {
+		return neo4jConfigPayload{}, err
+	}
+	username, err := readAdminConfigValue(ctx, reader, "neo4j", "username")
+	if err != nil {
+		return neo4jConfigPayload{}, err
+	}
+	password, err := readAdminConfigValue(ctx, reader, "neo4j", "password")
+	if err != nil {
+		return neo4jConfigPayload{}, err
+	}
+	database, err := readAdminConfigValue(ctx, reader, "neo4j", "database")
 	if err != nil {
 		return neo4jConfigPayload{}, err
 	}
 
-	timeout := time.Duration(cfg.PythonBackendTimeoutSeconds) * time.Second
-	if timeout <= 0 {
-		timeout = 30 * time.Second
-	}
-	client := &http.Client{Timeout: timeout}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
-	if err != nil {
-		return neo4jConfigPayload{}, fmt.Errorf("create admin config request failed: %w", err)
-	}
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("X-Go-Config-Resolver", "graphinsight-go")
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return neo4jConfigPayload{}, fmt.Errorf("request admin config failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return neo4jConfigPayload{}, fmt.Errorf("admin config returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
-	}
-
-	var envelope adminNeo4jEnvelope
-	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
-		return neo4jConfigPayload{}, fmt.Errorf("decode admin config response failed: %w", err)
-	}
-	if envelope.Code != 0 && envelope.Code != http.StatusOK {
-		return neo4jConfigPayload{}, fmt.Errorf("admin config envelope code is %d", envelope.Code)
-	}
-
 	payload := neo4jConfigPayload{
-		URI:      stringFromMap(envelope.Data, "uri"),
-		User:     firstNonEmpty(stringFromMap(envelope.Data, "user"), stringFromMap(envelope.Data, "username")),
-		Password: stringFromMap(envelope.Data, "password"),
-		Database: stringFromMap(envelope.Data, "database"),
-		Source:   firstNonEmpty(stringFromMap(envelope.Data, "source"), "admin_config"),
-		Mode:     firstNonEmpty(stringFromMap(envelope.Data, "mode"), cfg.Neo4jConfigSource),
+		URI:      firstNonEmpty(uri, cfg.Neo4jURI),
+		User:     firstNonEmpty(user, username, cfg.Neo4jUser),
+		Password: firstNonEmpty(password, cfg.Neo4jPassword),
+		Database: firstNonEmpty(database, cfg.Neo4jDatabase, "neo4j"),
+		Source:   "admin_db",
+		Mode:     cfg.Neo4jConfigSource,
 	}
 	if payload.URI == "" || payload.User == "" || payload.Password == "" {
 		return neo4jConfigPayload{}, fmt.Errorf("admin Neo4j config is incomplete")
 	}
-	if payload.Database == "" {
-		payload.Database = "neo4j"
-	}
 	return payload, nil
 }
 
-func adminConfigURL(baseURL string) (string, error) {
-	raw := strings.TrimSpace(baseURL)
-	if raw == "" {
-		return "", fmt.Errorf("python backend base url is empty")
-	}
-	parsed, err := url.Parse(raw)
-	if err != nil {
-		return "", fmt.Errorf("invalid python backend base url: %w", err)
-	}
-	if parsed.Scheme == "" || parsed.Host == "" {
-		return "", fmt.Errorf("python backend base url must contain scheme and host")
-	}
-	parsed.Path = joinURLPath(parsed.Path, "/api/v1/admin/config/neo4j/all")
-	query := parsed.Query()
-	query.Set("include_sensitive", "true")
-	parsed.RawQuery = query.Encode()
-	return parsed.String(), nil
+type sqlAdminConfigReader struct {
+	db *sql.DB
 }
 
-func joinURLPath(basePath, routePath string) string {
-	bp := strings.TrimSuffix(basePath, "/")
-	rp := routePath
-	if !strings.HasPrefix(rp, "/") {
-		rp = "/" + rp
+func (r sqlAdminConfigReader) GetValue(ctx context.Context, category string, key string) (string, error) {
+	if r.db == nil {
+		return "", nil
 	}
-	if bp == "" {
-		return rp
+	var value sql.NullString
+	err := r.db.QueryRowContext(ctx, `
+		SELECT value
+		FROM admin_configs
+		WHERE category = $1 AND key = $2
+		ORDER BY id DESC
+		LIMIT 1
+	`, category, key).Scan(&value)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return "", nil
+		}
+		return "", err
 	}
-	return bp + rp
+	if !value.Valid {
+		return "", nil
+	}
+	return strings.TrimSpace(value.String), nil
+}
+
+func readAdminConfigValue(ctx context.Context, reader adminConfigValueReader, category string, key string) (string, error) {
+	if reader == nil {
+		return "", nil
+	}
+	value, err := reader.GetValue(ctx, category, key)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(value), nil
 }
 
 func applyNeo4jPayload(cfg *Config, payload neo4jConfigPayload) {
@@ -179,22 +179,6 @@ func applyNeo4jPayload(cfg *Config, payload neo4jConfigPayload) {
 	cfg.Neo4jDatabase = firstNonEmpty(payload.Database, cfg.Neo4jDatabase, "neo4j")
 	cfg.Neo4jConfigResolvedSource = firstNonEmpty(payload.Source, "env")
 	cfg.Neo4jConfigResolutionErr = ""
-}
-
-func stringFromMap(values map[string]interface{}, key string) string {
-	if values == nil {
-		return ""
-	}
-	value, ok := values[key]
-	if !ok || value == nil {
-		return ""
-	}
-	switch v := value.(type) {
-	case string:
-		return strings.TrimSpace(v)
-	default:
-		return strings.TrimSpace(fmt.Sprint(v))
-	}
 }
 
 func firstNonEmpty(values ...string) string {

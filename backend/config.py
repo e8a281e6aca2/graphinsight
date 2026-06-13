@@ -6,8 +6,10 @@ from pathlib import Path
 from dotenv import load_dotenv
 from functools import lru_cache
 
-# 强制重新加载 .env 文件
-_env_path = Path(__file__).resolve().parent / ".env"
+# 强制重新加载 .env 文件。Linux 统一启动脚本可通过
+# GRAPHINSIGHT_BACKEND_ENV_FILE 指向临时开发配置，避免覆盖用户的 backend/.env。
+_env_override = os.getenv("GRAPHINSIGHT_BACKEND_ENV_FILE", "").strip()
+_env_path = Path(_env_override).expanduser().resolve() if _env_override else Path(__file__).resolve().parent / ".env"
 if _env_path.exists():
     load_dotenv(dotenv_path=_env_path, override=True)
 else:
@@ -81,6 +83,9 @@ class Settings:
 
         # HTTP client 配置
         self.http_client_trust_env = os.getenv("HTTP_CLIENT_TRUST_ENV", "false").lower() == "true"
+
+        # Go 兼容鉴权模式。默认 unified mode 使用 go_db，不再依赖 Python authorize。
+        self.rbac_authz_mode = os.getenv("RBAC_AUTHZ_MODE", "go_db").strip().lower() or "go_db"
         
         # NL2Cypher 配置
         self.nl2cypher_enabled = os.getenv("NL2CYPHER_ENABLED", "true").lower() == "true"

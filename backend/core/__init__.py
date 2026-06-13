@@ -38,6 +38,7 @@ from .middleware import (
     RateLimitMiddleware,
     ErrorHandlingMiddleware,
     DEFAULT_RATE_LIMITS,
+    DEFAULT_RATE_LIMIT_EXEMPT_PATHS,
 )
 from .observability import get_api_observability, get_qa_observability
 from .constants import (
@@ -87,6 +88,7 @@ __all__ = [
     "RateLimitMiddleware",
     "ErrorHandlingMiddleware",
     "DEFAULT_RATE_LIMITS",
+    "DEFAULT_RATE_LIMIT_EXEMPT_PATHS",
     "get_api_observability",
     "get_qa_observability",
     # Constants

@@ -19,6 +19,12 @@ type Client struct {
 	forwardAuth bool
 }
 
+type Response struct {
+	StatusCode int
+	Header     http.Header
+	Body       []byte
+}
+
 const upstreamBaseHeader = "X-Upstream-Base"
 
 func New(cfg config.Config) (*Client, error) {
@@ -49,13 +55,22 @@ func New(cfg config.Config) (*Client, error) {
 }
 
 func (c *Client) Proxy(w http.ResponseWriter, r *http.Request) error {
+	resp, err := c.Capture(r)
+	if err != nil {
+		return err
+	}
+	resp.WriteTo(w)
+	return nil
+}
+
+func (c *Client) Capture(r *http.Request) (*Response, error) {
 	if c == nil || c.baseURL == nil {
-		return fmt.Errorf("python proxy client is not initialized")
+		return nil, fmt.Errorf("python proxy client is not initialized")
 	}
 
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		return fmt.Errorf("read request body failed: %w", err)
+		return nil, fmt.Errorf("read request body failed: %w", err)
 	}
 	_ = r.Body.Close()
 
@@ -65,7 +80,7 @@ func (c *Client) Proxy(w http.ResponseWriter, r *http.Request) error {
 
 	req, err := http.NewRequestWithContext(r.Context(), r.Method, target.String(), bytes.NewReader(body))
 	if err != nil {
-		return fmt.Errorf("create upstream request failed: %w", err)
+		return nil, fmt.Errorf("create upstream request failed: %w", err)
 	}
 
 	copyHeader(req.Header, r.Header)
@@ -77,14 +92,30 @@ func (c *Client) Proxy(w http.ResponseWriter, r *http.Request) error {
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("request upstream failed: %w", err)
+		return nil, fmt.Errorf("request upstream failed: %w", err)
 	}
 	defer resp.Body.Close()
 
-	copyHeaderExcept(w.Header(), resp.Header, upstreamBaseHeader)
-	w.WriteHeader(resp.StatusCode)
-	_, _ = io.Copy(w, resp.Body)
-	return nil
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read upstream response failed: %w", err)
+	}
+	headers := http.Header{}
+	copyHeaderExcept(headers, resp.Header, upstreamBaseHeader)
+	return &Response{
+		StatusCode: resp.StatusCode,
+		Header:     headers,
+		Body:       respBody,
+	}, nil
+}
+
+func (r *Response) WriteTo(w http.ResponseWriter) {
+	if r == nil {
+		return
+	}
+	copyHeader(w.Header(), r.Header)
+	w.WriteHeader(r.StatusCode)
+	_, _ = w.Write(r.Body)
 }
 
 func joinPath(basePath, routePath string) string {

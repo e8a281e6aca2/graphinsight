@@ -55,6 +55,24 @@ func TestTraceMiddlewarePreservesInboundTraceID(t *testing.T) {
 	}
 }
 
+func TestWriteJSONIncludesNullDataField(t *testing.T) {
+	t.Parallel()
+
+	rec := httptest.NewRecorder()
+	WriteJSON(rec, http.StatusOK, "ok", nil)
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if _, ok := payload["data"]; !ok {
+		t.Fatalf("expected response to include data field, got %s", rec.Body.String())
+	}
+	if payload["data"] != nil {
+		t.Fatalf("expected null data field, got %#v", payload["data"])
+	}
+}
+
 func TestCORSAllowsOperationalHeaders(t *testing.T) {
 	t.Parallel()
 

@@ -1,14 +1,22 @@
 package httpserver
 
 import (
+	"bytes"
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
+	"mime"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
+	"graphinsight/go-backend/internal/adminstore"
 	"graphinsight/go-backend/internal/authz"
 	"graphinsight/go-backend/internal/config"
 	"graphinsight/go-backend/internal/graph"
@@ -24,14 +32,21 @@ func registerRoutes(
 	graphInitErr error,
 	proxyClient *proxy.Client,
 	proxyInitErr error,
-	authzClient *authz.Client,
-	authzInitErr error,
 	orchestratorClient *orchestrator.Client,
 	orchestratorInitErr error,
+	adminStore adminNativeStore,
+	apiMetricsOpt ...*apiMetrics,
 ) {
-	guard := newBusinessPermissionGuard(cfg, logger, authzClient, authzInitErr)
+	var metrics *apiMetrics
+	if len(apiMetricsOpt) > 0 && apiMetricsOpt[0] != nil {
+		metrics = apiMetricsOpt[0]
+	} else {
+		metrics = newAPIMetrics(5000)
+	}
+	guard := newBusinessPermissionGuard(cfg, logger, adminStore)
 	idempotencyStore := newIdempotencyStore(time.Duration(cfg.IdempotencyCacheTTLSeconds) * time.Second)
 	orchestratorMetrics := newOrchestratorMetrics()
+	modelConnectionSnapshots := &adminModelConnectionSnapshotStore{}
 
 	mux.HandleFunc("/", withRouteOwner("go-native", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
@@ -74,12 +89,16 @@ func registerRoutes(
 			defer cancel()
 			healthErr := graphSvc.CheckHealth(ctx)
 			connected := healthErr == nil
+			runtimeInfo := graphSvc.RuntimeConnectionInfo()
 			data["neo4j"] = map[string]interface{}{
 				"connected":     connected,
-				"uri":           cfg.Neo4jURI,
-				"database":      cfg.Neo4jDatabase,
-				"config_mode":   cfg.Neo4jConfigSource,
-				"config_source": cfg.Neo4jConfigResolvedSource,
+				"uri":           runtimeInfo.URI,
+				"database":      runtimeInfo.Database,
+				"config_mode":   runtimeInfo.ConfigMode,
+				"config_source": runtimeInfo.ConfigSource,
+			}
+			if runtimeInfo.ResolutionError != "" {
+				data["neo4j"].(map[string]interface{})["resolution_error"] = runtimeInfo.ResolutionError
 			}
 			if healthErr != nil {
 				data["status"] = "degraded"
@@ -91,20 +110,7 @@ func registerRoutes(
 		} else {
 			data["python_backend"] = map[string]interface{}{"connected": true, "base_url": cfg.PythonBackendBaseURL}
 		}
-		if authzInitErr != nil {
-			data["authz"] = map[string]interface{}{
-				"connected":                     false,
-				"error":                         authzInitErr.Error(),
-				"enforce_business_api":          cfg.RBACEnforceBusinessAPI,
-				"permission_check_via_upstream": true,
-			}
-		} else {
-			data["authz"] = map[string]interface{}{
-				"connected":                     true,
-				"enforce_business_api":          cfg.RBACEnforceBusinessAPI,
-				"permission_check_via_upstream": true,
-			}
-		}
+		data["authz"] = buildAuthzHealthSummary(cfg)
 		if orchestratorInitErr != nil {
 			data["orchestrator"] = map[string]interface{}{
 				"connected":        false,
@@ -128,14 +134,47 @@ func registerRoutes(
 		mux,
 		cfg,
 		logger,
+		graphSvc,
+		asAdminJobStore(adminStore),
+		asAdminConfigStore(adminStore),
+		asAdminLogStore(adminStore),
+		proxyClient,
 		orchestratorClient,
 		orchestratorInitErr,
 		orchestratorMetrics,
 		idempotencyStore,
 		guard,
 	)
-	registerAdminOwnedProxyRoutes(mux, logger, proxyClient, proxyInitErr, guard)
-	registerLegacyPythonProxyRoutes(mux, logger, proxyClient, proxyInitErr)
+	registerAdminControlPlaneRoutesWithContext(mux, cfg, logger, graphSvc, graphInitErr, metrics, proxyClient, proxyInitErr, guard, adminStore, modelConnectionSnapshots)
+	registerPublicCompatibilityRoutes(mux, logger)
+	registerMediaRoutes(mux, logger, cfg)
+}
+
+func buildAuthzHealthSummary(cfg config.Config) map[string]interface{} {
+	mode := strings.ToLower(strings.TrimSpace(cfg.RBACAuthzMode))
+	if mode == "" {
+		mode = "go_db"
+	}
+
+	health := map[string]interface{}{
+		"mode":                       mode,
+		"enforce_business_api":       cfg.RBACEnforceBusinessAPI,
+		"permission_check_via_local": true,
+	}
+
+	switch mode {
+	case "go_db":
+		health["connected"] = true
+		health["permission_check_via_upstream"] = false
+	case "local_jwt", "local_jwt_soft":
+		health["connected"] = true
+		health["permission_check_via_upstream"] = false
+	default:
+		health["permission_check_via_upstream"] = false
+		health["connected"] = true
+	}
+
+	return health
 }
 
 func registerNativeGraphRoutes(
@@ -283,96 +322,68 @@ func registerOrchestratedBusinessRoutes(
 	mux *http.ServeMux,
 	cfg config.Config,
 	logger *slog.Logger,
+	graphSvc graphService,
+	jobStore adminJobStore,
+	configStore adminConfigStore,
+	logStore adminLogStore,
+	pythonWakeClient *proxy.Client,
 	orchestratorClient *orchestrator.Client,
 	orchestratorInitErr error,
 	orchestratorMetrics *orchestratorMetrics,
 	idempotencyStore *idempotencyStore,
 	guard businessPermissionGuard,
 ) {
-	mux.HandleFunc("/api/docqa", guard.wrap("qa:ask", buildOrchestratorHandler(
-		logger, orchestratorClient, orchestratorInitErr, orchestratorMetrics, cfg.OrchestratorSafeRetryDocQA, http.MethodPost, "/api/docqa",
+	mux.HandleFunc("/api/docqa", guard.wrap("qa:ask", buildNativeDocQAHandler(
+		logger, orchestratorClient, orchestratorInitErr, orchestratorMetrics, logStore, configStore, cfg.OrchestratorSafeRetryDocQA,
 	)))
-	mux.HandleFunc("/api/docqa/deep-research", guard.wrap("qa:ask", buildOrchestratorHandler(
-		logger, orchestratorClient, orchestratorInitErr, orchestratorMetrics, cfg.OrchestratorSafeRetryDocQA, http.MethodPost, "/api/docqa/deep-research",
+	mux.HandleFunc("/api/docqa/deep-research", guard.wrap("qa:ask", buildNativeDeepResearchHandler(
+		logger, orchestratorClient, orchestratorInitErr, orchestratorMetrics, logStore, configStore, cfg.OrchestratorSafeRetryDocQA,
 	)))
-	mux.HandleFunc("/api/docqa/health", guard.wrap("monitor:read", buildOrchestratorHandler(
-		logger, orchestratorClient, orchestratorInitErr, orchestratorMetrics, false, http.MethodGet, "/api/docqa/health",
+	mux.HandleFunc("/api/docqa/health", guard.wrap("monitor:read", buildNativeDocQAHealthHandler(
+		logger, orchestratorClient, orchestratorInitErr, orchestratorMetrics,
 	)))
-	mux.HandleFunc("/api/nl2cypher", guard.wrap("nl2cypher:use", buildOrchestratorHandler(
-		logger, orchestratorClient, orchestratorInitErr, orchestratorMetrics, false, http.MethodPost, "/api/nl2cypher",
+	mux.HandleFunc("/api/nl2cypher", guard.wrap("nl2cypher:use", buildNativeNL2CypherGenerateHandler(
+		logger, orchestratorClient, orchestratorInitErr, orchestratorMetrics, logStore,
 	)))
-	mux.HandleFunc("/api/nl2cypher/examples", buildOrchestratorHandler(
-		logger, orchestratorClient, orchestratorInitErr, orchestratorMetrics, false, http.MethodGet, "/api/nl2cypher/examples",
+	mux.HandleFunc("/api/nl2cypher/examples", buildNativeNL2CypherExamplesHandler())
+	mux.HandleFunc("/api/nl2cypher/status", buildNativeNL2CypherStatusHandler(
+		cfg, logger, guard, configStore,
 	))
-	mux.HandleFunc("/api/nl2cypher/status", guard.wrap("config:read", buildOrchestratorHandler(
-		logger, orchestratorClient, orchestratorInitErr, orchestratorMetrics, false, http.MethodGet, "/api/nl2cypher/status",
-	)))
-	mux.HandleFunc("/api/graph/build", guard.wrap("graph:build", buildOrchestratorIdempotentJSONHandler(
+	mux.HandleFunc("/api/graph/build", guard.wrap("graph:build", buildNativeGraphBuildJobHandler(
 		logger,
-		orchestratorClient,
-		orchestratorInitErr,
+		jobStore,
+		configStore,
+		pythonWakeClient,
 		idempotencyStore,
-		orchestratorMetrics,
-		time.Duration(cfg.GraphBuildTimeoutSeconds)*time.Second,
-		http.MethodPost,
-		"/api/graph/build",
 	)))
-	documentsListHandler := buildOrchestratorHandler(
-		logger, orchestratorClient, orchestratorInitErr, orchestratorMetrics, false, http.MethodGet, "/api/documents",
-	)
-	documentsDeletedListHandler := buildOrchestratorHandler(
-		logger, orchestratorClient, orchestratorInitErr, orchestratorMetrics, false, http.MethodGet, "/api/documents/deleted",
-	)
-	documentsClearHandler := buildOrchestratorHandler(
-		logger, orchestratorClient, orchestratorInitErr, orchestratorMetrics, false, http.MethodDelete, "/api/documents",
-	)
-	documentDeleteHandler := buildOrchestratorPassthroughPathHandler(
-		logger, orchestratorClient, orchestratorInitErr, orchestratorMetrics, http.MethodDelete, "/api/documents/",
-	)
-	documentRestoreHandler := buildOrchestratorPassthroughPathHandler(
-		logger, orchestratorClient, orchestratorInitErr, orchestratorMetrics, http.MethodPost, "/api/documents/",
-	)
+	documentsListHandler := buildNativeDocumentsListHandler(cfg, logger, guard)
+	documentsDeletedListHandler := buildNativeDeletedDocumentsListHandler(cfg, logger, guard)
+	documentsUploadHandler := buildNativeDocumentsUploadHandler(cfg, logger, guard)
+	documentDeleteNativeHandler := buildNativeDocumentDeleteHandler(cfg, logger, guard, graphSvc)
+	documentRestoreNativeHandler := buildNativeDocumentRestoreHandler(cfg, logger, guard)
+	documentsClearHandler := buildNativeDocumentsClearHandler(cfg, logger, guard, graphSvc)
 	mux.HandleFunc("/api/documents", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
-			if !guard.allowRequest(w, r, "kb:read") {
-				return
-			}
 			documentsListHandler(w, r)
 		case http.MethodDelete:
-			if !guard.allowRequest(w, r, "kb:delete") {
-				return
-			}
 			documentsClearHandler(w, r)
 		default:
 			WriteJSON(w, http.StatusMethodNotAllowed, "Method not allowed", nil)
 		}
 	})
-	mux.HandleFunc("/api/documents/deleted", func(w http.ResponseWriter, r *http.Request) {
-		if !guard.allowRequest(w, r, "kb:read") {
-			return
-		}
-		documentsDeletedListHandler(w, r)
-	})
+	mux.HandleFunc("/api/documents/deleted", documentsDeletedListHandler)
 	mux.HandleFunc("/api/documents/", func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/restore"):
-			if !guard.allowRequest(w, r, "kb:write") {
-				return
-			}
-			documentRestoreHandler(w, r)
+			documentRestoreNativeHandler(w, r)
 		case r.Method == http.MethodDelete:
-			if !guard.allowRequest(w, r, "kb:delete") {
-				return
-			}
-			documentDeleteHandler(w, r)
+			documentDeleteNativeHandler(w, r)
 		default:
 			WriteJSON(w, http.StatusMethodNotAllowed, "Method not allowed", nil)
 		}
 	})
-	mux.HandleFunc("/api/documents/upload", guard.wrap("kb:write", buildOrchestratorUploadHandler(
-		logger, orchestratorClient, orchestratorInitErr, orchestratorMetrics, http.MethodPost, "/api/documents/upload",
-	)))
+	mux.HandleFunc("/api/documents/upload", documentsUploadHandler)
 	mux.HandleFunc("/api/monitor/orchestrator", guard.wrap("monitor:read", func(w http.ResponseWriter, r *http.Request) {
 		markRouteOwner(w, "go-native")
 		if r.Method != http.MethodGet {
@@ -383,129 +394,175 @@ func registerOrchestratedBusinessRoutes(
 	}))
 }
 
-func registerLegacyPythonProxyRoutes(
+func registerMediaRoutes(
 	mux *http.ServeMux,
 	logger *slog.Logger,
-	proxyClient *proxy.Client,
-	proxyInitErr error,
+	cfg config.Config,
 ) {
-	registerProxyRoute(mux, logger, proxyClient, proxyInitErr, "/api/media")
-	registerProxyRoute(mux, logger, proxyClient, proxyInitErr, "/api/media/")
+	registerMediaRoute(mux, logger, cfg, "/api/media")
+	registerMediaRoute(mux, logger, cfg, "/api/media/")
 }
 
-func registerProxyRoute(mux *http.ServeMux, logger *slog.Logger, proxyClient *proxy.Client, proxyInitErr error, path string) {
+func registerMediaRoute(mux *http.ServeMux, logger *slog.Logger, cfg config.Config, path string) {
 	mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
-		markRouteOwner(w, "python-proxy")
-		if proxyClient == nil {
-			logger.Error("proxy failed: client unavailable", "path", r.URL.Path, "init_error", proxyInitErr)
-			WriteJSON(w, http.StatusServiceUnavailable, "上游服务不可用", map[string]interface{}{
-				"error_code": "UPSTREAM_UNAVAILABLE",
-				"upstream":   "python-backend",
-			})
+		markRouteOwner(w, "go-native")
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			WriteJSON(w, http.StatusMethodNotAllowed, "Method not allowed", nil)
 			return
 		}
-		if err := proxyClient.Proxy(w, r); err != nil {
-			logger.Error("proxy request failed", "path", r.URL.Path, "error", err.Error())
-			WriteJSON(w, http.StatusBadGateway, "上游请求失败", map[string]interface{}{
-				"error_code": "UPSTREAM_REQUEST_FAILED",
-				"upstream":   "python-backend",
-				"message":    err.Error(),
-			})
+		fileName := strings.TrimPrefix(r.URL.Path, "/api/media/")
+		fileName = strings.TrimPrefix(fileName, "/")
+		if fileName == "" || strings.Contains(fileName, "..") {
+			WriteJSON(w, http.StatusNotFound, "资源不存在", map[string]string{"error_code": "NOT_FOUND"})
 			return
 		}
+		target := filepath.Join(cfg.MediaStoragePath, filepath.Clean(fileName))
+		rel, err := filepath.Rel(cfg.MediaStoragePath, target)
+		if err != nil || strings.HasPrefix(rel, "..") {
+			WriteJSON(w, http.StatusNotFound, "资源不存在", map[string]string{"error_code": "NOT_FOUND"})
+			return
+		}
+		info, err := os.Stat(target)
+		if err != nil || info.IsDir() {
+			WriteJSON(w, http.StatusNotFound, "资源不存在", map[string]string{"error_code": "NOT_FOUND"})
+			return
+		}
+		if contentType := mime.TypeByExtension(filepath.Ext(target)); contentType != "" {
+			w.Header().Set("Content-Type", contentType)
+		}
+		http.ServeFile(w, r, target)
 	})
 }
 
-func registerAdminOwnedProxyRoutes(
+func registerAdminControlPlaneRoutes(
 	mux *http.ServeMux,
 	logger *slog.Logger,
-	proxyClient *proxy.Client,
-	proxyInitErr error,
+	pythonWakeClient *proxy.Client,
+	pythonWakeInitErr error,
 	guard businessPermissionGuard,
 ) {
-	registerAdminStaticRoute(mux, logger, proxyClient, proxyInitErr, guard, "/api/v1/admin/auth/login", "", http.MethodPost)
-	registerAdminStaticRoute(mux, logger, proxyClient, proxyInitErr, guard, "/api/v1/admin/auth/register", "", http.MethodPost)
-	registerAdminStaticRoute(mux, logger, proxyClient, proxyInitErr, guard, "/api/v1/admin/auth/logout", "", http.MethodPost)
-	registerAdminStaticRoute(mux, logger, proxyClient, proxyInitErr, guard, "/api/v1/admin/auth/profile", "", http.MethodGet)
-	registerAdminStaticRoute(mux, logger, proxyClient, proxyInitErr, guard, "/api/v1/admin/auth/change-password", "", http.MethodPost)
-	registerAdminStaticRoute(mux, logger, proxyClient, proxyInitErr, guard, "/api/v1/admin/auth/authorize", "", http.MethodGet)
+	registerAdminControlPlaneRoutesWithContext(
+		mux,
+		config.Config{},
+		logger,
+		nil,
+		nil,
+		newAPIMetrics(5000),
+		pythonWakeClient,
+		pythonWakeInitErr,
+		guard,
+		nil,
+	)
+}
 
-	mux.HandleFunc("/api/v1/admin/monitor/stats", buildAdminMonitorHandler(logger, proxyClient, proxyInitErr, guard))
-	mux.HandleFunc("/api/v1/admin/monitor/health", buildAdminMonitorHandler(logger, proxyClient, proxyInitErr, guard))
-	mux.HandleFunc("/api/v1/admin/monitor/performance", buildAdminMonitorHandler(logger, proxyClient, proxyInitErr, guard))
-	mux.HandleFunc("/api/v1/admin/monitor/qa", buildAdminMonitorHandler(logger, proxyClient, proxyInitErr, guard))
-	mux.HandleFunc("/api/v1/admin/monitor/slo", buildAdminMonitorHandler(logger, proxyClient, proxyInitErr, guard))
-	mux.HandleFunc("/api/v1/admin/monitor/log-severity", buildAdminMonitorHandler(logger, proxyClient, proxyInitErr, guard))
-	mux.HandleFunc("/api/v1/admin/monitor/alerts/check", buildAdminMonitorHandler(logger, proxyClient, proxyInitErr, guard))
-	mux.HandleFunc("/api/v1/admin/monitor/health/simple", buildAdminMonitorHandler(logger, proxyClient, proxyInitErr, guard))
+func registerAdminControlPlaneRoutesWithContext(
+	mux *http.ServeMux,
+	cfg config.Config,
+	logger *slog.Logger,
+	graphSvc graphService,
+	graphInitErr error,
+	apiMetrics *apiMetrics,
+	pythonWakeClient *proxy.Client,
+	pythonWakeInitErr error,
+	guard businessPermissionGuard,
+	adminStore interface{},
+	modelConnectionSnapshotsOpt ...*adminModelConnectionSnapshotStore,
+) {
+	_ = pythonWakeInitErr
+	var modelConnectionSnapshots *adminModelConnectionSnapshotStore
+	if len(modelConnectionSnapshotsOpt) > 0 && modelConnectionSnapshotsOpt[0] != nil {
+		modelConnectionSnapshots = modelConnectionSnapshotsOpt[0]
+	} else {
+		modelConnectionSnapshots = &adminModelConnectionSnapshotStore{}
+	}
+	mux.HandleFunc("/api/v1/admin/auth/login", buildAdminAuthLoginNativeHandler(logger, cfg, asAdminAuthStore(adminStore)))
+	mux.HandleFunc("/api/v1/admin/auth/register", buildAdminAuthRegisterNativeHandler(logger, asAdminAuthStore(adminStore)))
+	mux.HandleFunc("/api/v1/admin/auth/logout", buildAdminAuthLogoutNativeHandler(logger, cfg, asAdminAuthStore(adminStore)))
+	// Keep the legacy alias for older clients, but route new code to /api/v1/admin/auth/me.
+	mux.HandleFunc("/api/v1/admin/auth/profile", buildAdminProfileReadNativeHandler(logger, asAdminProfileStore(adminStore), cfg.AdminSecretKey))
+	mux.HandleFunc("/api/v1/admin/auth/me", buildAdminProfileReadNativeHandler(logger, asAdminProfileStore(adminStore), cfg.AdminSecretKey))
+	mux.HandleFunc("/api/v1/admin/auth/change-password", buildAdminAuthChangePasswordNativeHandler(logger, cfg, asAdminAuthStore(adminStore)))
+	mux.HandleFunc("/api/v1/admin/auth/authorize", buildAdminAuthAuthorizeNativeHandler(logger, cfg, asAdminAuthStore(adminStore)))
 
-	mux.HandleFunc("/api/v1/admin/jobs", buildAdminJobsHandler(logger, proxyClient, proxyInitErr, guard))
-	mux.HandleFunc("/api/v1/admin/jobs/", buildAdminJobsHandler(logger, proxyClient, proxyInitErr, guard))
+	mux.HandleFunc("/api/v1/admin/monitor/stats", buildAdminMonitorStatsNativeHandler(logger, guard))
+	mux.HandleFunc("/api/v1/admin/monitor/health", buildAdminMonitorHealthNativeHandler(cfg, logger, graphSvc, graphInitErr, guard))
+	mux.HandleFunc("/api/v1/admin/monitor/performance", buildAdminMonitorPerformanceNativeHandler(apiMetrics, guard))
+	mux.HandleFunc("/api/v1/admin/monitor/metrics/unified", buildAdminMonitorUnifiedMetricsNativeHandler(logger, apiMetrics, guard, asAdminMonitorStore(adminStore)))
+	mux.HandleFunc("/api/v1/admin/monitor/qa", buildAdminMonitorQANativeHandler(logger, guard, asAdminMonitorStore(adminStore)))
+	mux.HandleFunc("/api/v1/admin/monitor/slo", buildAdminMonitorSLONativeHandler(logger, apiMetrics, guard, asAdminMonitorStore(adminStore)))
+	mux.HandleFunc("/api/v1/admin/monitor/log-severity", buildAdminMonitorLogSeverityNativeHandler(logger, guard, asAdminMonitorStore(adminStore)))
+	mux.HandleFunc("/api/v1/admin/monitor/alerts/check", buildAdminMonitorAlertsCheckNativeHandler(logger, apiMetrics, guard, asAdminMonitorStore(adminStore)))
+	mux.HandleFunc("/api/v1/admin/monitor/health/simple", buildAdminMonitorSimpleHealthNativeHandler())
 
-	mux.HandleFunc("/api/v1/admin/qa-traces", buildAdminQATracesHandler(logger, proxyClient, proxyInitErr, guard))
-	mux.HandleFunc("/api/v1/admin/qa-traces/", buildAdminQATracesHandler(logger, proxyClient, proxyInitErr, guard))
+	mux.HandleFunc("/api/v1/admin/jobs", buildAdminJobsHandler(logger, pythonWakeClient, guard, asAdminJobStore(adminStore), asAdminConfigStore(adminStore)))
+	mux.HandleFunc("/api/v1/admin/jobs/", buildAdminJobsHandler(logger, pythonWakeClient, guard, asAdminJobStore(adminStore), asAdminConfigStore(adminStore)))
 
-	mux.HandleFunc("/api/v1/admin/config", buildAdminConfigHandler(logger, proxyClient, proxyInitErr, guard))
-	mux.HandleFunc("/api/v1/admin/config/", buildAdminConfigHandler(logger, proxyClient, proxyInitErr, guard))
+	mux.HandleFunc("/api/v1/admin/qa-traces", buildAdminQATracesNativeHandler(logger, guard, asAdminQATraceStore(adminStore)))
+	mux.HandleFunc("/api/v1/admin/qa-traces/", buildAdminQATracesNativeHandler(logger, guard, asAdminQATraceStore(adminStore)))
 
-	mux.HandleFunc("/api/v1/admin/logs", buildAdminLogsHandler(logger, proxyClient, proxyInitErr, guard))
-	mux.HandleFunc("/api/v1/admin/logs/", buildAdminLogsHandler(logger, proxyClient, proxyInitErr, guard))
+	mux.HandleFunc("/api/v1/admin/config", buildAdminConfigHandler(cfg, logger, graphSvc, graphInitErr, guard, asAdminConfigStore(adminStore), modelConnectionSnapshots))
+	mux.HandleFunc("/api/v1/admin/config/", buildAdminConfigHandler(cfg, logger, graphSvc, graphInitErr, guard, asAdminConfigStore(adminStore), modelConnectionSnapshots))
 
-	mux.HandleFunc("/api/v1/admin/rbac/roles", buildAdminRbacCatalogHandler(logger, proxyClient, proxyInitErr, guard))
-	mux.HandleFunc("/api/v1/admin/rbac/permissions", buildAdminRbacCatalogHandler(logger, proxyClient, proxyInitErr, guard))
-	mux.HandleFunc("/api/v1/admin/rbac/bindings", buildAdminRbacBindingsHandler(logger, proxyClient, proxyInitErr, guard))
-	mux.HandleFunc("/api/v1/admin/rbac/bindings/", buildAdminRbacBindingsHandler(logger, proxyClient, proxyInitErr, guard))
+	mux.HandleFunc("/api/v1/admin/logs", buildAdminLogsHandler(logger, guard, asAdminLogStore(adminStore)))
+	mux.HandleFunc("/api/v1/admin/logs/", buildAdminLogsHandler(logger, guard, asAdminLogStore(adminStore)))
 
-	mux.HandleFunc("/api/v1/admin/users", buildAdminUsersRootHandler(logger, proxyClient, proxyInitErr, guard))
-	mux.HandleFunc("/api/v1/admin/users/", buildAdminUsersSubtreeHandler(logger, proxyClient, proxyInitErr, guard))
+	mux.HandleFunc("/api/v1/admin/rbac/roles", buildAdminRbacCatalogNativeHandler(logger, guard, asRbacCatalogStore(adminStore)))
+	mux.HandleFunc("/api/v1/admin/rbac/permissions", buildAdminRbacCatalogNativeHandler(logger, guard, asRbacCatalogStore(adminStore)))
+	mux.HandleFunc("/api/v1/admin/rbac/bindings", buildAdminRbacBindingsHandler(logger, guard, asRbacBindingStore(adminStore)))
+	mux.HandleFunc("/api/v1/admin/rbac/bindings/", buildAdminRbacBindingsHandler(logger, guard, asRbacBindingStore(adminStore)))
 
-	mux.HandleFunc("/api/v1/admin/profile", buildAdminProfileHandler(logger, proxyClient, proxyInitErr, guard))
-	mux.HandleFunc("/api/v1/admin/profile/", buildAdminProfileHandler(logger, proxyClient, proxyInitErr, guard))
+	mux.HandleFunc("/api/v1/admin/users", buildAdminUsersRootHandler(logger, guard, asAdminUserStore(adminStore)))
+	mux.HandleFunc("/api/v1/admin/users/", buildAdminUsersSubtreeHandler(logger, guard, asAdminUserStore(adminStore)))
+
+	mux.HandleFunc("/api/v1/admin/profile", buildAdminProfileHandler(cfg, logger, asAdminProfileStore(adminStore), asAdminProfileStatsStore(adminStore)))
+	mux.HandleFunc("/api/v1/admin/profile/", buildAdminProfileHandler(cfg, logger, asAdminProfileStore(adminStore), asAdminProfileStatsStore(adminStore)))
 
 	mux.HandleFunc("/api/v1/admin", buildUnknownAdminHandler())
 	mux.HandleFunc("/api/v1/admin/", buildUnknownAdminHandler())
 }
 
 func buildUnknownAdminHandler() http.HandlerFunc {
-	return withRouteOwner("go-admin-proxy", func(w http.ResponseWriter, r *http.Request) {
+	return withRouteOwner("go-native", func(w http.ResponseWriter, r *http.Request) {
 		WriteJSON(w, http.StatusNotFound, "Not found", map[string]string{"error_code": "NOT_FOUND"})
 	})
 }
 
 func buildAdminJobsHandler(
 	logger *slog.Logger,
-	proxyClient *proxy.Client,
-	proxyInitErr error,
+	pythonWakeClient *proxy.Client,
 	guard businessPermissionGuard,
+	jobStore adminJobStore,
+	configStore adminConfigStore,
 ) http.HandlerFunc {
+	readHandler := buildAdminJobsReadNativeHandler(logger, guard, jobStore)
+	writeHandler := buildAdminJobsWriteNativeHandler(logger, guard, jobStore, configStore, pythonWakeClient)
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/v1/admin/jobs":
-			permission := "job:read"
-			if r.Method == http.MethodPost {
-				permission = "job:manage"
+			if r.Method == http.MethodGet {
+				readHandler(w, r)
+				return
 			}
-			buildAdminProxyHandler(logger, proxyClient, proxyInitErr, guard, "go-admin-proxy", permission, r.Method)(w, r)
+			WriteJSON(w, http.StatusMethodNotAllowed, "Method not allowed", nil)
 			return
 		case "/api/v1/admin/jobs/build-graph", "/api/v1/admin/jobs/clear-kb", "/api/v1/admin/jobs/reindex":
 			if r.Method != http.MethodPost {
 				WriteJSON(w, http.StatusMethodNotAllowed, "Method not allowed", nil)
 				return
 			}
-			buildAdminProxyHandler(logger, proxyClient, proxyInitErr, guard, "go-admin-proxy", "job:manage", http.MethodPost)(w, r)
+			writeHandler(w, r)
 			return
 		default:
 			if strings.HasPrefix(r.URL.Path, "/api/v1/admin/jobs/") {
-				permission := "job:read"
-				switch r.Method {
-				case http.MethodGet:
-				case http.MethodPost:
-					permission = "job:manage"
-				default:
+				if r.Method == http.MethodGet {
+					readHandler(w, r)
+					return
+				}
+				if r.Method != http.MethodPost {
 					WriteJSON(w, http.StatusMethodNotAllowed, "Method not allowed", nil)
 					return
 				}
-				buildAdminProxyHandler(logger, proxyClient, proxyInitErr, guard, "go-admin-proxy", permission, r.Method)(w, r)
+				writeHandler(w, r)
 				return
 			}
 			WriteJSON(w, http.StatusNotFound, "资源不存在", map[string]string{"error_code": "NOT_FOUND"})
@@ -514,184 +571,614 @@ func buildAdminJobsHandler(
 	}
 }
 
-func buildAdminMonitorHandler(
-	logger *slog.Logger,
-	proxyClient *proxy.Client,
-	proxyInitErr error,
-	guard businessPermissionGuard,
-) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		permission := "monitor:read"
-		method := http.MethodGet
-
-		switch r.URL.Path {
-		case "/api/v1/admin/monitor/alerts/check":
-			method = http.MethodPost
-		case "/api/v1/admin/monitor/health/simple":
-			permission = ""
-		case "/api/v1/admin/monitor/stats",
-			"/api/v1/admin/monitor/health",
-			"/api/v1/admin/monitor/performance",
-			"/api/v1/admin/monitor/qa",
-			"/api/v1/admin/monitor/slo",
-			"/api/v1/admin/monitor/log-severity":
-		default:
-			WriteJSON(w, http.StatusNotFound, "资源不存在", map[string]string{"error_code": "NOT_FOUND"})
-			return
-		}
-
-		buildAdminProxyHandler(logger, proxyClient, proxyInitErr, guard, "go-admin-proxy", permission, method)(w, r)
-	}
-}
-
-func buildAdminQATracesHandler(
-	logger *slog.Logger,
-	proxyClient *proxy.Client,
-	proxyInitErr error,
-	guard businessPermissionGuard,
-) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
+func buildAdminMonitorSimpleHealthNativeHandler() http.HandlerFunc {
+	return withRouteOwner("go-native", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			WriteJSON(w, http.StatusMethodNotAllowed, "Method not allowed", nil)
 			return
 		}
-		buildAdminProxyHandler(logger, proxyClient, proxyInitErr, guard, "go-admin-proxy", "monitor:read", http.MethodGet)(w, r)
-	}
+		WriteJSON(w, http.StatusOK, "服务正常", map[string]interface{}{"status": "healthy"})
+	})
 }
 
 func buildAdminConfigHandler(
+	cfg config.Config,
 	logger *slog.Logger,
-	proxyClient *proxy.Client,
-	proxyInitErr error,
+	graphSvc graphService,
+	graphInitErr error,
 	guard businessPermissionGuard,
+	configStore adminConfigStore,
+	modelConnectionSnapshots *adminModelConnectionSnapshotStore,
 ) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
+	readHandler := buildAdminConfigReadNativeHandler(cfg, logger, guard, configStore, graphSvc)
+	mutationHandler := buildAdminConfigMutationNativeHandler(logger, guard, configStore)
+	latestModelHandler := buildAdminModelConnectionLatestNativeHandler(guard, modelConnectionSnapshots)
+	testConnectionHandler := buildAdminConfigConnectionTestHandler(cfg, logger, guard, configStore, graphSvc, graphInitErr, modelConnectionSnapshots)
+	return withRouteOwner("go-native", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/admin/config/test/model/latest" {
+			if r.Method != http.MethodGet {
+				WriteJSON(w, http.StatusMethodNotAllowed, "Method not allowed", nil)
+				return
+			}
+			latestModelHandler(w, r)
+			return
+		}
 		switch r.URL.Path {
 		case "/api/v1/admin/config":
-			permission := "config:read"
-			if r.Method != http.MethodGet {
-				permission = "config:write"
+			if r.Method == http.MethodGet {
+				readHandler(w, r)
+				return
 			}
-			buildAdminProxyHandler(logger, proxyClient, proxyInitErr, guard, "go-admin-proxy", permission, r.Method)(w, r)
+			if r.Method == http.MethodPost {
+				mutationHandler(w, r)
+				return
+			}
+			WriteJSON(w, http.StatusMethodNotAllowed, "Method not allowed", nil)
 			return
 		default:
 			if strings.HasPrefix(r.URL.Path, "/api/v1/admin/config/") {
-				permission := "config:read"
-				if r.Method != http.MethodGet {
-					permission = "config:write"
+				if r.Method == http.MethodGet {
+					readHandler(w, r)
+					return
 				}
-				buildAdminProxyHandler(logger, proxyClient, proxyInitErr, guard, "go-admin-proxy", permission, r.Method)(w, r)
+				if strings.HasPrefix(r.URL.Path, "/api/v1/admin/config/test/") && r.Method == http.MethodPost {
+					testConnectionHandler(w, r)
+					return
+				}
+				if (r.URL.Path == "/api/v1/admin/config/batch" || r.URL.Path == "/api/v1/admin/config/init") && r.Method == http.MethodPost {
+					mutationHandler(w, r)
+					return
+				}
+				if r.Method == http.MethodPut || r.Method == http.MethodDelete {
+					mutationHandler(w, r)
+					return
+				}
+				if r.Method == http.MethodPost {
+					WriteJSON(w, http.StatusNotFound, "资源不存在", map[string]string{"error_code": "NOT_FOUND"})
+					return
+				}
+				WriteJSON(w, http.StatusMethodNotAllowed, "Method not allowed", nil)
 				return
 			}
 			WriteJSON(w, http.StatusNotFound, "资源不存在", map[string]string{"error_code": "NOT_FOUND"})
 			return
 		}
-	}
+	})
 }
 
 func buildAdminLogsHandler(
 	logger *slog.Logger,
-	proxyClient *proxy.Client,
-	proxyInitErr error,
 	guard businessPermissionGuard,
+	logStore adminLogStore,
 ) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
+	readHandler := buildAdminLogsReadNativeHandler(logger, guard, logStore)
+	cleanHandler := buildAdminLogsCleanNativeHandler(logger, guard, logStore)
+	return withRouteOwner("go-native", func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/v1/admin/logs":
-			permission := "logs:read"
-			if r.Method == http.MethodDelete {
-				permission = "logs:clean"
+			if r.Method == http.MethodGet {
+				readHandler(w, r)
+				return
 			}
-			buildAdminProxyHandler(logger, proxyClient, proxyInitErr, guard, "go-admin-proxy", permission, r.Method)(w, r)
+			WriteJSON(w, http.StatusMethodNotAllowed, "Method not allowed", nil)
 			return
 		default:
 			if strings.HasPrefix(r.URL.Path, "/api/v1/admin/logs/") {
-				permission := "logs:read"
-				if r.Method == http.MethodDelete {
-					permission = "logs:clean"
+				if r.Method == http.MethodGet {
+					readHandler(w, r)
+					return
 				}
-				buildAdminProxyHandler(logger, proxyClient, proxyInitErr, guard, "go-admin-proxy", permission, r.Method)(w, r)
+				if r.URL.Path == "/api/v1/admin/logs/clean" && r.Method == http.MethodDelete {
+					cleanHandler(w, r)
+					return
+				}
+				WriteJSON(w, http.StatusMethodNotAllowed, "Method not allowed", nil)
 				return
 			}
 			WriteJSON(w, http.StatusNotFound, "资源不存在", map[string]string{"error_code": "NOT_FOUND"})
 			return
 		}
-	}
+	})
 }
 
 func buildAdminRbacBindingsHandler(
 	logger *slog.Logger,
-	proxyClient *proxy.Client,
-	proxyInitErr error,
 	guard businessPermissionGuard,
+	bindingStore adminRbacBindingStore,
 ) http.HandlerFunc {
+	readHandler := buildAdminRbacBindingsReadNativeHandler(logger, guard, bindingStore)
+	mutationHandler := buildAdminRbacBindingsMutationNativeHandler(logger, guard, bindingStore)
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/v1/admin/rbac/bindings" && !strings.HasPrefix(r.URL.Path, "/api/v1/admin/rbac/bindings/") {
 			WriteJSON(w, http.StatusNotFound, "资源不存在", map[string]string{"error_code": "NOT_FOUND"})
 			return
 		}
-		permission := "user:manage"
 		switch r.Method {
-		case http.MethodGet, http.MethodPost, http.MethodDelete:
+		case http.MethodGet:
+			readHandler(w, r)
+			return
+		case http.MethodPost, http.MethodDelete:
+			mutationHandler(w, r)
+			return
 		default:
 			WriteJSON(w, http.StatusMethodNotAllowed, "Method not allowed", nil)
 			return
 		}
-		buildAdminProxyHandler(logger, proxyClient, proxyInitErr, guard, "go-admin-proxy", permission, r.Method)(w, r)
 	}
 }
 
-func buildAdminRbacCatalogHandler(
+type adminRbacBindingStore interface {
+	ListRbacBindings(ctx context.Context, userID *int) ([]adminstore.RbacBinding, error)
+	CreateRbacBinding(ctx context.Context, req adminstore.RbacBindingMutationRequest) (adminstore.RbacBinding, error)
+	DeleteRbacBinding(ctx context.Context, req adminstore.RbacBindingDeleteRequest) error
+}
+
+func asRbacBindingStore(store interface{}) adminRbacBindingStore {
+	typed, _ := store.(adminRbacBindingStore)
+	return typed
+}
+
+func asAdminUserStore(store interface{}) adminUserStore {
+	typed, _ := store.(adminUserStore)
+	return typed
+}
+
+func asAdminProfileStore(store interface{}) adminProfileStore {
+	typed, _ := store.(adminProfileStore)
+	return typed
+}
+
+func asAdminProfileStatsStore(store interface{}) adminProfileStatsStore {
+	typed, _ := store.(adminProfileStatsStore)
+	return typed
+}
+
+func buildAdminRbacBindingsReadNativeHandler(
 	logger *slog.Logger,
-	proxyClient *proxy.Client,
-	proxyInitErr error,
 	guard businessPermissionGuard,
+	bindingStore adminRbacBindingStore,
 ) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/api/v1/admin/rbac/roles", "/api/v1/admin/rbac/permissions":
-		default:
-			WriteJSON(w, http.StatusNotFound, "资源不存在", map[string]string{"error_code": "NOT_FOUND"})
-			return
-		}
+	return withRouteOwner("go-native", guard.wrap("user:manage", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			WriteJSON(w, http.StatusMethodNotAllowed, "Method not allowed", nil)
 			return
 		}
-		buildAdminProxyHandler(logger, proxyClient, proxyInitErr, guard, "go-admin-proxy", "user:manage", http.MethodGet)(w, r)
+		if r.URL.Path != "/api/v1/admin/rbac/bindings" {
+			WriteJSON(w, http.StatusNotFound, "资源不存在", map[string]string{"error_code": "NOT_FOUND"})
+			return
+		}
+		if bindingStore == nil {
+			logger.Error("admin rbac binding store unavailable")
+			WriteJSON(w, http.StatusServiceUnavailable, "RBAC 数据服务不可用", map[string]string{"error_code": "ADMIN_STORE_UNAVAILABLE"})
+			return
+		}
+
+		userID, ok := optionalPositiveIntQuery(w, r, "user_id")
+		if !ok {
+			return
+		}
+		bindings, err := bindingStore.ListRbacBindings(r.Context(), userID)
+		if err != nil {
+			logger.Error("list rbac bindings failed", "error", err.Error())
+			WriteJSON(w, http.StatusServiceUnavailable, "获取绑定列表失败", map[string]string{"error_code": "ADMIN_STORE_UNAVAILABLE"})
+			return
+		}
+		WriteJSON(w, http.StatusOK, "ok", bindings)
+	}))
+}
+
+func buildAdminRbacBindingsMutationNativeHandler(
+	logger *slog.Logger,
+	guard businessPermissionGuard,
+	bindingStore adminRbacBindingStore,
+) http.HandlerFunc {
+	return withRouteOwner("go-native", guard.wrap("user:manage", func(w http.ResponseWriter, r *http.Request) {
+		if bindingStore == nil {
+			logger.Error("admin rbac binding store unavailable")
+			WriteJSON(w, http.StatusServiceUnavailable, "RBAC 数据服务不可用", map[string]string{"error_code": "ADMIN_STORE_UNAVAILABLE"})
+			return
+		}
+
+		switch r.Method {
+		case http.MethodPost:
+			if r.URL.Path != "/api/v1/admin/rbac/bindings" {
+				WriteJSON(w, http.StatusNotFound, "资源不存在", map[string]string{"error_code": "NOT_FOUND"})
+				return
+			}
+			var payload adminRbacBindingCreatePayload
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				WriteJSON(w, http.StatusBadRequest, "请求体错误", map[string]string{"error_code": "INVALID_BODY"})
+				return
+			}
+			req, ok := buildRbacBindingMutationRequest(w, r, payload)
+			if !ok {
+				return
+			}
+			binding, err := bindingStore.CreateRbacBinding(r.Context(), req)
+			if errors.Is(err, adminstore.ErrRbacUserNotFound) {
+				WriteJSON(w, http.StatusNotFound, "用户不存在", map[string]string{"error_code": "NOT_FOUND"})
+				return
+			}
+			if errors.Is(err, adminstore.ErrRbacRoleNotFound) {
+				WriteJSON(w, http.StatusNotFound, "角色不存在", map[string]string{"error_code": "NOT_FOUND"})
+				return
+			}
+			if err != nil {
+				logger.Error("create rbac binding failed", "error", err.Error())
+				WriteJSON(w, http.StatusServiceUnavailable, "创建绑定失败", map[string]string{"error_code": "ADMIN_STORE_UNAVAILABLE"})
+				return
+			}
+			WriteJSON(w, http.StatusOK, "绑定成功", binding)
+		case http.MethodDelete:
+			bindingID, ok := parseRbacBindingDeletePath(r.URL.Path)
+			if !ok {
+				WriteJSON(w, http.StatusNotFound, "资源不存在", map[string]string{"error_code": "NOT_FOUND"})
+				return
+			}
+			err := bindingStore.DeleteRbacBinding(r.Context(), adminstore.RbacBindingDeleteRequest{
+				BindingID:  bindingID,
+				OperatorID: optionalIntHeader(r, "x-auth-user-id"),
+				TraceID:    optionalStringHeader(r, traceHeader),
+				IPAddress:  optionalString(firstRemoteAddr(r)),
+				UserAgent:  optionalString(r.UserAgent()),
+			})
+			if errors.Is(err, adminstore.ErrRbacBindingNotFound) {
+				WriteJSON(w, http.StatusNotFound, "绑定不存在", map[string]string{"error_code": "NOT_FOUND"})
+				return
+			}
+			if err != nil {
+				logger.Error("delete rbac binding failed", "error", err.Error())
+				WriteJSON(w, http.StatusServiceUnavailable, "删除绑定失败", map[string]string{"error_code": "ADMIN_STORE_UNAVAILABLE"})
+				return
+			}
+			WriteJSON(w, http.StatusOK, "删除成功", nil)
+		default:
+			WriteJSON(w, http.StatusMethodNotAllowed, "Method not allowed", nil)
+		}
+	}))
+}
+
+type adminRbacBindingCreatePayload struct {
+	UserID    int        `json:"user_id"`
+	RoleName  string     `json:"role_name"`
+	ScopeType string     `json:"scope_type"`
+	TenantID  *string    `json:"tenant_id"`
+	ProjectID *string    `json:"project_id"`
+	KBID      *string    `json:"kb_id"`
+	ExpiresAt *time.Time `json:"expires_at"`
+}
+
+func buildRbacBindingMutationRequest(w http.ResponseWriter, r *http.Request, payload adminRbacBindingCreatePayload) (adminstore.RbacBindingMutationRequest, bool) {
+	scopeType := strings.ToLower(strings.TrimSpace(payload.ScopeType))
+	if scopeType == "" {
+		scopeType = "global"
 	}
+	if payload.UserID <= 0 || strings.TrimSpace(payload.RoleName) == "" {
+		WriteJSON(w, http.StatusBadRequest, "参数错误", map[string]string{"error_code": "INVALID_BODY"})
+		return adminstore.RbacBindingMutationRequest{}, false
+	}
+	switch scopeType {
+	case "global":
+	case "tenant":
+		if payload.TenantID == nil || strings.TrimSpace(*payload.TenantID) == "" {
+			WriteJSON(w, http.StatusBadRequest, "tenant 作用域需要 tenant_id", map[string]string{"error_code": "INVALID_BODY"})
+			return adminstore.RbacBindingMutationRequest{}, false
+		}
+	case "project":
+		if payload.ProjectID == nil || strings.TrimSpace(*payload.ProjectID) == "" {
+			WriteJSON(w, http.StatusBadRequest, "project 作用域需要 project_id", map[string]string{"error_code": "INVALID_BODY"})
+			return adminstore.RbacBindingMutationRequest{}, false
+		}
+	case "kb":
+		if payload.KBID == nil || strings.TrimSpace(*payload.KBID) == "" {
+			WriteJSON(w, http.StatusBadRequest, "kb 作用域需要 kb_id", map[string]string{"error_code": "INVALID_BODY"})
+			return adminstore.RbacBindingMutationRequest{}, false
+		}
+	default:
+		WriteJSON(w, http.StatusBadRequest, "scope_type 必须是 global/tenant/project/kb", map[string]string{"error_code": "INVALID_BODY"})
+		return adminstore.RbacBindingMutationRequest{}, false
+	}
+	return adminstore.RbacBindingMutationRequest{
+		UserID:     payload.UserID,
+		RoleName:   strings.TrimSpace(payload.RoleName),
+		ScopeType:  scopeType,
+		TenantID:   payload.TenantID,
+		ProjectID:  payload.ProjectID,
+		KBID:       payload.KBID,
+		ExpiresAt:  payload.ExpiresAt,
+		OperatorID: optionalIntHeader(r, "x-auth-user-id"),
+		TraceID:    optionalStringHeader(r, traceHeader),
+		IPAddress:  optionalString(firstRemoteAddr(r)),
+		UserAgent:  optionalString(r.UserAgent()),
+	}, true
+}
+
+func parseRbacBindingDeletePath(path string) (int, bool) {
+	rest := strings.TrimPrefix(path, "/api/v1/admin/rbac/bindings/")
+	if rest == "" || strings.Contains(rest, "/") {
+		return 0, false
+	}
+	bindingID, err := strconv.Atoi(rest)
+	if err != nil || bindingID <= 0 {
+		return 0, false
+	}
+	return bindingID, true
+}
+
+func optionalPositiveIntQuery(w http.ResponseWriter, r *http.Request, key string) (*int, bool) {
+	raw := strings.TrimSpace(r.URL.Query().Get(key))
+	if raw == "" {
+		return nil, true
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value <= 0 {
+		WriteJSON(w, http.StatusBadRequest, "参数错误", map[string]string{"error_code": "INVALID_QUERY"})
+		return nil, false
+	}
+	return &value, true
+}
+
+func optionalBoolQuery(w http.ResponseWriter, r *http.Request, key string) (*bool, bool) {
+	raw := strings.TrimSpace(r.URL.Query().Get(key))
+	if raw == "" {
+		return nil, true
+	}
+	value, err := strconv.ParseBool(raw)
+	if err != nil {
+		WriteJSON(w, http.StatusBadRequest, "参数错误", map[string]string{"error_code": "INVALID_QUERY"})
+		return nil, false
+	}
+	return &value, true
+}
+
+func optionalBoolQueryDefault(r *http.Request, key string, fallback bool) bool {
+	raw := strings.TrimSpace(r.URL.Query().Get(key))
+	if raw == "" {
+		return fallback
+	}
+	value, err := strconv.ParseBool(raw)
+	if err != nil {
+		return fallback
+	}
+	return value
 }
 
 func buildAdminUsersRootHandler(
 	logger *slog.Logger,
-	proxyClient *proxy.Client,
-	proxyInitErr error,
 	guard businessPermissionGuard,
+	userStore adminUserStore,
 ) http.HandlerFunc {
+	readHandler := buildAdminUsersReadNativeHandler(logger, guard, userStore)
+	mutationHandler := buildAdminUsersMutationNativeHandler(logger, guard, userStore)
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/v1/admin/users" {
 			WriteJSON(w, http.StatusNotFound, "资源不存在", map[string]string{"error_code": "NOT_FOUND"})
 			return
 		}
 		switch r.Method {
-		case http.MethodGet, http.MethodPost:
+		case http.MethodGet:
+			readHandler(w, r)
+			return
+		case http.MethodPost:
+			mutationHandler(w, r)
+			return
 		default:
 			WriteJSON(w, http.StatusMethodNotAllowed, "Method not allowed", nil)
 			return
 		}
-		buildAdminProxyHandler(logger, proxyClient, proxyInitErr, guard, "go-admin-proxy", "user:manage", r.Method)(w, r)
 	}
+}
+
+type adminUserStore interface {
+	ListUsers(ctx context.Context, query adminstore.UserListQuery) (adminstore.UserListResult, error)
+	RecordUserExportAudit(ctx context.Context, req adminstore.UserExportAuditRequest) error
+	CreateUser(ctx context.Context, req adminstore.UserCreateRequest) (adminstore.UserItem, error)
+	UpdateUser(ctx context.Context, req adminstore.UserUpdateRequest) (adminstore.UserItem, error)
+	ToggleUserStatus(ctx context.Context, req adminstore.UserToggleStatusRequest) (adminstore.UserItem, error)
+	DeleteUser(ctx context.Context, req adminstore.UserDeleteRequest) error
+	ResetUserPassword(ctx context.Context, req adminstore.UserResetPasswordRequest) error
+	BatchUpdateUserStatus(ctx context.Context, req adminstore.UserBatchStatusRequest) (adminstore.UserBatchStatusResult, error)
+	BatchDeleteUsers(ctx context.Context, req adminstore.UserBatchDeleteRequest) (adminstore.UserBatchDeleteResult, error)
+	BatchResetUserPasswords(ctx context.Context, req adminstore.UserBatchResetPasswordRequest) (adminstore.UserBatchResetPasswordResult, error)
+}
+
+func buildAdminUsersReadNativeHandler(
+	logger *slog.Logger,
+	guard businessPermissionGuard,
+	userStore adminUserStore,
+) http.HandlerFunc {
+	return withRouteOwner("go-native", guard.wrap("user:manage", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			WriteJSON(w, http.StatusMethodNotAllowed, "Method not allowed", nil)
+			return
+		}
+		if userStore == nil {
+			logger.Error("admin user store unavailable")
+			WriteJSON(w, http.StatusServiceUnavailable, "用户数据服务不可用", map[string]string{"error_code": "ADMIN_STORE_UNAVAILABLE"})
+			return
+		}
+		if r.URL.Path == "/api/v1/admin/users/export-csv" {
+			writeAdminUsersCSVExport(w, r, logger, userStore)
+			return
+		}
+		isActive, ok := optionalBoolQuery(w, r, "is_active")
+		if !ok {
+			return
+		}
+		query := adminstore.UserListQuery{
+			Page:       boundedIntQuery(r, "page", 1, 1, 1_000_000),
+			PageSize:   boundedIntQuery(r, "page_size", 20, 1, 200),
+			Search:     strings.TrimSpace(r.URL.Query().Get("search")),
+			IsActive:   isActive,
+			Department: strings.TrimSpace(r.URL.Query().Get("department")),
+			OrderBy:    strings.TrimSpace(r.URL.Query().Get("order_by")),
+			OrderDesc:  optionalBoolQueryDefault(r, "order_desc", true),
+		}
+		result, err := userStore.ListUsers(r.Context(), query)
+		if err != nil {
+			logger.Error("list users failed", "error", err.Error())
+			WriteJSON(w, http.StatusServiceUnavailable, "获取用户列表失败", map[string]string{"error_code": "ADMIN_STORE_UNAVAILABLE"})
+			return
+		}
+		totalPages := 0
+		if query.PageSize > 0 && result.Total > 0 {
+			totalPages = (result.Total + query.PageSize - 1) / query.PageSize
+		}
+		WriteJSON(w, http.StatusOK, "ok", adminPaginatedData{
+			Items:      result.Items,
+			Total:      result.Total,
+			Page:       query.Page,
+			PageSize:   query.PageSize,
+			TotalPages: totalPages,
+		})
+	}))
+}
+
+const maxAdminUsersCSVExportRows = 100000
+
+func writeAdminUsersCSVExport(
+	w http.ResponseWriter,
+	r *http.Request,
+	logger *slog.Logger,
+	userStore adminUserStore,
+) {
+	isActive, ok := optionalBoolQuery(w, r, "is_active")
+	if !ok {
+		return
+	}
+	baseQuery := adminstore.UserListQuery{
+		Page:       1,
+		PageSize:   200,
+		Search:     strings.TrimSpace(r.URL.Query().Get("search")),
+		IsActive:   isActive,
+		Department: strings.TrimSpace(r.URL.Query().Get("department")),
+		OrderBy:    strings.TrimSpace(r.URL.Query().Get("order_by")),
+		OrderDesc:  optionalBoolQueryDefault(r, "order_desc", true),
+	}
+
+	users := make([]adminstore.UserItem, 0, 200)
+	total := 0
+	for page := 1; len(users) < maxAdminUsersCSVExportRows; page++ {
+		query := baseQuery
+		query.Page = page
+		result, err := userStore.ListUsers(r.Context(), query)
+		if err != nil {
+			logger.Error("export users csv failed", "error", err.Error())
+			WriteJSON(w, http.StatusServiceUnavailable, "导出失败", map[string]string{"error_code": "ADMIN_STORE_UNAVAILABLE"})
+			return
+		}
+		if page == 1 {
+			total = result.Total
+		}
+		if len(result.Items) == 0 {
+			break
+		}
+		remaining := maxAdminUsersCSVExportRows - len(users)
+		if len(result.Items) > remaining {
+			users = append(users, result.Items[:remaining]...)
+			break
+		}
+		users = append(users, result.Items...)
+		if len(users) >= total {
+			break
+		}
+	}
+
+	if err := userStore.RecordUserExportAudit(r.Context(), adminstore.UserExportAuditRequest{
+		OperatorID: optionalIntHeader(r, "x-auth-user-id"),
+		TenantID:   optionalStringHeader(r, "x-scope-tenant-id"),
+		TraceID:    optionalStringHeader(r, traceHeader),
+		IPAddress:  optionalString(firstRemoteAddr(r)),
+		UserAgent:  optionalString(r.UserAgent()),
+		Rows:       len(users),
+		Search:     baseQuery.Search,
+		IsActive:   baseQuery.IsActive,
+		Department: baseQuery.Department,
+		OrderBy:    baseQuery.OrderBy,
+		OrderDesc:  baseQuery.OrderDesc,
+	}); err != nil {
+		logger.Warn("write user export audit failed", "error", err.Error())
+	}
+
+	var buffer bytes.Buffer
+	buffer.WriteString("\ufeff")
+	writer := csv.NewWriter(&buffer)
+	_ = writer.Write([]string{
+		"id",
+		"username",
+		"email",
+		"full_name",
+		"phone",
+		"department",
+		"is_active",
+		"last_login",
+		"last_login_ip",
+		"login_count",
+		"created_at",
+		"updated_at",
+	})
+	for _, user := range users {
+		_ = writer.Write([]string{
+			strconv.Itoa(user.ID),
+			user.Username,
+			user.Email,
+			valueOrEmpty(user.FullName),
+			valueOrEmpty(user.Phone),
+			valueOrEmpty(user.Department),
+			strconv.FormatBool(user.IsActive),
+			timeOrEmpty(user.LastLogin),
+			valueOrEmpty(user.LastLoginIP),
+			strconv.Itoa(user.LoginCount),
+			user.CreatedAt.UTC().Format(time.RFC3339),
+			timeOrEmpty(user.UpdatedAt),
+		})
+	}
+	writer.Flush()
+	if err := writer.Error(); err != nil {
+		logger.Error("encode users csv failed", "error", err.Error())
+		WriteJSON(w, http.StatusServiceUnavailable, "导出失败", map[string]string{"error_code": "CSV_ENCODE_FAILED"})
+		return
+	}
+
+	filename := fmt.Sprintf("users_%s.csv", time.Now().UTC().Format("20060102_150405"))
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(buffer.Bytes())
+}
+
+func valueOrEmpty(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
+}
+
+func timeOrEmpty(value *time.Time) string {
+	if value == nil {
+		return ""
+	}
+	return value.UTC().Format(time.RFC3339)
 }
 
 func buildAdminUsersSubtreeHandler(
 	logger *slog.Logger,
-	proxyClient *proxy.Client,
-	proxyInitErr error,
 	guard businessPermissionGuard,
+	userStore adminUserStore,
 ) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
+	readHandler := buildAdminUsersReadNativeHandler(logger, guard, userStore)
+	mutationHandler := buildAdminUsersMutationNativeHandler(logger, guard, userStore)
+	return withRouteOwner("go-native", func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasPrefix(r.URL.Path, "/api/v1/admin/users/") {
 			WriteJSON(w, http.StatusNotFound, "资源不存在", map[string]string{"error_code": "NOT_FOUND"})
+			return
+		}
+		if r.URL.Path == "/api/v1/admin/users/export-csv" {
+			readHandler(w, r)
+			return
+		}
+		if isAdminUsersNativeMutationRoute(r) {
+			mutationHandler(w, r)
 			return
 		}
 		switch r.Method {
@@ -700,80 +1187,652 @@ func buildAdminUsersSubtreeHandler(
 			WriteJSON(w, http.StatusMethodNotAllowed, "Method not allowed", nil)
 			return
 		}
-		buildAdminProxyHandler(logger, proxyClient, proxyInitErr, guard, "go-admin-proxy", "user:manage", r.Method)(w, r)
+		WriteJSON(w, http.StatusNotFound, "资源不存在", map[string]string{"error_code": "NOT_FOUND"})
+	})
+}
+
+func buildAdminUsersMutationNativeHandler(
+	logger *slog.Logger,
+	guard businessPermissionGuard,
+	userStore adminUserStore,
+) http.HandlerFunc {
+	return withRouteOwner("go-native", guard.wrap("user:manage", func(w http.ResponseWriter, r *http.Request) {
+		if userStore == nil {
+			logger.Error("admin user store unavailable")
+			WriteJSON(w, http.StatusServiceUnavailable, "用户数据服务不可用", map[string]string{"error_code": "ADMIN_STORE_UNAVAILABLE"})
+			return
+		}
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/admin/users":
+			var payload adminUserCreatePayload
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				WriteJSON(w, http.StatusBadRequest, "请求体错误", map[string]string{"error_code": "INVALID_BODY"})
+				return
+			}
+			req, ok := buildAdminUserCreateRequest(w, r, payload)
+			if !ok {
+				return
+			}
+			user, err := userStore.CreateUser(r.Context(), req)
+			writeAdminUserMutationResult(w, logger, err, "创建用户失败", "创建成功", user)
+		case r.Method == http.MethodPut:
+			userID, ok := parseAdminUserIDPath(r.URL.Path)
+			if !ok {
+				WriteJSON(w, http.StatusNotFound, "资源不存在", map[string]string{"error_code": "NOT_FOUND"})
+				return
+			}
+			var payload adminUserUpdatePayload
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				WriteJSON(w, http.StatusBadRequest, "请求体错误", map[string]string{"error_code": "INVALID_BODY"})
+				return
+			}
+			req, ok := buildAdminUserUpdateRequest(w, r, userID, payload)
+			if !ok {
+				return
+			}
+			user, err := userStore.UpdateUser(r.Context(), req)
+			writeAdminUserMutationResult(w, logger, err, "更新用户失败", "更新成功", user)
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/toggle-status"):
+			userID, ok := parseAdminUserActionPath(r.URL.Path, "toggle-status")
+			if !ok {
+				WriteJSON(w, http.StatusNotFound, "资源不存在", map[string]string{"error_code": "NOT_FOUND"})
+				return
+			}
+			user, err := userStore.ToggleUserStatus(r.Context(), adminstore.UserToggleStatusRequest{
+				UserID:     userID,
+				OperatorID: optionalIntHeader(r, "x-auth-user-id"),
+				TenantID:   optionalStringHeader(r, "x-scope-tenant-id"),
+				TraceID:    optionalStringHeader(r, traceHeader),
+				IPAddress:  optionalString(firstRemoteAddr(r)),
+				UserAgent:  optionalString(r.UserAgent()),
+			})
+			writeAdminUserMutationResult(w, logger, err, "切换状态失败", "状态已更新", user)
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/reset-password"):
+			userID, ok := parseAdminUserActionPath(r.URL.Path, "reset-password")
+			if !ok {
+				WriteJSON(w, http.StatusNotFound, "资源不存在", map[string]string{"error_code": "NOT_FOUND"})
+				return
+			}
+			var payload adminUserResetPasswordPayload
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				WriteJSON(w, http.StatusBadRequest, "请求体错误", map[string]string{"error_code": "INVALID_BODY"})
+				return
+			}
+			err := userStore.ResetUserPassword(r.Context(), adminstore.UserResetPasswordRequest{
+				UserID:      userID,
+				NewPassword: payload.NewPassword,
+				OperatorID:  optionalIntHeader(r, "x-auth-user-id"),
+				TenantID:    optionalStringHeader(r, "x-scope-tenant-id"),
+				TraceID:     optionalStringHeader(r, traceHeader),
+				IPAddress:   optionalString(firstRemoteAddr(r)),
+				UserAgent:   optionalString(r.UserAgent()),
+			})
+			writeAdminUserPasswordResult(w, logger, err, "重置密码失败", "密码重置成功")
+		case r.Method == http.MethodDelete:
+			userID, ok := parseAdminUserIDPath(r.URL.Path)
+			if !ok {
+				WriteJSON(w, http.StatusNotFound, "资源不存在", map[string]string{"error_code": "NOT_FOUND"})
+				return
+			}
+			err := userStore.DeleteUser(r.Context(), adminstore.UserDeleteRequest{
+				UserID:     userID,
+				SoftDelete: optionalBoolQueryDefault(r, "soft_delete", true),
+				OperatorID: optionalIntHeader(r, "x-auth-user-id"),
+				TenantID:   optionalStringHeader(r, "x-scope-tenant-id"),
+				TraceID:    optionalStringHeader(r, traceHeader),
+				IPAddress:  optionalString(firstRemoteAddr(r)),
+				UserAgent:  optionalString(r.UserAgent()),
+			})
+			writeAdminUserDeleteResult(w, logger, err)
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/admin/users/batch-status":
+			var payload adminUserBatchStatusPayload
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				WriteJSON(w, http.StatusBadRequest, "请求体错误", map[string]string{"error_code": "INVALID_BODY"})
+				return
+			}
+			result, err := userStore.BatchUpdateUserStatus(r.Context(), adminstore.UserBatchStatusRequest{
+				UserIDs:    payload.UserIDs,
+				IsActive:   payload.IsActive,
+				OperatorID: optionalIntHeader(r, "x-auth-user-id"),
+				TenantID:   optionalStringHeader(r, "x-scope-tenant-id"),
+				TraceID:    optionalStringHeader(r, traceHeader),
+				IPAddress:  optionalString(firstRemoteAddr(r)),
+				UserAgent:  optionalString(r.UserAgent()),
+			})
+			if err != nil {
+				logger.Error("batch update admin user status failed", "error", err.Error())
+				WriteJSON(w, http.StatusServiceUnavailable, "批量状态更新失败", map[string]string{"error_code": "ADMIN_STORE_UNAVAILABLE"})
+				return
+			}
+			WriteJSON(w, http.StatusOK, "批量状态更新完成", result)
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/admin/users/batch-delete":
+			var payload adminUserBatchDeletePayload
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				WriteJSON(w, http.StatusBadRequest, "请求体错误", map[string]string{"error_code": "INVALID_BODY"})
+				return
+			}
+			softDelete := true
+			if payload.SoftDelete != nil {
+				softDelete = *payload.SoftDelete
+			}
+			result, err := userStore.BatchDeleteUsers(r.Context(), adminstore.UserBatchDeleteRequest{
+				UserIDs:    payload.UserIDs,
+				SoftDelete: softDelete,
+				OperatorID: optionalIntHeader(r, "x-auth-user-id"),
+				TenantID:   optionalStringHeader(r, "x-scope-tenant-id"),
+				TraceID:    optionalStringHeader(r, traceHeader),
+				IPAddress:  optionalString(firstRemoteAddr(r)),
+				UserAgent:  optionalString(r.UserAgent()),
+			})
+			if err != nil {
+				logger.Error("batch delete admin users failed", "error", err.Error())
+				WriteJSON(w, http.StatusServiceUnavailable, "批量删除失败", map[string]string{"error_code": "ADMIN_STORE_UNAVAILABLE"})
+				return
+			}
+			WriteJSON(w, http.StatusOK, "批量删除完成", result)
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/admin/users/batch-reset-password":
+			var payload adminUserBatchResetPasswordPayload
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				WriteJSON(w, http.StatusBadRequest, "请求体错误", map[string]string{"error_code": "INVALID_BODY"})
+				return
+			}
+			result, err := userStore.BatchResetUserPasswords(r.Context(), adminstore.UserBatchResetPasswordRequest{
+				UserIDs:     payload.UserIDs,
+				NewPassword: payload.NewPassword,
+				OperatorID:  optionalIntHeader(r, "x-auth-user-id"),
+				TenantID:    optionalStringHeader(r, "x-scope-tenant-id"),
+				TraceID:     optionalStringHeader(r, traceHeader),
+				IPAddress:   optionalString(firstRemoteAddr(r)),
+				UserAgent:   optionalString(r.UserAgent()),
+			})
+			if err != nil {
+				logger.Error("batch reset admin user passwords failed", "error", err.Error())
+				WriteJSON(w, http.StatusServiceUnavailable, "批量重置密码失败", map[string]string{"error_code": "ADMIN_STORE_UNAVAILABLE"})
+				return
+			}
+			WriteJSON(w, http.StatusOK, "批量重置密码完成", result)
+		default:
+			WriteJSON(w, http.StatusNotFound, "资源不存在", map[string]string{"error_code": "NOT_FOUND"})
+		}
+	}))
+}
+
+type adminUserCreatePayload struct {
+	Username   string  `json:"username"`
+	Email      string  `json:"email"`
+	Password   string  `json:"password"`
+	FullName   *string `json:"full_name"`
+	Phone      *string `json:"phone"`
+	Department *string `json:"department"`
+}
+
+type adminUserUpdatePayload struct {
+	Email      *string `json:"email"`
+	FullName   *string `json:"full_name"`
+	Phone      *string `json:"phone"`
+	Department *string `json:"department"`
+	Avatar     *string `json:"avatar"`
+	IsActive   *bool   `json:"is_active"`
+}
+
+type adminUserResetPasswordPayload struct {
+	NewPassword string `json:"new_password"`
+}
+
+type adminUserBatchStatusPayload struct {
+	UserIDs  []int `json:"user_ids"`
+	IsActive bool  `json:"is_active"`
+}
+
+type adminUserBatchDeletePayload struct {
+	UserIDs    []int `json:"user_ids"`
+	SoftDelete *bool `json:"soft_delete"`
+}
+
+type adminUserBatchResetPasswordPayload struct {
+	UserIDs     []int  `json:"user_ids"`
+	NewPassword string `json:"new_password"`
+}
+
+func isAdminUsersNativeMutationRoute(r *http.Request) bool {
+	switch r.Method {
+	case http.MethodPut, http.MethodDelete:
+		_, ok := parseAdminUserIDPath(r.URL.Path)
+		return ok
+	case http.MethodPost:
+		if r.URL.Path == "/api/v1/admin/users" || r.URL.Path == "/api/v1/admin/users/batch-status" || r.URL.Path == "/api/v1/admin/users/batch-delete" || r.URL.Path == "/api/v1/admin/users/batch-reset-password" {
+			return true
+		}
+		if _, ok := parseAdminUserActionPath(r.URL.Path, "reset-password"); ok {
+			return true
+		}
+		_, ok := parseAdminUserActionPath(r.URL.Path, "toggle-status")
+		return ok
+	default:
+		return false
 	}
+}
+
+func buildAdminUserCreateRequest(w http.ResponseWriter, r *http.Request, payload adminUserCreatePayload) (adminstore.UserCreateRequest, bool) {
+	username := strings.TrimSpace(payload.Username)
+	email := strings.ToLower(strings.TrimSpace(payload.Email))
+	if len(username) < 3 || len(username) > 50 || !isValidAdminUsername(username) {
+		WriteJSON(w, http.StatusBadRequest, "用户名只能包含字母、数字、下划线和连字符", map[string]string{"error_code": "INVALID_BODY"})
+		return adminstore.UserCreateRequest{}, false
+	}
+	if !isValidAdminUserEmail(email) {
+		WriteJSON(w, http.StatusBadRequest, "请输入有效的邮箱地址", map[string]string{"error_code": "INVALID_BODY"})
+		return adminstore.UserCreateRequest{}, false
+	}
+	if !isValidAdminUserPassword(payload.Password) {
+		WriteJSON(w, http.StatusBadRequest, "密码必须包含字母和数字，长度 8-100 位", map[string]string{"error_code": "INVALID_BODY"})
+		return adminstore.UserCreateRequest{}, false
+	}
+	return adminstore.UserCreateRequest{
+		Username:   username,
+		Email:      email,
+		Password:   payload.Password,
+		FullName:   payload.FullName,
+		Phone:      payload.Phone,
+		Department: payload.Department,
+		OperatorID: optionalIntHeader(r, "x-auth-user-id"),
+		TenantID:   optionalStringHeader(r, "x-scope-tenant-id"),
+		TraceID:    optionalStringHeader(r, traceHeader),
+		IPAddress:  optionalString(firstRemoteAddr(r)),
+		UserAgent:  optionalString(r.UserAgent()),
+	}, true
+}
+
+func buildAdminUserUpdateRequest(w http.ResponseWriter, r *http.Request, userID int, payload adminUserUpdatePayload) (adminstore.UserUpdateRequest, bool) {
+	if payload.Email != nil {
+		email := strings.ToLower(strings.TrimSpace(*payload.Email))
+		if !isValidAdminUserEmail(email) {
+			WriteJSON(w, http.StatusBadRequest, "请输入有效的邮箱地址", map[string]string{"error_code": "INVALID_BODY"})
+			return adminstore.UserUpdateRequest{}, false
+		}
+		payload.Email = &email
+	}
+	return adminstore.UserUpdateRequest{
+		UserID:     userID,
+		Email:      payload.Email,
+		FullName:   payload.FullName,
+		Phone:      payload.Phone,
+		Department: payload.Department,
+		Avatar:     payload.Avatar,
+		IsActive:   payload.IsActive,
+		OperatorID: optionalIntHeader(r, "x-auth-user-id"),
+		TenantID:   optionalStringHeader(r, "x-scope-tenant-id"),
+		TraceID:    optionalStringHeader(r, traceHeader),
+		IPAddress:  optionalString(firstRemoteAddr(r)),
+		UserAgent:  optionalString(r.UserAgent()),
+	}, true
+}
+
+func isValidAdminUserEmail(email string) bool {
+	at := strings.Index(email, "@")
+	return at > 0 && at < len(email)-1 && strings.Contains(email[at+1:], ".")
+}
+
+func isValidAdminUsername(username string) bool {
+	if username == "" {
+		return false
+	}
+	for _, char := range username {
+		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') || char == '_' || char == '-' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func isValidAdminUserPassword(password string) bool {
+	if len(password) < 8 || len(password) > 100 {
+		return false
+	}
+	hasLetter := false
+	hasDigit := false
+	for _, char := range password {
+		if char >= '0' && char <= '9' {
+			hasDigit = true
+		}
+		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') {
+			hasLetter = true
+		}
+	}
+	return hasLetter && hasDigit
+}
+
+func writeAdminUserMutationResult(w http.ResponseWriter, logger *slog.Logger, err error, failureMessage string, successMessage string, user adminstore.UserItem) {
+	if errors.Is(err, adminstore.ErrUserNotFound) {
+		WriteJSON(w, http.StatusNotFound, "用户不存在", map[string]string{"error_code": "NOT_FOUND"})
+		return
+	}
+	if errors.Is(err, adminstore.ErrUserConflict) {
+		WriteJSON(w, http.StatusBadRequest, "邮箱已存在", map[string]string{"error_code": "USER_CONFLICT"})
+		return
+	}
+	if errors.Is(err, adminstore.ErrUserSelfOperation) {
+		WriteJSON(w, http.StatusBadRequest, "不能停用当前登录账号", map[string]string{"error_code": "SELF_OPERATION_FORBIDDEN"})
+		return
+	}
+	if err != nil {
+		logger.Error("admin user mutation failed", "error", err.Error())
+		WriteJSON(w, http.StatusServiceUnavailable, failureMessage, map[string]string{"error_code": "ADMIN_STORE_UNAVAILABLE"})
+		return
+	}
+	WriteJSON(w, http.StatusOK, successMessage, user)
+}
+
+func writeAdminUserDeleteResult(w http.ResponseWriter, logger *slog.Logger, err error) {
+	if errors.Is(err, adminstore.ErrUserNotFound) {
+		WriteJSON(w, http.StatusNotFound, "用户不存在", map[string]string{"error_code": "NOT_FOUND"})
+		return
+	}
+	if errors.Is(err, adminstore.ErrUserSelfOperation) {
+		WriteJSON(w, http.StatusBadRequest, "不能删除当前登录账号", map[string]string{"error_code": "SELF_OPERATION_FORBIDDEN"})
+		return
+	}
+	if err != nil {
+		logger.Error("delete admin user failed", "error", err.Error())
+		WriteJSON(w, http.StatusServiceUnavailable, "删除用户失败", map[string]string{"error_code": "ADMIN_STORE_UNAVAILABLE"})
+		return
+	}
+	WriteJSON(w, http.StatusOK, "删除成功", nil)
+}
+
+func writeAdminUserPasswordResult(w http.ResponseWriter, logger *slog.Logger, err error, failureMessage string, successMessage string) {
+	if errors.Is(err, adminstore.ErrUserNotFound) {
+		WriteJSON(w, http.StatusNotFound, "用户不存在", map[string]string{"error_code": "NOT_FOUND"})
+		return
+	}
+	if err != nil {
+		logger.Error("admin user password mutation failed", "error", err.Error())
+		WriteJSON(w, http.StatusServiceUnavailable, failureMessage, map[string]string{"error_code": "ADMIN_STORE_UNAVAILABLE"})
+		return
+	}
+	WriteJSON(w, http.StatusOK, successMessage, nil)
+}
+
+func parseAdminUserIDPath(path string) (int, bool) {
+	rest := strings.TrimPrefix(path, "/api/v1/admin/users/")
+	if rest == "" || strings.Contains(rest, "/") {
+		return 0, false
+	}
+	userID, err := strconv.Atoi(rest)
+	if err != nil || userID <= 0 {
+		return 0, false
+	}
+	return userID, true
+}
+
+func parseAdminUserActionPath(path string, action string) (int, bool) {
+	rest := strings.TrimPrefix(path, "/api/v1/admin/users/")
+	parts := strings.Split(rest, "/")
+	if len(parts) != 2 || parts[1] != action {
+		return 0, false
+	}
+	userID, err := strconv.Atoi(parts[0])
+	if err != nil || userID <= 0 {
+		return 0, false
+	}
+	return userID, true
 }
 
 func buildAdminProfileHandler(
+	cfg config.Config,
 	logger *slog.Logger,
-	proxyClient *proxy.Client,
-	proxyInitErr error,
-	guard businessPermissionGuard,
+	profileStore adminProfileStore,
+	statsStore adminProfileStatsStore,
 ) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/admin/profile" && r.URL.Path != "/api/v1/admin/profile/" {
-			WriteJSON(w, http.StatusNotFound, "资源不存在", map[string]string{"error_code": "NOT_FOUND"})
+	readHandler := buildAdminProfileReadNativeHandler(logger, profileStore, cfg.AdminSecretKey)
+	statsHandler := buildAdminProfileStatsNativeHandler(logger, statsStore, cfg.AdminSecretKey)
+	mutationHandler := buildAdminProfileMutationNativeHandler(logger, profileStore, cfg.AdminSecretKey)
+	return withRouteOwner("go-native", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/admin/profile" || r.URL.Path == "/api/v1/admin/profile/" {
+			if r.Method == http.MethodGet {
+				readHandler(w, r)
+				return
+			}
+			if r.Method != http.MethodPut {
+				WriteJSON(w, http.StatusMethodNotAllowed, "Method not allowed", nil)
+				return
+			}
+			mutationHandler(w, r)
 			return
 		}
-		switch r.Method {
-		case http.MethodGet, http.MethodPut:
+		if r.URL.Path == "/api/v1/admin/profile/stats" {
+			if r.Method == http.MethodGet {
+				statsHandler(w, r)
+				return
+			}
+			WriteJSON(w, http.StatusMethodNotAllowed, "Method not allowed", nil)
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, "/api/v1/admin/profile/") {
+			switch r.Method {
+			case http.MethodGet, http.MethodPost, http.MethodPut, http.MethodDelete:
+				if r.Method == http.MethodPut && r.URL.Path == "/api/v1/admin/profile/password" {
+					mutationHandler(w, r)
+					return
+				}
+				WriteJSON(w, http.StatusNotFound, "资源不存在", map[string]string{"error_code": "NOT_FOUND"})
+				return
+			default:
+				WriteJSON(w, http.StatusMethodNotAllowed, "Method not allowed", nil)
+				return
+			}
+		}
+		WriteJSON(w, http.StatusNotFound, "资源不存在", map[string]string{"error_code": "NOT_FOUND"})
+	})
+}
+
+type adminProfileStore interface {
+	GetActiveUserBySubject(ctx context.Context, subject string) (adminstore.UserItem, error)
+	UpdateProfileBySubject(ctx context.Context, req adminstore.ProfileUpdateRequest) (adminstore.UserItem, error)
+	ChangeProfilePasswordBySubject(ctx context.Context, req adminstore.ProfilePasswordChangeRequest) error
+}
+
+type adminProfileStatsStore interface {
+	GetProfileStatsBySubject(ctx context.Context, subject string) (adminstore.ProfileStats, error)
+}
+
+type adminProfileUpdatePayload struct {
+	Email             *string `json:"email"`
+	FullName          *string `json:"full_name"`
+	Phone             *string `json:"phone"`
+	Avatar            *string `json:"avatar"`
+	PreferredHomePath *string `json:"preferred_home_path"`
+}
+
+type adminProfilePasswordPayload struct {
+	OldPassword string `json:"old_password"`
+	NewPassword string `json:"new_password"`
+}
+
+func buildAdminProfileMutationNativeHandler(logger *slog.Logger, profileStore adminProfileStore, adminSecret string) http.HandlerFunc {
+	return withRouteOwner("go-native", func(w http.ResponseWriter, r *http.Request) {
+		if profileStore == nil {
+			logger.Error("admin profile store unavailable")
+			WriteJSON(w, http.StatusServiceUnavailable, "个人资料服务不可用", map[string]string{"error_code": "ADMIN_STORE_UNAVAILABLE"})
+			return
+		}
+		subject, ok := adminJWTSubjectFromRequest(w, r, adminSecret)
+		if !ok {
+			return
+		}
+		switch {
+		case r.Method == http.MethodPut && (r.URL.Path == "/api/v1/admin/profile" || r.URL.Path == "/api/v1/admin/profile/"):
+			var payload adminProfileUpdatePayload
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				WriteJSON(w, http.StatusBadRequest, "请求体错误", map[string]string{"error_code": "INVALID_BODY"})
+				return
+			}
+			if payload.Email != nil {
+				email := strings.ToLower(strings.TrimSpace(*payload.Email))
+				if !isValidAdminUserEmail(email) {
+					WriteJSON(w, http.StatusBadRequest, "请输入有效的邮箱地址", map[string]string{"error_code": "INVALID_BODY"})
+					return
+				}
+				payload.Email = &email
+			}
+			if payload.PreferredHomePath != nil {
+				preferredHomePath := strings.TrimSpace(*payload.PreferredHomePath)
+				if preferredHomePath != "/admin/dashboard" && preferredHomePath != "/workspace" {
+					WriteJSON(w, http.StatusBadRequest, "默认首页配置无效", map[string]string{"error_code": "INVALID_BODY"})
+					return
+				}
+				payload.PreferredHomePath = &preferredHomePath
+			}
+			user, err := profileStore.UpdateProfileBySubject(r.Context(), adminstore.ProfileUpdateRequest{
+				Subject:           subject,
+				Email:             payload.Email,
+				FullName:          payload.FullName,
+				Phone:             payload.Phone,
+				Avatar:            payload.Avatar,
+				PreferredHomePath: payload.PreferredHomePath,
+				OperatorID:        optionalIntHeader(r, "x-auth-user-id"),
+				TenantID:          optionalStringHeader(r, "x-scope-tenant-id"),
+				TraceID:           optionalStringHeader(r, traceHeader),
+				IPAddress:         optionalString(firstRemoteAddr(r)),
+				UserAgent:         optionalString(r.UserAgent()),
+			})
+			writeAdminProfileMutationResult(w, logger, err, "个人信息更新成功", user)
+		case r.Method == http.MethodPut && r.URL.Path == "/api/v1/admin/profile/password":
+			var payload adminProfilePasswordPayload
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				WriteJSON(w, http.StatusBadRequest, "请求体错误", map[string]string{"error_code": "INVALID_BODY"})
+				return
+			}
+			if !isValidAdminUserPassword(payload.NewPassword) {
+				WriteJSON(w, http.StatusBadRequest, "密码必须包含字母和数字，长度 8-100 位", map[string]string{"error_code": "INVALID_BODY"})
+				return
+			}
+			err := profileStore.ChangeProfilePasswordBySubject(r.Context(), adminstore.ProfilePasswordChangeRequest{
+				Subject:     subject,
+				OldPassword: payload.OldPassword,
+				NewPassword: payload.NewPassword,
+				OperatorID:  optionalIntHeader(r, "x-auth-user-id"),
+				TenantID:    optionalStringHeader(r, "x-scope-tenant-id"),
+				TraceID:     optionalStringHeader(r, traceHeader),
+				IPAddress:   optionalString(firstRemoteAddr(r)),
+				UserAgent:   optionalString(r.UserAgent()),
+			})
+			writeAdminProfilePasswordResult(w, logger, err)
 		default:
+			WriteJSON(w, http.StatusNotFound, "资源不存在", map[string]string{"error_code": "NOT_FOUND"})
+		}
+	})
+}
+
+func writeAdminProfileMutationResult(w http.ResponseWriter, logger *slog.Logger, err error, successMessage string, user adminstore.UserItem) {
+	if errors.Is(err, authz.ErrUnauthorized) {
+		WriteJSON(w, http.StatusUnauthorized, "认证失败", map[string]string{"error_code": "UNAUTHORIZED"})
+		return
+	}
+	if errors.Is(err, adminstore.ErrUserConflict) {
+		WriteJSON(w, http.StatusBadRequest, "邮箱已存在", map[string]string{"error_code": "USER_CONFLICT"})
+		return
+	}
+	if err != nil {
+		logger.Error("profile mutation failed", "error", err.Error())
+		WriteJSON(w, http.StatusServiceUnavailable, "更新个人信息失败", map[string]string{"error_code": "ADMIN_STORE_UNAVAILABLE"})
+		return
+	}
+	WriteJSON(w, http.StatusOK, successMessage, user)
+}
+
+func writeAdminProfilePasswordResult(w http.ResponseWriter, logger *slog.Logger, err error) {
+	if errors.Is(err, authz.ErrUnauthorized) {
+		WriteJSON(w, http.StatusUnauthorized, "认证失败", map[string]string{"error_code": "UNAUTHORIZED"})
+		return
+	}
+	if errors.Is(err, adminstore.ErrUserPasswordMismatch) {
+		WriteJSON(w, http.StatusUnauthorized, "旧密码错误", map[string]string{"error_code": "INVALID_PASSWORD"})
+		return
+	}
+	if err != nil {
+		logger.Error("profile password change failed", "error", err.Error())
+		WriteJSON(w, http.StatusServiceUnavailable, "修改密码失败", map[string]string{"error_code": "ADMIN_STORE_UNAVAILABLE"})
+		return
+	}
+	WriteJSON(w, http.StatusOK, "密码修改成功，请重新登录", nil)
+}
+
+func buildAdminProfileReadNativeHandler(logger *slog.Logger, profileStore adminProfileStore, adminSecret string) http.HandlerFunc {
+	return withRouteOwner("go-native", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
 			WriteJSON(w, http.StatusMethodNotAllowed, "Method not allowed", nil)
 			return
 		}
-		buildAdminProxyHandler(logger, proxyClient, proxyInitErr, guard, "go-admin-proxy", "", r.Method)(w, r)
-	}
+		if profileStore == nil {
+			logger.Error("admin profile store unavailable")
+			WriteJSON(w, http.StatusServiceUnavailable, "用户数据服务不可用", map[string]string{"error_code": "ADMIN_STORE_UNAVAILABLE"})
+			return
+		}
+		subject, ok := adminJWTSubjectFromRequest(w, r, adminSecret)
+		if !ok {
+			return
+		}
+		user, err := profileStore.GetActiveUserBySubject(r.Context(), subject)
+		if err != nil {
+			if errors.Is(err, authz.ErrUnauthorized) {
+				w.Header().Set("WWW-Authenticate", "Bearer")
+				WriteJSON(w, http.StatusUnauthorized, "Token 已过期或无效", map[string]string{"error_code": "INVALID_TOKEN"})
+				return
+			}
+			logger.Error("get profile failed", "error", err.Error())
+			WriteJSON(w, http.StatusServiceUnavailable, "获取个人信息失败", map[string]string{"error_code": "ADMIN_STORE_UNAVAILABLE"})
+			return
+		}
+		WriteJSON(w, http.StatusOK, "获取个人信息成功", user)
+	})
 }
 
-func registerAdminStaticRoute(
-	mux *http.ServeMux,
-	logger *slog.Logger,
-	proxyClient *proxy.Client,
-	proxyInitErr error,
-	guard businessPermissionGuard,
-	path string,
-	permission string,
-	method string,
-) {
-	mux.HandleFunc(path, buildAdminProxyHandler(logger, proxyClient, proxyInitErr, guard, "go-admin-proxy", permission, method))
-}
-
-func buildAdminProxyHandler(
-	logger *slog.Logger,
-	proxyClient *proxy.Client,
-	proxyInitErr error,
-	guard businessPermissionGuard,
-	owner string,
-	permission string,
-	method string,
-) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		markRouteOwner(w, owner)
-		if r.Method != method {
+func buildAdminProfileStatsNativeHandler(logger *slog.Logger, statsStore adminProfileStatsStore, adminSecret string) http.HandlerFunc {
+	return withRouteOwner("go-native", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
 			WriteJSON(w, http.StatusMethodNotAllowed, "Method not allowed", nil)
 			return
 		}
-		if permission != "" && !guard.allowRequest(w, r, permission) {
+		if statsStore == nil {
+			logger.Error("admin profile stats store unavailable")
+			WriteJSON(w, http.StatusServiceUnavailable, "用户数据服务不可用", map[string]string{"error_code": "ADMIN_STORE_UNAVAILABLE"})
 			return
 		}
-		if proxyClient == nil {
-			logger.Error("admin proxy failed: client unavailable", "path", r.URL.Path, "init_error", proxyInitErr)
-			WriteJSON(w, http.StatusServiceUnavailable, "上游服务不可用", map[string]interface{}{
-				"error_code": "UPSTREAM_UNAVAILABLE",
-				"upstream":   "python-backend",
-			})
+		subject, ok := adminJWTSubjectFromRequest(w, r, adminSecret)
+		if !ok {
 			return
 		}
-		if err := proxyClient.Proxy(w, r); err != nil {
-			logger.Error("admin proxy request failed", "path", r.URL.Path, "error", err.Error())
-			WriteJSON(w, http.StatusBadGateway, "上游请求失败", map[string]interface{}{
-				"error_code": "UPSTREAM_REQUEST_FAILED",
-				"upstream":   "python-backend",
-				"message":    err.Error(),
-			})
+		stats, err := statsStore.GetProfileStatsBySubject(r.Context(), subject)
+		if err != nil {
+			if errors.Is(err, authz.ErrUnauthorized) {
+				w.Header().Set("WWW-Authenticate", "Bearer")
+				WriteJSON(w, http.StatusUnauthorized, "Token 已过期或无效", map[string]string{"error_code": "INVALID_TOKEN"})
+				return
+			}
+			logger.Error("get profile stats failed", "error", err.Error())
+			WriteJSON(w, http.StatusServiceUnavailable, "获取统计信息失败", map[string]string{"error_code": "ADMIN_STORE_UNAVAILABLE"})
 			return
 		}
+		WriteJSON(w, http.StatusOK, "获取统计信息成功", stats)
+	})
+}
+
+func adminJWTSubjectFromRequest(w http.ResponseWriter, r *http.Request, adminSecret string) (string, bool) {
+	token, hasToken := extractBearerToken(r.Header.Get("Authorization"))
+	if !hasToken {
+		w.Header().Set("WWW-Authenticate", "Bearer")
+		WriteJSON(w, http.StatusUnauthorized, "缺少认证凭证", map[string]string{"error_code": "UNAUTHORIZED"})
+		return "", false
 	}
+	claims, err := newAdminJWTVerifier(adminSecret).verify(token)
+	if err != nil {
+		w.Header().Set("WWW-Authenticate", "Bearer")
+		WriteJSON(w, http.StatusUnauthorized, "Token 已过期或无效", map[string]string{"error_code": "INVALID_TOKEN"})
+		return "", false
+	}
+	return claims.Subject, true
 }
 
 func writeGraphError(w http.ResponseWriter, status int, payload map[string]interface{}) {

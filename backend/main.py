@@ -4,11 +4,12 @@ GraphInsight Backend API
 """
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse
 from fastapi import Request, status
 import os
 from config import get_settings
+from api.route_registry import register_internal_capability_routes
+from admin.api.route_registry import register_internal_admin_capability_routes
 
 # 导入核心模块
 from core import (
@@ -18,6 +19,7 @@ from core import (
     RateLimitMiddleware,
     ErrorHandlingMiddleware,
     DEFAULT_RATE_LIMITS,
+    DEFAULT_RATE_LIMIT_EXEMPT_PATHS,
     AppException,
     ErrorCode,
     success_response,
@@ -122,18 +124,19 @@ app.add_middleware(ErrorHandlingMiddleware, debug=False)
 app.add_middleware(
     RateLimitMiddleware,
     default_limit=60,
-    path_limits=DEFAULT_RATE_LIMITS
+    path_limits=DEFAULT_RATE_LIMITS,
+    exempt_paths=DEFAULT_RATE_LIMIT_EXEMPT_PATHS,
 )
 
 # 4. 请求日志中间件（最后执行，记录所有请求）
 app.add_middleware(RequestLoggingMiddleware)
 
+
 # 创建 media 目录（如果不存在）
 MEDIA_DIR = os.path.join(os.path.dirname(__file__), settings.media_storage_path)
 os.makedirs(MEDIA_DIR, exist_ok=True)
 
-# 挂载静态文件服务
-app.mount("/api/media", StaticFiles(directory=MEDIA_DIR), name="media")
+print("Public Python business compatibility routes removed; Python exposes only /api/internal/* capability entrypoints.")
 
 
 @app.on_event("startup")
@@ -145,11 +148,13 @@ async def startup_event():
     print(f"Neo4j Config Source Mode: {getattr(settings, 'neo4j_config_source', 'env')}")
     print(f"API 文档: http://{settings.api_host}:{settings.api_port}/docs")
     print(f"Admin Config Mode: {BUILD_TAG} (ai_service upsert enabled)")
-    
+
     # 初始化管理系统数据库
     try:
         from admin.database import init_db
+        from admin.services import job_service
         init_db()
+        job_service.start_background_worker()
         print("管理系统数据库初始化成功")
     except Exception as e:
         print(f"警告: 管理系统数据库初始化失败: {str(e)}")
@@ -158,6 +163,11 @@ async def startup_event():
 @app.on_event("shutdown")
 async def shutdown_event():
     """应用关闭事件"""
+    try:
+        from admin.services import job_service
+        job_service.stop_background_worker()
+    except Exception as exc:
+        print(f"警告: 后台任务 worker 停止失败: {str(exc)}")
     print("GraphInsight API 关闭")
 
 
@@ -208,40 +218,10 @@ async def health_check():
         message="服务正常"
     )
 
+register_internal_capability_routes(app)
 
-# 导入并注册业务 API 路由
-from api.routes import query, node, expand, media, nl2cypher, client_logs, graph_build, doc_qa, documents
-app.include_router(query.router, prefix="/api", tags=["图谱查询"])
-app.include_router(node.router, prefix="/api", tags=["节点操作"])
-app.include_router(expand.router, prefix="/api", tags=["图谱扩展"])
-app.include_router(media.router, prefix="/api", tags=["媒体文件"])
-app.include_router(nl2cypher.router, prefix="/api", tags=["AI 查询"])
-app.include_router(client_logs.router, prefix="/api", tags=["客户端日志"])
-app.include_router(graph_build.router, prefix="/api", tags=["图谱构建"])
-app.include_router(doc_qa.router, prefix="/api", tags=["文档问答"])
-app.include_router(documents.router, prefix="/api", tags=["文档管理"])
-
-# 导入并注册新的标准化管理 API
-from admin.api.endpoints import (
-    auth as new_auth,
-    config as new_config,
-    jobs as new_jobs,
-    monitor as new_monitor,
-    logs as new_logs,
-    profile,
-    qa_traces,
-    rbac,
-    users,
-)
-app.include_router(new_auth.router, prefix="/api/v1", tags=["认证"])
-app.include_router(new_config.router, prefix="/api/v1", tags=["配置管理"])
-app.include_router(new_jobs.router, prefix="/api/v1", tags=["任务中心"])
-app.include_router(new_monitor.router, prefix="/api/v1", tags=["系统监控"])
-app.include_router(new_logs.router, prefix="/api/v1", tags=["日志管理"])
-app.include_router(profile.router, prefix="/api/v1", tags=["个人设置"])
-app.include_router(qa_traces.router, prefix="/api/v1", tags=["问答链路追踪"])
-app.include_router(rbac.router, prefix="/api/v1", tags=["权限管理"])
-app.include_router(users.router, prefix="/api/v1", tags=["用户管理"])
+register_internal_admin_capability_routes(app)
+print("Public Python admin compatibility routes removed; only /api/internal/jobs/wake remains.")
 
 # 注意：旧的管理路由已移除，管理后台只允许使用 admin.api.endpoints 下的标准化 API。
 
