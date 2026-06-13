@@ -27,7 +27,13 @@
 
 1. Go 网关：`http://127.0.0.1:8081`
 2. Python 能力层：`http://127.0.0.1:8001`
-3. 前端开发服务：`http://127.0.0.1:5173`
+3. 前端开发服务：默认 `http://127.0.0.1:5173`
+
+说明：
+
+1. `8081` 是默认 Go 端口，不保证一定可用。
+2. 如果本机已有其他服务占用 `8081`，统一启动脚本会自动为 GraphInsight Go 网关选择回退端口，例如 `18081`。
+3. 当前这次启动的真实地址以 `logs/dev/runtime.env` 为准。
 
 建议启动顺序：
 
@@ -35,11 +41,40 @@
 2. 再启动 Go `8081`
 3. 最后启动前端 `5173`
 
+Linux 本地开发推荐直接使用统一后端启动脚本：
+
+```bash
+scripts/dev-backend.sh up
+```
+
+脚本会检查并拉起开发 Neo4j，确保 `backend/.venv` 可用，然后依次启动 Python 能力层和 Go 网关。
+如果默认端口被其他非 GraphInsight 服务占用，脚本会自动切换到可用端口，并把实际地址写入 `logs/dev/runtime.env`。
+后端统一改造计划见 `backend/UNIFIED_BACKEND_PLAN.md`，当前后端职责冻结清单见 [docs/BACKEND_BOUNDARY_FINAL.md](docs/BACKEND_BOUNDARY_FINAL.md)。
+
+统一模式下，启动脚本会默认关闭 Python 公开业务入口：
+
+1. Python `8001` 继续运行，但主要作为 Go 的能力上游
+2. Python `/api/internal/*` 保留给 Go 编排
+3. Python 公开业务路由默认返回 `404`
+4. Python `/api/v1/admin/*` 公开管理路由默认返回 `404`
+5. Python 仅保留 `POST /api/internal/jobs/wake` 作为 Go 唤醒任务执行器的内部入口
+
+停止本轮脚本启动的 Go / Python 进程：
+
+```bash
+scripts/dev-backend.sh stop
+```
+
 说明：
 
 1. 前端默认应通过 Go 访问 `/api/*`
 2. Python 不再作为默认公共入口使用
 3. 管理后台与业务链路会逐步继续向 Go 收口
+4. 本地脚本启动后，联调、烟测和排障应优先读取 `logs/dev/runtime.env` 中的 `GO_BASE_URL` / `PYTHON_BASE_URL`
+5. 可直接运行 `backend/.venv/bin/python backend/tests/check_dev_runtime_defaults.py` 校验统一启动脚本写出的默认运行态是否仍是 `Go 外部入口 / Python 内部能力层`
+6. 浏览器联调或手工页面验收时，前端建议使用 `VITE_API_BASE_URL=same-origin`，让浏览器始终通过当前页面同源地址访问 Go
+7. 当前已验证可用的浏览器 QA 入口为 `http://localhost:1234`；这属于本地手工验收端口，不替代前端默认开发端口 `5173`
+8. Playwright 或其他 Node 侧检查如果需要直连后端，应显式使用 `ADMIN_BASE_URL` 或 `E2E_API_BASE_URL`，不要把它和浏览器里的 `same-origin` 混用
 
 ## 开发环境模式
 
@@ -53,11 +88,12 @@
 1. 当前仓库已提供面向开发联调的 `docker-compose.dev.yml`，用于启动 Neo4j
 2. 当前仓库内还没有现成的全栈 `docker-compose.yml`
 3. 所以现在的 Docker 模式不是“前后端全容器化”
-4. 详细说明见 [docs/DEVELOPMENT_ENVIRONMENT_MODES.md](/mnt/c/Users/AxTlz/projects/GraphInsight/docs/DEVELOPMENT_ENVIRONMENT_MODES.md)
-5. Neo4j 实例切换能力说明见 [docs/NEO4J_RUNTIME_SWITCHING.md](/mnt/c/Users/AxTlz/projects/GraphInsight/docs/NEO4J_RUNTIME_SWITCHING.md)
-6. Go/Python 后端迁移当前完成度见 [docs/GO_PYTHON_MIGRATION_STATUS.md](/mnt/c/Users/AxTlz/projects/GraphInsight/docs/GO_PYTHON_MIGRATION_STATUS.md)
-7. 开发期与交付期运行策略见 [docs/DELIVERY_RUNTIME_STRATEGY.md](/mnt/c/Users/AxTlz/projects/GraphInsight/docs/DELIVERY_RUNTIME_STRATEGY.md)
-8. 前端 E2E 推荐运行方式见 [docs/FRONTEND_E2E_RUNTIME_GUIDE.md](/mnt/c/Users/AxTlz/projects/GraphInsight/docs/FRONTEND_E2E_RUNTIME_GUIDE.md)
+4. 详细说明见 [docs/DEVELOPMENT_ENVIRONMENT_MODES.md](docs/DEVELOPMENT_ENVIRONMENT_MODES.md)
+5. Neo4j 实例切换能力说明见 [docs/NEO4J_RUNTIME_SWITCHING.md](docs/NEO4J_RUNTIME_SWITCHING.md)
+6. Go/Python 后端职责冻结清单见 [docs/BACKEND_BOUNDARY_FINAL.md](docs/BACKEND_BOUNDARY_FINAL.md)
+7. Go/Python 后端迁移当前完成度见 [docs/GO_PYTHON_MIGRATION_STATUS.md](docs/GO_PYTHON_MIGRATION_STATUS.md)
+8. 开发期与交付期运行策略见 [docs/DELIVERY_RUNTIME_STRATEGY.md](docs/DELIVERY_RUNTIME_STRATEGY.md)
+9. 前端 E2E 推荐运行方式见 [docs/FRONTEND_E2E_RUNTIME_GUIDE.md](docs/FRONTEND_E2E_RUNTIME_GUIDE.md)
 
 ---
 

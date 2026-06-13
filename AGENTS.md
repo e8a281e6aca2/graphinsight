@@ -50,7 +50,7 @@ npm run e2e:install
 npm run e2e
 ```
 
-前端 E2E 推荐使用项目脚本，它会优先检查后端健康，并在 WSL 下自动补齐 Playwright 运行库、解析 Windows 后端可访问地址：
+前端 E2E 推荐使用项目脚本，它会优先检查后端健康，并自动补齐 Playwright 运行库：
 
 ```bash
 ADMIN_TOKEN=*** ./frontend/tests/run_admin_e2e.sh
@@ -59,19 +59,20 @@ ADMIN_TOKEN=*** ./frontend/tests/run_admin_e2e.sh
 后端语法检查：
 
 ```bash
-backend/venv/Scripts/python.exe -m py_compile backend/core/observability.py backend/api/routes/doc_qa.py
+backend/.venv/bin/python -m py_compile backend/core/observability.py backend/api/routes/doc_qa.py
 ```
 
-后端接口烟测需要先启动服务，并确保 `http://127.0.0.1:8001` 可访问。
+后端接口烟测需要先启动统一后端，并确保 Go 网关可访问。默认入口以 `logs/dev/runtime.env` 中的 `GO_BASE_URL` 为准。
 
 ```bash
-powershell -ExecutionPolicy Bypass -File backend/tests/run_backend_preflight.ps1
-python backend/tests/run_backend_smoke_suite.py
-python backend/tests/verify_admin_authz.py
-python backend/tests/check_documents_soft_delete_flow.py
-python backend/tests/check_jobs_api.py
-python backend/tests/check_job_reindex_and_observability.py
-python backend/tests/check_qa_traces_api.py
+scripts/dev-backend.sh up
+backend/.venv/bin/python backend/tests/run_unified_boundary_guards.py
+backend/.venv/bin/python backend/tests/run_backend_smoke_suite.py
+backend/.venv/bin/python backend/tests/verify_admin_authz.py
+backend/.venv/bin/python backend/tests/check_documents_soft_delete_flow.py
+backend/.venv/bin/python backend/tests/check_jobs_api.py
+backend/.venv/bin/python backend/tests/check_job_reindex_and_observability.py
+backend/.venv/bin/python backend/tests/check_qa_traces_api.py
 ```
 
 ## Git 提交规范

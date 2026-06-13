@@ -66,6 +66,10 @@ dist-ssr/
 # Media files (user uploaded content)
 backend/media/*
 !backend/media/README.md
+go-backend/documents/
+
+# Runtime/test artifacts
+artifacts/
 
 # Temporary files
 *.tmp
@@ -78,6 +82,14 @@ tmp_*.ps1
 # OS files
 Thumbs.db
 desktop.ini
-docs/
+docs/*
+!docs/BACKEND_BOUNDARY_FINAL.md
+!docs/ENTERPRISE_BACKEND_API_SPEC.md
+!docs/ENTERPRISE_IMPLEMENTATION_BACKLOG.md
+!docs/ENTERPRISE_OPERATIONS_RUNBOOK.md
+!docs/ENTERPRISE_PRE_RELEASE_SMOKE_CHECKLIST.md
+!docs/ENTERPRISE_ROADMAP_CHECKLIST.md
+!docs/GO_PYTHON_MIGRATION_STATUS.md
+docs/study/
 .claude/
 .codex/
