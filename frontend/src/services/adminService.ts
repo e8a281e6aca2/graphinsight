@@ -81,7 +81,9 @@ apiClient.interceptors.request.use(
 apiClient.interceptors.response.use(
   (response) => response,
   (error: AxiosError) => {
-    if (error.response?.status === 401) {
+    const requestUrl = error.config?.url || '';
+    const isLoginRequest = requestUrl.includes('/api/v1/admin/auth/login');
+    if (error.response?.status === 401 && !isLoginRequest) {
       // Token 过期或无效，清除并跳转到登录页
       clearAdminSession();
       window.location.href = '/admin/login';

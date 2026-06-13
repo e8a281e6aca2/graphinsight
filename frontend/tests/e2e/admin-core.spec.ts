@@ -98,6 +98,21 @@ test.describe('Admin Console Core Flow', () => {
     await expect(page.getByText('系统健康状态')).toBeVisible();
   });
 
+  test('invalid password stays on login page with an error message', async ({ page }) => {
+    await loginFromUI();
+    await page.goto('/admin/login');
+    await page.getByLabel('邮箱').fill(adminEmail);
+    await page.getByLabel('密码').fill('DefinitelyWrongPassword123!');
+    const loginResponsePromise = page.waitForResponse((response) =>
+      response.url().includes('/api/v1/admin/auth/login')
+    );
+    await page.getByRole('button', { name: '登录控制台' }).click();
+    const loginResponse = await loginResponsePromise;
+    expect(loginResponse.status()).toBeGreaterThanOrEqual(400);
+    await expect(page).toHaveURL(/\/admin\/login$/);
+    await expect(page.getByRole('alert')).toBeVisible();
+  });
+
   test('admin preferred home redirects to workspace after re-login', async ({ page }) => {
     test.skip(!adminPassword, '默认首页偏好测试需要 ADMIN_PASSWORD / E2E_ADMIN_PASSWORD');
 

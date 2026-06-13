@@ -27,8 +27,16 @@ const AdminAuthLayout: React.FC<AdminAuthLayoutProps> = ({ title, subtitle, chil
             zIndex: 1,
           }}
         >
-          <Box sx={{ maxWidth: 460, width: '100%' }}>
-            <Typography variant="h3" sx={{ mb: 1 }}>
+          <Box sx={{ width: '100%', maxWidth: { xs: 460, md: 760 } }}>
+            <Typography
+              variant="h3"
+              sx={{
+                mb: 1,
+                whiteSpace: 'nowrap',
+                fontSize: { xs: '2.25rem', sm: '3rem', md: '4rem' },
+                lineHeight: 1.08,
+              }}
+            >
               {title}
             </Typography>
             {subtitle && (
