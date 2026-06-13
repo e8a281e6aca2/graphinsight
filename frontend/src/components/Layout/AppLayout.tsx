@@ -15,27 +15,28 @@ interface AppLayoutProps {
 }
 
 export function AppLayout({ queryPanel, graphCanvas, detailPanel, onExportClick }: AppLayoutProps) {
-  const [leftPanelWidth, setLeftPanelWidth] = useState(350);
-  const [rightPanelWidth, setRightPanelWidth] = useState(400);
+  const [leftPanelWidth, setLeftPanelWidth] = useState(360);
+  const [rightPanelWidth, setRightPanelWidth] = useState(360);
   const [isLeftCollapsed, setIsLeftCollapsed] = useState(false);
   const [isRightCollapsed] = useState(false); // 暂时不使用右侧折叠功能
 
-  const minPanelWidth = 250;
-  const maxPanelWidth = 600;
+  const minPanelWidth = 300;
+  const maxPanelWidth = 460;
 
   return (
-    <Box sx={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>
+    <Box sx={{ display: 'flex', flexDirection: 'column', height: '100vh', minWidth: 0, overflow: 'hidden' }}>
       {/* 顶部工具栏 */}
       <TopBar onExportClick={onExportClick} />
 
       {/* 主内容区域 */}
-      <Box sx={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
+      <Box sx={{ display: 'flex', flex: 1, minHeight: 0, minWidth: 0, overflow: 'hidden' }}>
         {/* 左侧面板 - 问答面板 */}
         <Box
           sx={{
             width: isLeftCollapsed ? 0 : leftPanelWidth,
             minWidth: isLeftCollapsed ? 0 : minPanelWidth,
             maxWidth: isLeftCollapsed ? 0 : maxPanelWidth,
+            flexShrink: 0,
             transition: 'width 0.2s ease',
             overflow: 'hidden',
             display: 'flex',
@@ -43,6 +44,19 @@ export function AppLayout({ queryPanel, graphCanvas, detailPanel, onExportClick 
             bgcolor: 'background.paper',
             borderRight: 1,
             borderColor: 'divider',
+            '@media (max-width: 1100px)': {
+              width: isLeftCollapsed ? 0 : 320,
+              minWidth: isLeftCollapsed ? 0 : 320,
+            },
+            '@media (max-width: 860px)': {
+              display: isLeftCollapsed ? 'none' : 'flex',
+              position: 'absolute',
+              inset: '64px auto 40px 0',
+              zIndex: 20,
+              width: 340,
+              minWidth: 340,
+              boxShadow: 4,
+            },
           }}
         >
           {queryPanel}
@@ -53,6 +67,7 @@ export function AppLayout({ queryPanel, graphCanvas, detailPanel, onExportClick 
           <Box
             sx={{
               width: 4,
+              flexShrink: 0,
               cursor: 'col-resize',
               bgcolor: 'divider',
               '&:hover': {
@@ -83,7 +98,7 @@ export function AppLayout({ queryPanel, graphCanvas, detailPanel, onExportClick 
           />
         )}
 
-        <Box sx={{ position: 'relative' }}>
+        <Box sx={{ position: 'relative', flexShrink: 0 }}>
           <Tooltip title={isLeftCollapsed ? '展开问答面板' : '折叠问答面板'}>
             <IconButton
               size="small"
@@ -109,6 +124,8 @@ export function AppLayout({ queryPanel, graphCanvas, detailPanel, onExportClick 
         <Box
           sx={{
             flex: 1,
+            minWidth: 0,
+            minHeight: 0,
             display: 'flex',
             flexDirection: 'column',
             overflow: 'hidden',
@@ -123,6 +140,7 @@ export function AppLayout({ queryPanel, graphCanvas, detailPanel, onExportClick 
           <Box
             sx={{
               width: 4,
+              flexShrink: 0,
               cursor: 'col-resize',
               bgcolor: 'divider',
               '&:hover': {
@@ -159,6 +177,7 @@ export function AppLayout({ queryPanel, graphCanvas, detailPanel, onExportClick 
             width: isRightCollapsed ? 0 : rightPanelWidth,
             minWidth: isRightCollapsed ? 0 : minPanelWidth,
             maxWidth: isRightCollapsed ? 0 : maxPanelWidth,
+            flexShrink: 0,
             transition: 'width 0.2s ease',
             overflow: 'hidden',
             display: 'flex',
@@ -166,6 +185,9 @@ export function AppLayout({ queryPanel, graphCanvas, detailPanel, onExportClick 
             bgcolor: 'background.paper',
             borderLeft: 1,
             borderColor: 'divider',
+            '@media (max-width: 1280px)': {
+              display: 'none',
+            },
           }}
         >
           {detailPanel}

@@ -20,23 +20,27 @@ export function TopBar({ onExportClick }: TopBarProps) {
     <AppBar position="static" elevation={1}>
       <Toolbar>
         {/* Logo 和标题 */}
-        <Box sx={{ display: 'flex', alignItems: 'center', flexGrow: 1 }}>
-          <img 
-            src={logoSvg} 
-            alt="GraphInsight Logo" 
+        <Box sx={{ display: 'flex', alignItems: 'center', flexGrow: 1, minWidth: 0 }}>
+          <img
+            src={logoSvg}
+            alt="GraphInsight Logo"
             style={{ height: 32, marginRight: 8 }}
           />
-          <Typography variant="h6" component="div" sx={{ fontWeight: 600 }}>
+          <Typography variant="h6" component="div" sx={{ fontWeight: 600, flexShrink: 0 }}>
             GraphInsight
           </Typography>
           <Typography
             variant="body2"
-            sx={{ 
-              ml: 1, 
-              opacity: 0.8, 
+            sx={{
+              ml: 1.5,
+              opacity: 0.8,
               display: { xs: 'none', md: 'block' },
               fontSize: '0.875rem',
-              fontWeight: 400
+              fontWeight: 400,
+              minWidth: 0,
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
             }}
           >
             农业多模态知识图谱可视化分析系统
@@ -44,7 +48,7 @@ export function TopBar({ onExportClick }: TopBarProps) {
         </Box>
 
         {/* 操作按钮 */}
-        <Box sx={{ display: 'flex', gap: 1 }}>
+        <Box sx={{ display: 'flex', gap: 1, flexShrink: 0 }}>
           <Tooltip title="导出">
             <IconButton color="inherit" size="large" onClick={onExportClick}>
               <ExportIcon />

@@ -250,6 +250,7 @@ export function DocumentPanel() {
         display: 'flex',
         flexDirection: 'column',
         overflow: 'hidden',
+        minWidth: 0,
         bgcolor: theme.palette.background.default,
         backgroundImage:
           theme.palette.mode === 'dark'
@@ -268,7 +269,7 @@ export function DocumentPanel() {
 
       <Divider />
 
-      <Box sx={{ px: 3, py: 2, overflow: 'auto', flex: 1 }}>
+      <Box sx={{ px: 3, py: 2, overflowY: 'auto', overflowX: 'hidden', flex: 1, minWidth: 0 }}>
         <Box
           onDrop={handleDrop}
           onDragOver={(event) => event.preventDefault()}
@@ -281,10 +282,11 @@ export function DocumentPanel() {
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'space-between',
+            flexWrap: 'wrap',
             gap: 2,
           })}
         >
-          <Box>
+          <Box sx={{ minWidth: 0, flex: '1 1 320px' }}>
             <Typography variant="subtitle2">拖拽上传文档</Typography>
             <Typography variant="caption" color="text.secondary">
               支持 pdf / docx / txt / md / csv / json
@@ -300,7 +302,7 @@ export function DocumentPanel() {
               </Typography>
             )}
           </Box>
-          <Box>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
             <Button
               variant="contained"
               size="small"
@@ -316,7 +318,6 @@ export function DocumentPanel() {
               startIcon={<DeleteSweepIcon fontSize="small" />}
               disabled={clearingAll}
               onClick={handleClearAll}
-              sx={{ ml: 1 }}
             >
               {clearingAll ? '清空中...' : '清空知识库'}
             </Button>
@@ -391,6 +392,7 @@ export function DocumentPanel() {
                 display: 'flex',
                 alignItems: 'center',
                 gap: 1.5,
+                minWidth: 0,
               })}
             >
               <Box
@@ -406,8 +408,18 @@ export function DocumentPanel() {
               >
                 <DescriptionIcon fontSize="small" />
               </Box>
-              <Box sx={{ flex: 1 }}>
-                <Typography variant="subtitle2">{item.name}</Typography>
+              <Box sx={{ flex: 1, minWidth: 0 }}>
+                <Typography
+                  variant="subtitle2"
+                  sx={{
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                  }}
+                  title={item.name}
+                >
+                  {item.name}
+                </Typography>
                 <Typography variant="caption" color="text.secondary">
                   {item.ext.toUpperCase().replace('.', '')} · {sizeKb} KB
                 </Typography>
@@ -459,11 +471,26 @@ export function DocumentPanel() {
                     display: 'flex',
                     alignItems: 'center',
                     gap: 1.5,
+                    minWidth: 0,
                   })}
                 >
-                  <Box sx={{ flex: 1 }}>
-                    <Typography variant="subtitle2">{item.name}</Typography>
-                    <Typography variant="caption" color="text.secondary">
+                  <Box sx={{ flex: 1, minWidth: 0 }}>
+                    <Typography
+                      variant="subtitle2"
+                      sx={{
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                      }}
+                      title={item.name}
+                    >
+                      {item.name}
+                    </Typography>
+                    <Typography
+                      variant="caption"
+                      color="text.secondary"
+                      sx={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                    >
                       {item.ext.toUpperCase().replace('.', '')} · {sizeKb} KB · 剩余 {formatRemainingTime(item.remaining_ms)}
                     </Typography>
                   </Box>

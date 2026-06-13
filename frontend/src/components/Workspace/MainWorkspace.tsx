@@ -1,9 +1,25 @@
+import { lazy, Suspense } from 'react';
 import { Box, Tab, Tabs } from '@mui/material';
 import { Article as ArticleIcon, Hub as HubIcon } from '@mui/icons-material';
-import { GraphCanvas } from '../GraphCanvas/GraphCanvas';
 import { DocumentPanel } from './DocumentPanel';
 import { useGraphStore } from '../../store/graphStore';
 import type { RendererAPI } from '../../renderers/core/types';
+
+const GraphCanvas = lazy(() => import('../GraphCanvas/GraphCanvas').then((mod) => ({ default: mod.GraphCanvas })));
+
+const WorkspaceLoading = ({ label }: { label: string }) => (
+  <Box
+    sx={{
+      height: '100%',
+      display: 'grid',
+      placeItems: 'center',
+      color: 'text.secondary',
+      bgcolor: 'background.default',
+    }}
+  >
+    {label}
+  </Box>
+);
 
 interface MainWorkspaceProps {
   rendererRef: React.RefObject<RendererAPI | null>;
@@ -15,8 +31,18 @@ export function MainWorkspace({ rendererRef, onGroupingUpdate }: MainWorkspacePr
   const setWorkspaceTab = useGraphStore((state) => state.setWorkspaceTab);
 
   return (
-    <Box sx={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-      <Box sx={{ px: 2, pt: 1.5, pb: 0.5, bgcolor: 'background.paper', borderBottom: 1, borderColor: 'divider' }}>
+    <Box sx={{ display: 'flex', flexDirection: 'column', height: '100%', minWidth: 0, overflow: 'hidden' }}>
+      <Box
+        sx={{
+          px: 2,
+          pt: 1.5,
+          pb: 0.5,
+          bgcolor: 'background.paper',
+          borderBottom: 1,
+          borderColor: 'divider',
+          flexShrink: 0,
+        }}
+      >
         <Tabs
           value={activeTab}
           onChange={(_, value) => setWorkspaceTab(value as 'document' | 'graph')}
@@ -38,7 +64,7 @@ export function MainWorkspace({ rendererRef, onGroupingUpdate }: MainWorkspacePr
         </Tabs>
       </Box>
 
-      <Box sx={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
+      <Box sx={{ flex: 1, minHeight: 0, minWidth: 0, position: 'relative', overflow: 'hidden' }}>
         <Box
           sx={{
             position: 'absolute',
@@ -61,7 +87,11 @@ export function MainWorkspace({ rendererRef, onGroupingUpdate }: MainWorkspacePr
             transition: 'opacity 0.2s ease',
           }}
         >
-          <GraphCanvas rendererRef={rendererRef} onGroupingUpdate={onGroupingUpdate} />
+          {activeTab === 'graph' && (
+            <Suspense fallback={<WorkspaceLoading label="正在加载图谱画布" />}>
+              <GraphCanvas rendererRef={rendererRef} onGroupingUpdate={onGroupingUpdate} />
+            </Suspense>
+          )}
         </Box>
       </Box>
     </Box>

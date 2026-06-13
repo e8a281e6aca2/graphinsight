@@ -25,29 +25,29 @@ export const adminTheme = createTheme({
     },
   },
   typography: {
-    fontFamily: '"Work Sans", "Segoe UI", sans-serif',
+    fontFamily: '"Work Sans", "Noto Sans SC", "Microsoft YaHei", "PingFang SC", "Segoe UI", sans-serif',
     h1: {
-      fontFamily: '"Space Grotesk", "Work Sans", sans-serif',
+      fontFamily: '"Space Grotesk", "Noto Sans SC", "Microsoft YaHei", "PingFang SC", sans-serif',
       fontWeight: 700,
     },
     h2: {
-      fontFamily: '"Space Grotesk", "Work Sans", sans-serif',
+      fontFamily: '"Space Grotesk", "Noto Sans SC", "Microsoft YaHei", "PingFang SC", sans-serif',
       fontWeight: 700,
     },
     h3: {
-      fontFamily: '"Space Grotesk", "Work Sans", sans-serif',
+      fontFamily: '"Space Grotesk", "Noto Sans SC", "Microsoft YaHei", "PingFang SC", sans-serif',
       fontWeight: 600,
     },
     h4: {
-      fontFamily: '"Space Grotesk", "Work Sans", sans-serif',
+      fontFamily: '"Space Grotesk", "Noto Sans SC", "Microsoft YaHei", "PingFang SC", sans-serif',
       fontWeight: 600,
     },
     h5: {
-      fontFamily: '"Space Grotesk", "Work Sans", sans-serif',
+      fontFamily: '"Space Grotesk", "Noto Sans SC", "Microsoft YaHei", "PingFang SC", sans-serif',
       fontWeight: 600,
     },
     h6: {
-      fontFamily: '"Space Grotesk", "Work Sans", sans-serif',
+      fontFamily: '"Space Grotesk", "Noto Sans SC", "Microsoft YaHei", "PingFang SC", sans-serif',
       fontWeight: 600,
     },
   },

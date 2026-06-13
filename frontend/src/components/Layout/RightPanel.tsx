@@ -64,6 +64,7 @@ export const RightPanel: React.FC<RightPanelProps> = ({ rendererRef, onLayoutCha
         display: 'flex',
         flexDirection: 'column',
         overflow: 'hidden',
+        minWidth: 0,
       }}
     >
       <Paper
@@ -85,6 +86,7 @@ export const RightPanel: React.FC<RightPanelProps> = ({ rendererRef, onLayoutCha
               minHeight: 48,
               fontSize: '0.75rem',
               fontWeight: 500,
+              minWidth: 0,
             },
           }}
         >
@@ -115,7 +117,7 @@ export const RightPanel: React.FC<RightPanelProps> = ({ rendererRef, onLayoutCha
         </Tabs>
       </Paper>
 
-      <Box sx={{ flex: 1, overflow: 'hidden' }}>
+      <Box sx={{ flex: 1, minHeight: 0, minWidth: 0, overflow: 'hidden' }}>
         <TabPanel value={tabValue} index={0}>
           <DetailPanel />
         </TabPanel>

@@ -2,6 +2,7 @@ import { authApi } from './adminService';
 import { clearAdminSession, getAdminToken, syncPreferredAdminHome } from '../utils/adminAuth';
 
 const SESSION_CACHE_TTL_MS = 5000;
+const SESSION_VERIFY_TIMEOUT_MS = 8000;
 
 let inflightVerifyPromise: Promise<boolean> | null = null;
 let cachedToken: string | null = null;
@@ -29,7 +30,10 @@ export async function verifyAdminSession(): Promise<boolean> {
 
   inflightVerifyPromise = (async () => {
     try {
-      const user = await authApi.getCurrentUser();
+      const timeout = new Promise<never>((_, reject) => {
+        window.setTimeout(() => reject(new Error('SESSION_VERIFY_TIMEOUT')), SESSION_VERIFY_TIMEOUT_MS);
+      });
+      const user = await Promise.race([authApi.getCurrentUser(), timeout]);
       syncPreferredAdminHome(user?.preferred_home_path);
       cachedToken = token;
       cachedVerifiedAt = Date.now();

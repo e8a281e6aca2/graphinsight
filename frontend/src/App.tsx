@@ -1,11 +1,11 @@
-import { lazy, Suspense, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import type { LayoutConfig, RendererAPI } from './renderers/core/types';
 import { useAdminSession } from './hooks/useAdminSession';
 import { getPreferredAdminHome } from './utils/adminAuth';
+import { AppLayout } from './components/Layout/AppLayout';
 
-const AppLayout = lazy(() => import('./components/Layout/AppLayout').then((mod) => ({ default: mod.AppLayout })));
 const DocChatPanel = lazy(() => import('./components/ChatPanel/DocChatPanel').then((mod) => ({ default: mod.DocChatPanel })));
 const MainWorkspace = lazy(() => import('./components/Workspace/MainWorkspace').then((mod) => ({ default: mod.MainWorkspace })));
 const RightPanel = lazy(() => import('./components/Layout/RightPanel').then((mod) => ({ default: mod.RightPanel })));
@@ -25,21 +25,87 @@ const UsersPage = lazy(() => import('./pages/Admin/UsersPage'));
 const JobsPage = lazy(() => import('./pages/Admin/JobsPage'));
 const QATracesPage = lazy(() => import('./pages/Admin/QATracesPage'));
 
-const RouteLoading = () => (
+const PanelLoading = ({ label }: { label: string }) => (
   <div
     style={{
-      minHeight: '100vh',
+      height: '100%',
       display: 'grid',
       placeItems: 'center',
-      background: 'linear-gradient(135deg, #f8fafc 0%, #eef2ff 100%)',
-      color: '#334155',
+      color: '#64748b',
       fontFamily: 'ui-sans-serif, system-ui, sans-serif',
-      letterSpacing: '0.02em',
+      fontSize: 14,
+      background: '#f8fafc',
     }}
   >
-    Loading GraphInsight...
+    {label}
   </div>
 );
+
+const RouteLoading = () => {
+  const [isSlow, setIsSlow] = useState(false);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setIsSlow(true), 8000);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  return (
+    <div
+      style={{
+        minHeight: '100vh',
+        display: 'grid',
+        placeItems: 'center',
+        background: 'linear-gradient(135deg, #f8fafc 0%, #eef2ff 100%)',
+        color: '#334155',
+        fontFamily: 'ui-sans-serif, system-ui, sans-serif',
+      }}
+    >
+      <div style={{ textAlign: 'center', display: 'grid', gap: 16 }}>
+        <div style={{ fontSize: 18, fontWeight: 600 }}>GraphInsight 正在加载</div>
+        {isSlow && (
+          <div style={{ display: 'grid', gap: 14 }}>
+            <div style={{ color: '#64748b', fontSize: 14 }}>
+              加载时间过长，可能是浏览器缓存或网络请求没有完成。
+            </div>
+            <div style={{ display: 'flex', gap: 10, justifyContent: 'center' }}>
+              <button
+                type="button"
+                onClick={() => window.location.reload()}
+                style={{
+                  border: '1px solid #2563eb',
+                  background: '#2563eb',
+                  color: '#fff',
+                  borderRadius: 6,
+                  padding: '8px 14px',
+                  cursor: 'pointer',
+                }}
+              >
+                刷新
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  window.localStorage.removeItem('admin_token');
+                  window.location.assign('/admin/login');
+                }}
+                style={{
+                  border: '1px solid #cbd5e1',
+                  background: '#fff',
+                  color: '#334155',
+                  borderRadius: 6,
+                  padding: '8px 14px',
+                  cursor: 'pointer',
+                }}
+              >
+                回到登录
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
 
 function MainApp() {
   const [exportDialogOpen, setExportDialogOpen] = useState(false);
@@ -63,22 +129,36 @@ function MainApp() {
   return (
     <>
       <AppLayout
-        queryPanel={<DocChatPanel />}
-        graphCanvas={<MainWorkspace rendererRef={rendererRef} onGroupingUpdate={handleGroupingChange} />}
+        queryPanel={
+          <Suspense fallback={<PanelLoading label="正在加载问答面板" />}>
+            <DocChatPanel />
+          </Suspense>
+        }
+        graphCanvas={
+          <Suspense fallback={<PanelLoading label="正在加载工作台" />}>
+            <MainWorkspace rendererRef={rendererRef} onGroupingUpdate={handleGroupingChange} />
+          </Suspense>
+        }
         detailPanel={
-          <RightPanel
-            rendererRef={rendererRef}
-            onLayoutChange={handleLayoutChange}
-            onGroupingChange={handleGroupingChange}
-          />
+          <Suspense fallback={<PanelLoading label="正在加载详情面板" />}>
+            <RightPanel
+              rendererRef={rendererRef}
+              onLayoutChange={handleLayoutChange}
+              onGroupingChange={handleGroupingChange}
+            />
+          </Suspense>
         }
         onExportClick={() => setExportDialogOpen(true)}
       />
-      <ExportDialog
-        open={exportDialogOpen}
-        onClose={() => setExportDialogOpen(false)}
-        rendererRef={rendererRef}
-      />
+      {exportDialogOpen && (
+        <Suspense fallback={null}>
+          <ExportDialog
+            open={exportDialogOpen}
+            onClose={() => setExportDialogOpen(false)}
+            rendererRef={rendererRef}
+          />
+        </Suspense>
+      )}
     </>
   );
 }

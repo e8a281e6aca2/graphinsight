@@ -525,6 +525,7 @@ export function DocChatPanel() {
         flexDirection: 'column',
         height: '100%',
         overflow: 'hidden',
+        minWidth: 0,
         bgcolor: 'background.paper',
         fontFamily: '"Space Grotesk", "Noto Sans SC", sans-serif',
         borderRight: `1px solid ${theme.palette.divider}`,
@@ -545,8 +546,8 @@ export function DocChatPanel() {
               : 'radial-gradient(120% 120% at 15% 0%, rgba(56, 189, 248, 0.18) 0%, rgba(248, 250, 252, 0) 55%), radial-gradient(120% 120% at 100% 20%, rgba(34, 197, 94, 0.12) 0%, rgba(248, 250, 252, 0) 45%)',
         })}
       >
-        <Box sx={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 2 }}>
-          <Box>
+        <Box sx={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 1.5 }}>
+          <Box sx={{ minWidth: 0 }}>
             <Typography variant="h6" fontWeight={700} sx={{ letterSpacing: 0.3 }}>
               文档问答
             </Typography>
@@ -560,12 +561,13 @@ export function DocChatPanel() {
             startIcon={<AutoGraphIcon />}
             onClick={handleBuildGraph}
             disabled={buildStatus === 'running'}
+            sx={{ flexShrink: 0 }}
           >
             {buildLabel}
           </Button>
         </Box>
 
-        <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, mt: 1.5 }}>
+        <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75, mt: 1.5 }}>
           <Chip
             icon={<MenuBookIcon />}
             label={recentUploadedDocIds.length > 0 ? `范围：最近上传 ${recentUploadedDocIds.length} 个文档` : '范围：全库文档'}
@@ -598,7 +600,7 @@ export function DocChatPanel() {
               label={prompt}
               size="small"
               onClick={() => handlePromptClick(prompt)}
-              sx={{ bgcolor: 'background.paper' }}
+              sx={{ bgcolor: 'background.paper', maxWidth: '100%' }}
             />
           ))}
         </Box>
@@ -614,6 +616,7 @@ export function DocChatPanel() {
           flexDirection: 'column',
           gap: 2,
           bgcolor: theme.palette.background.default,
+          minWidth: 0,
           backgroundImage:
             theme.palette.mode === 'dark'
               ? 'radial-gradient(circle at top left, rgba(56, 189, 248, 0.08), transparent 60%), radial-gradient(circle at 80% 30%, rgba(34, 197, 94, 0.06), transparent 55%)'
@@ -635,6 +638,7 @@ export function DocChatPanel() {
               <Box
                 sx={(theme) => ({
                   maxWidth: '85%',
+                  minWidth: 0,
                   px: 2,
                   py: 1.5,
                   borderRadius: 2.5,
@@ -649,7 +653,14 @@ export function DocChatPanel() {
                     {message.content}
                   </Typography>
                 ) : (
-                  <Box sx={{ typography: 'body2', lineHeight: 1.6 }}>
+                  <Box
+                    sx={{
+                      typography: 'body2',
+                      lineHeight: 1.6,
+                      overflowWrap: 'anywhere',
+                      '& p': { my: 0.5 },
+                    }}
+                  >
                     <ReactMarkdown remarkPlugins={[remarkGfm]}>
                       {message.content}
                     </ReactMarkdown>
@@ -684,7 +695,7 @@ export function DocChatPanel() {
               </Box>
 
               {!isUser && message.citations && message.citations.length > 0 && (
-                <Box sx={{ width: '100%', maxWidth: '90%' }}>
+                <Box sx={{ width: '100%', maxWidth: '90%', minWidth: 0 }}>
                   <Typography
                     variant="caption"
                     component="div"
@@ -704,6 +715,7 @@ export function DocChatPanel() {
                         }}
                         sx={(theme) => ({
                           textAlign: 'left',
+                          width: '100%',
                           border: `1px solid ${theme.palette.divider}`,
                           borderRadius: 1.5,
                           p: 1.25,
@@ -781,16 +793,29 @@ export function DocChatPanel() {
             },
           }}
         />
-        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
-            <Chip label="回答必带引用" size="small" variant="outlined" color="primary" />
+        <Box sx={{ display: 'grid', gridTemplateColumns: '1fr auto', alignItems: 'end', gap: 1 }}>
+          <Box
+            sx={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+              gap: 1,
+              minWidth: 0,
+            }}
+          >
+            <Chip
+              label="回答必带引用"
+              size="small"
+              variant="outlined"
+              color="primary"
+              sx={{ justifyContent: 'center' }}
+            />
             <TextField
               select
               size="small"
               label="问答档位"
               value={qaReasoningProfile}
               onChange={(e) => setQaReasoningProfile(e.target.value as ReasoningProfile)}
-              sx={{ minWidth: 120 }}
+              sx={{ minWidth: 0 }}
             >
               {REASONING_PROFILE_OPTIONS.map((option) => (
                 <MenuItem key={option.value} value={option.value}>
@@ -804,7 +829,7 @@ export function DocChatPanel() {
               label="调研档位"
               value={deepResearchReasoningProfile}
               onChange={(e) => setDeepResearchReasoningProfile(e.target.value as ReasoningProfile)}
-              sx={{ minWidth: 120 }}
+              sx={{ minWidth: 0 }}
             >
               {REASONING_PROFILE_OPTIONS.map((option) => (
                 <MenuItem key={option.value} value={option.value}>
@@ -817,6 +842,7 @@ export function DocChatPanel() {
               variant="outlined"
               onClick={handleDeepResearch}
               disabled={!input.trim() || isTyping}
+              sx={{ minWidth: 0 }}
             >
               深度调研
             </Button>
