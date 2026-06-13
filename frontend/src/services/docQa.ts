@@ -16,6 +16,8 @@ export interface DocQaResponse {
   citations: DocQaCitation[];
 }
 
+export type ReasoningProfile = 'fast' | 'balanced' | 'deep';
+
 export interface DocDeepResearchResponse {
   question: string;
   summary: string;
@@ -38,23 +40,25 @@ export interface DocDeepResearchResponse {
   };
 }
 
-export async function askDocQa(question: string, topK = 2) {
+export async function askDocQa(question: string, topK = 2, reasoningProfile: ReasoningProfile = 'balanced') {
   const response = await api.post('/api/docqa', {
     question,
     top_k: topK,
     require_citation: true,
+    reasoning_profile: reasoningProfile,
   });
   return response.data?.data as DocQaResponse;
 }
 
 export async function askDocDeepResearch(
   question: string,
-  options?: { topK?: number; maxSubQuestions?: number }
+  options?: { topK?: number; maxSubQuestions?: number; reasoningProfile?: ReasoningProfile }
 ) {
   const response = await api.post('/api/docqa/deep-research', {
     question,
     top_k: options?.topK ?? 8,
     max_sub_questions: options?.maxSubQuestions ?? 4,
+    reasoning_profile: options?.reasoningProfile ?? 'deep',
   });
   return response.data?.data as DocDeepResearchResponse;
 }

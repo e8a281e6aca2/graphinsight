@@ -1,6 +1,7 @@
 param(
     [string]$AdminBaseUrl = $(if ($env:ADMIN_BASE_URL) { $env:ADMIN_BASE_URL } else { "http://127.0.0.1:8081" }),
     [string]$E2EBaseUrl = $(if ($env:E2E_BASE_URL) { $env:E2E_BASE_URL } else { "http://127.0.0.1:4173" }),
+    [string]$BrowserApiBaseUrl = $(if ($env:VITE_API_BASE_URL) { $env:VITE_API_BASE_URL } else { "same-origin" }),
     [string]$AdminEmail = $(if ($env:E2E_ADMIN_EMAIL) { $env:E2E_ADMIN_EMAIL } elseif ($env:ADMIN_EMAIL) { $env:ADMIN_EMAIL } else { "yh@qs.al" }),
     [string]$AdminPassword = $(if ($env:E2E_ADMIN_PASSWORD) { $env:E2E_ADMIN_PASSWORD } else { $env:ADMIN_PASSWORD }),
     [string]$AdminToken = $(if ($env:E2E_ADMIN_TOKEN) { $env:E2E_ADMIN_TOKEN } else { $env:ADMIN_TOKEN }),
@@ -17,8 +18,24 @@ $ErrorActionPreference = "Stop"
 $RepoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $FrontendRoot = Join-Path $RepoRoot "frontend"
 $BackendRoot = Join-Path $RepoRoot "backend"
-$BackendPythonExe = Join-Path $BackendRoot "venv\Scripts\python.exe"
 $IssueAdminTokenScript = Join-Path $BackendRoot "tests\issue_admin_token.py"
+
+function Resolve-BackendPythonExe {
+    $candidates = @(
+        (Join-Path $BackendRoot ".venv/bin/python"),
+        (Join-Path $BackendRoot ".venv\Scripts\python.exe"),
+        (Join-Path $BackendRoot "venv/bin/python"),
+        (Join-Path $BackendRoot "venv\Scripts\python.exe")
+    )
+    foreach ($candidate in $candidates) {
+        if (Test-Path $candidate) {
+            return $candidate
+        }
+    }
+    return $null
+}
+
+$BackendPythonExe = Resolve-BackendPythonExe
 
 function Test-BackendReady {
     param([string]$Url)
@@ -200,7 +217,8 @@ if (-not $nodeTools.Npm) {
 $env:ADMIN_EMAIL = $AdminEmail
 if ($AdminPassword) { $env:ADMIN_PASSWORD = $AdminPassword }
 $env:E2E_BASE_URL = $E2EBaseUrl
-$env:VITE_API_BASE_URL = $AdminBaseUrl
+$env:E2E_API_BASE_URL = $AdminBaseUrl
+$env:VITE_API_BASE_URL = $BrowserApiBaseUrl
 $env:E2E_CHECK_UI_LOGIN = $CheckUiLogin
 
 if (-not $AdminToken -and $AdminPassword) {
@@ -220,17 +238,17 @@ if ($AdminToken) { $env:ADMIN_TOKEN = $AdminToken }
 
 Push-Location $FrontendRoot
 try {
-    $npmArgs = @("run", "e2e")
+    $playwrightCli = Join-Path $FrontendRoot "node_modules\@playwright\test\cli.js"
+    if (-not (Test-Path $playwrightCli)) {
+        Write-Host "PLAYWRIGHT_CLI_NOT_FOUND path=$playwrightCli"
+        exit 1
+    }
+
+    $nodeArgs = @($playwrightCli, "test")
     if ($E2ESpec) {
-        $npmArgs += "--"
-        $npmArgs += $E2ESpec
+        $nodeArgs += $E2ESpec
     }
-    if ($nodeTools.Npm -eq "npm.cmd") {
-        & npm.cmd @npmArgs
-    } else {
-        $escapedArgs = ($npmArgs | ForEach-Object { "`"$_`"" }) -join " "
-        & cmd.exe /c "`"$($nodeTools.Npm)`" $escapedArgs"
-    }
+    & $nodeTools.Node @nodeArgs
     exit $LASTEXITCODE
 } finally {
     Pop-Location

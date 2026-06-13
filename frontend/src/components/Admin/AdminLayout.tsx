@@ -13,6 +13,7 @@ import {
   Toolbar,
   Typography,
   useMediaQuery,
+  Button,
 } from '@mui/material';
 import {
   Analytics,
@@ -20,6 +21,7 @@ import {
   Description,
   FactCheck,
   Gavel,
+  Hub,
   ManageSearch,
   MonitorHeart,
   Person,
@@ -27,9 +29,11 @@ import {
   Shield,
   WorkHistory,
   Menu as MenuIcon,
+  Logout,
 } from '@mui/icons-material';
 import { ThemeProvider } from '@mui/material/styles';
 import { useLocation, useNavigate } from 'react-router-dom';
+import { logoutAdminSession } from '../../services/adminSession';
 import { adminTheme } from '../../theme/adminTheme';
 import '../../styles/adminTheme.css';
 
@@ -51,6 +55,7 @@ const AdminLayout: React.FC<AdminLayoutProps> = ({ title, subtitle, actions, chi
   const navItems = useMemo(
     () => [
       { label: '仪表盘', icon: <Dashboard />, path: '/admin/dashboard' },
+      { label: '图谱工作台', icon: <Hub />, path: '/workspace' },
       { label: '配置中心', icon: <Settings />, path: '/admin/config' },
       { label: '系统监控', icon: <MonitorHeart />, path: '/admin/monitor' },
       { label: '日志审计', icon: <FactCheck />, path: '/admin/logs' },
@@ -65,6 +70,14 @@ const AdminLayout: React.FC<AdminLayoutProps> = ({ title, subtitle, actions, chi
 
   const handleNavigate = (path: string) => {
     navigate(path);
+    if (isMobile) {
+      setMobileOpen(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    await logoutAdminSession();
+    navigate('/admin/login', { replace: true });
     if (isMobile) {
       setMobileOpen(false);
     }
@@ -110,6 +123,14 @@ const AdminLayout: React.FC<AdminLayoutProps> = ({ title, subtitle, actions, chi
       </List>
 
       <Stack spacing={1} sx={{ mt: 2 }}>
+        <Button
+          variant="outlined"
+          startIcon={<Logout />}
+          onClick={handleLogout}
+          sx={{ justifyContent: 'flex-start', borderRadius: 2 }}
+        >
+          退出登录
+        </Button>
         <ListItemButton
           onClick={() => handleNavigate('/admin/profile')}
           sx={{ borderRadius: 2, backgroundColor: 'rgba(15, 31, 45, 0.04)' }}
@@ -120,13 +141,13 @@ const AdminLayout: React.FC<AdminLayoutProps> = ({ title, subtitle, actions, chi
           <ListItemText primary="个人设置" secondary="账号与安全" />
         </ListItemButton>
         <ListItemButton
-          onClick={() => handleNavigate('/')}
+          onClick={() => handleNavigate('/workspace')}
           sx={{ borderRadius: 2, backgroundColor: 'rgba(15, 31, 45, 0.04)' }}
         >
           <ListItemIcon sx={{ minWidth: 40 }}>
             <Description />
           </ListItemIcon>
-          <ListItemText primary="返回工作台" secondary="图谱主界面" />
+          <ListItemText primary="打开工作台" secondary="图谱主界面" />
         </ListItemButton>
       </Stack>
     </Stack>

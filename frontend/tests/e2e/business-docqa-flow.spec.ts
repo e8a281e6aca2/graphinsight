@@ -3,7 +3,12 @@ import { expect, test, type APIRequestContext, type Page } from '@playwright/tes
 const adminEmail = process.env.E2E_ADMIN_EMAIL || process.env.ADMIN_EMAIL || 'yh@qs.al';
 const adminPassword = process.env.E2E_ADMIN_PASSWORD || process.env.ADMIN_PASSWORD || '';
 const adminToken = process.env.E2E_ADMIN_TOKEN || process.env.ADMIN_TOKEN || '';
-const apiBaseUrl = (process.env.VITE_API_BASE_URL || 'http://127.0.0.1:8081').replace(/\/+$/, '');
+const backendApiBaseUrl = (
+  process.env.E2E_API_BASE_URL ||
+  process.env.ADMIN_BASE_URL ||
+  'http://127.0.0.1:8081'
+).replace(/\/+$/, '');
+const browserApiBaseEnv = (process.env.VITE_API_BASE_URL || '').trim();
 
 type LoginResponse = {
   code: number;
@@ -42,6 +47,26 @@ type TraceLookupResult = {
   traceId: string;
 };
 
+type GraphBuildSubmitResponse = {
+  code: number;
+  data?: {
+    job_id?: number;
+    status?: string;
+    message?: string;
+  };
+};
+
+type JobDetailResponse = {
+  code: number;
+  data?: {
+    id: number;
+    status?: string;
+    error_message?: string | null;
+    trace_id?: string | null;
+    result?: Record<string, unknown>;
+  };
+};
+
 type DocumentListResponse = {
   code: number;
   data?: {
@@ -77,7 +102,7 @@ async function getAdminBearer(request: APIRequestContext) {
 
   test.skip(!adminPassword, '业务链路测试需要 ADMIN_TOKEN 或 ADMIN_PASSWORD');
 
-  const response = await request.post(`${apiBaseUrl}/api/v1/admin/auth/login`, {
+  const response = await request.post(`${backendApiBaseUrl}/api/v1/admin/auth/login`, {
     data: {
       username: adminEmail,
       password: adminPassword,
@@ -86,7 +111,7 @@ async function getAdminBearer(request: APIRequestContext) {
 
   if (!response.ok()) {
     throw new Error(
-      `admin login failed via request context: status=${response.status()} body=${await response.text()} baseUrl=${apiBaseUrl}`
+      `admin login failed via request context: status=${response.status()} body=${await response.text()} baseUrl=${backendApiBaseUrl}`
     );
   }
   const body = (await response.json()) as LoginResponse;
@@ -96,7 +121,7 @@ async function getAdminBearer(request: APIRequestContext) {
 }
 
 async function expectGoOwnedBackend(request: APIRequestContext) {
-  const response = await request.get(`${apiBaseUrl}/health`);
+  const response = await request.get(`${backendApiBaseUrl}/health`);
   expect(response.ok()).toBeTruthy();
   expect(response.headers()['x-graphinsight-route-owner']).toBe('go-native');
   const body = await response.json();
@@ -107,7 +132,7 @@ async function expectGoOwnedBackend(request: APIRequestContext) {
 }
 
 async function findDocumentIdByName(request: APIRequestContext, bearer: string, fileName: string) {
-  const response = await request.get(`${apiBaseUrl}/api/documents`, {
+  const response = await request.get(`${backendApiBaseUrl}/api/documents`, {
     headers: {
       Authorization: `Bearer ${bearer}`,
     },
@@ -128,7 +153,7 @@ async function deleteActiveDocumentIfPresent(
   const docId = await findDocumentIdByName(request, bearer, fileName);
   if (!docId) return false;
 
-  const response = await request.delete(`${apiBaseUrl}/api/documents/${encodeURIComponent(docId)}`, {
+  const response = await request.delete(`${backendApiBaseUrl}/api/documents/${encodeURIComponent(docId)}`, {
     headers: {
       Authorization: `Bearer ${bearer}`,
     },
@@ -144,7 +169,7 @@ async function deleteActiveDocumentIfPresent(
 }
 
 async function findDeletedDocumentIdByName(request: APIRequestContext, bearer: string, fileName: string) {
-  const response = await request.get(`${apiBaseUrl}/api/documents/deleted`, {
+  const response = await request.get(`${backendApiBaseUrl}/api/documents/deleted`, {
     headers: {
       Authorization: `Bearer ${bearer}`,
     },
@@ -160,7 +185,7 @@ async function cleanupSoftDeletedDocument(request: APIRequestContext, bearer: st
   const deletedDocId = await findDeletedDocumentIdByName(request, bearer, fileName);
   if (!deletedDocId) return false;
 
-  const restoreResponse = await request.post(`${apiBaseUrl}/api/documents/${encodeURIComponent(deletedDocId)}/restore`, {
+  const restoreResponse = await request.post(`${backendApiBaseUrl}/api/documents/${encodeURIComponent(deletedDocId)}/restore`, {
     headers: {
       Authorization: `Bearer ${bearer}`,
     },
@@ -185,7 +210,7 @@ async function waitForTraceByKeyword(
   let lastBody: TraceListResponse | null = null;
 
   while (Date.now() < deadline) {
-    const response = await request.get(`${apiBaseUrl}/api/v1/admin/qa-traces`, {
+    const response = await request.get(`${backendApiBaseUrl}/api/v1/admin/qa-traces`, {
       headers: {
         Authorization: `Bearer ${bearer}`,
       },
@@ -211,12 +236,46 @@ async function waitForTraceByKeyword(
   throw new Error(`QA trace not found by keyword=${keyword}; lastBody=${JSON.stringify(lastBody)}`);
 }
 
+async function waitForJobTerminalState(request: APIRequestContext, bearer: string, jobId: number) {
+  const deadline = Date.now() + 240_000;
+  let lastBody: JobDetailResponse | null = null;
+
+  while (Date.now() < deadline) {
+    const response = await request.get(`${backendApiBaseUrl}/api/v1/admin/jobs/${jobId}`, {
+      headers: {
+        Authorization: `Bearer ${bearer}`,
+      },
+    });
+    expect(response.ok()).toBeTruthy();
+    lastBody = (await response.json()) as JobDetailResponse;
+    expect(lastBody.code).toBe(200);
+
+    const status = lastBody.data?.status;
+    if (status === 'succeeded' || status === 'failed' || status === 'cancelled') {
+      return lastBody.data;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
+  }
+
+  throw new Error(`job ${jobId} did not reach terminal state; lastBody=${JSON.stringify(lastBody)}`);
+}
+
 async function openHome(page: Page) {
   await page.goto('/');
-  await expect(page.getByRole('heading', { name: '文档问答' })).toBeVisible();
   await expect(page.getByRole('tab', { name: '文档' })).toBeVisible();
   await expect(page.getByRole('tab', { name: '图谱' })).toBeVisible();
   await expect(page.getByRole('heading', { name: '文档库' })).toBeVisible();
+  await expect(page.getByRole('button', { name: /选择文件|上传中/ })).toBeVisible();
+}
+
+async function resolveBrowserApiBaseUrl(page: Page) {
+  const normalizedEnv = browserApiBaseEnv.replace(/\/+$/, '');
+  if (normalizedEnv && normalizedEnv !== 'auto' && normalizedEnv !== 'same-origin') {
+    return normalizedEnv.endsWith('/api') ? normalizedEnv.slice(0, -4) : normalizedEnv;
+  }
+
+  return new URL(page.url()).origin.replace(/\/+$/, '');
 }
 
 function documentActionCard(page: Page, fileName: string, actionName: '删除' | '恢复') {
@@ -265,9 +324,22 @@ test.describe('Business DocQA Flow', () => {
       await expect(page.getByText(fileName)).toBeVisible({ timeout: 30_000 });
       expect(await findDocumentIdByName(request, bearer, fileName)).toBeTruthy();
 
+      const browserApiBaseUrl = await resolveBrowserApiBaseUrl(page);
       const buildButton = page.getByRole('button', { name: '一键建图' });
+      const buildResponsePromise = page.waitForResponse((response) => {
+        return response.request().method() === 'POST' && response.url() === `${browserApiBaseUrl}/api/graph/build`;
+      });
       await buildButton.click();
-      await expect(page.getByRole('button', { name: '已完成建图' })).toBeVisible({ timeout: 240_000 });
+      const buildResponse = await buildResponsePromise;
+      expect(buildResponse.ok()).toBeTruthy();
+      const buildPayload = (await buildResponse.json()) as GraphBuildSubmitResponse;
+      expect(buildPayload.code).toBe(200);
+      const buildJobId = buildPayload.data?.job_id;
+      expect(buildJobId).toBeTruthy();
+      await expect(page.getByText(new RegExp(`建图任务\\s*#${buildJobId}\\s*已提交`))).toBeVisible({ timeout: 30_000 });
+      const buildJob = await waitForJobTerminalState(request, bearer, buildJobId!);
+      expect(buildJob?.status).toBe('succeeded');
+      expect(buildJob?.error_message || '').toBe('');
 
       const qaInput = page.getByPlaceholder('输入问题，Enter 发送，Shift+Enter 换行');
       await qaInput.fill(question);
@@ -280,13 +352,13 @@ test.describe('Business DocQA Flow', () => {
       ).toBeVisible({ timeout: 180_000 });
 
       const trace = await waitForTraceByKeyword(request, bearer, traceKeyword);
-      const traceDetailResponse = await request.get(`${apiBaseUrl}/api/v1/admin/qa-traces/${trace.id}`, {
+      const traceDetailResponse = await request.get(`${backendApiBaseUrl}/api/v1/admin/qa-traces/${trace.id}`, {
         headers: {
           Authorization: `Bearer ${bearer}`,
         },
       });
       expect(traceDetailResponse.ok()).toBeTruthy();
-      expect(traceDetailResponse.headers()['x-graphinsight-route-owner']).toBe('go-admin-proxy');
+      expect(traceDetailResponse.headers()['x-graphinsight-route-owner']).toBe('go-native');
       const traceDetail = (await traceDetailResponse.json()) as TraceDetailResponse;
       expect(traceDetail.code).toBe(200);
       expect(traceDetail.data?.trace_id).toBe(trace.traceId);

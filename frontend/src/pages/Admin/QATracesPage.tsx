@@ -27,7 +27,14 @@ import {
 import { Refresh, Search } from '@mui/icons-material';
 import AdminLayout from '../../components/Admin/AdminLayout';
 import { qaTracesApi } from '../../services/adminService';
-import type { QACostSummary, QATraceDetail, QATraceItem, QATraceStatus, QATraceType } from '../../types/admin';
+import type {
+  QACostSummary,
+  QATraceDetail,
+  QATraceGenerationSnapshot,
+  QATraceItem,
+  QATraceStatus,
+  QATraceType,
+} from '../../types/admin';
 import { getErrorMessage } from '../../utils/errorMessage';
 
 type QATraceTypeFilter = QATraceType | '';
@@ -44,6 +51,12 @@ const qaTypeLabel = (value: string) => (value === 'deep_research' ? '深度调�
 const formatPercent = (value: number) => `${(Number(value || 0) * 100).toFixed(1)}%`;
 
 const formatCost = (value: number, currency: string) => `${currency || 'USD'} ${Number(value || 0).toFixed(6)}`;
+const formatReasoningProfile = (value?: string) => {
+  if (value === 'fast') return 'fast';
+  if (value === 'deep') return 'deep';
+  if (value === 'balanced') return 'balanced';
+  return '-';
+};
 
 const QATracesPage: React.FC = () => {
   const [items, setItems] = useState<QATraceItem[]>([]);
@@ -100,6 +113,11 @@ const QATracesPage: React.FC = () => {
     } catch (err: unknown) {
       setError(getErrorMessage(err, '追踪详情加载失败'));
     }
+  };
+
+  const extractReasoningProfile = (detail: QATraceDetail | null) => {
+    const snapshot = (detail?.generation_snapshot || {}) as QATraceGenerationSnapshot;
+    return snapshot.reasoning_profile;
   };
 
   const actionBar = (
@@ -179,6 +197,7 @@ const QATracesPage: React.FC = () => {
                   <TableCell>ID</TableCell>
                   <TableCell>类型</TableCell>
                   <TableCell>状态</TableCell>
+                  <TableCell>档位</TableCell>
                   <TableCell>问题</TableCell>
                   <TableCell>检索/引用</TableCell>
                   <TableCell>延迟</TableCell>
@@ -188,13 +207,13 @@ const QATracesPage: React.FC = () => {
               <TableBody>
                 {loading ? (
                   <TableRow>
-                    <TableCell colSpan={7} align="center">
+                    <TableCell colSpan={8} align="center">
                       <CircularProgress size={24} />
                     </TableCell>
                   </TableRow>
                 ) : items.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={7} align="center">暂无问答追踪记录</TableCell>
+                    <TableCell colSpan={8} align="center">暂无问答追踪记录</TableCell>
                   </TableRow>
                 ) : (
                   items.map((item) => (
@@ -206,6 +225,13 @@ const QATracesPage: React.FC = () => {
                           size="small"
                           label={item.status === 'success' ? '成功' : '失败'}
                           color={item.status === 'success' ? 'success' : 'error'}
+                        />
+                      </TableCell>
+                      <TableCell>
+                        <Chip
+                          size="small"
+                          variant="outlined"
+                          label={formatReasoningProfile(item.reasoning_profile)}
                         />
                       </TableCell>
                       <TableCell sx={{ maxWidth: 360 }}>
@@ -230,6 +256,7 @@ const QATracesPage: React.FC = () => {
             count={total}
             page={page}
             rowsPerPage={rowsPerPage}
+            rowsPerPageOptions={[10, 20, 25, 50, 100]}
             onPageChange={(_, next) => setPage(next)}
             onRowsPerPageChange={(e) => {
               setRowsPerPage(parseInt(e.target.value, 10));
@@ -264,6 +291,13 @@ const QATracesPage: React.FC = () => {
               </Box>
               <Box>
                 <Typography variant="subtitle2">模型生成</Typography>
+                <Stack direction="row" spacing={1} sx={{ mb: 1, mt: 1 }}>
+                  <Chip
+                    size="small"
+                    variant="outlined"
+                    label={`档位: ${formatReasoningProfile(extractReasoningProfile(detail))}`}
+                  />
+                </Stack>
                 <Box component="pre" sx={{ whiteSpace: 'pre-wrap', fontSize: 12, bgcolor: 'rgba(15,31,45,0.04)', p: 2, borderRadius: 1, maxHeight: 220, overflow: 'auto' }}>
                   {JSON.stringify(detail.generation_snapshot || {}, null, 2)}
                 </Box>

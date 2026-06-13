@@ -112,6 +112,17 @@ export function GraphCanvas({ rendererRef: externalRendererRef, onGroupingUpdate
   // 过滤隐藏状态
   const [hiddenNodeIds, setHiddenNodeIds] = useState<Set<string>>(new Set());
   const [hiddenEdgeIds, setHiddenEdgeIds] = useState<Set<string>>(new Set());
+  const hiddenTypeNodeIds = useMemo(() => {
+    if (!graphData || activeFilters.hiddenNodeTypes.length === 0) {
+      return new Set<string>();
+    }
+    const hiddenTypes = new Set(activeFilters.hiddenNodeTypes);
+    return new Set(
+      graphData.nodes
+        .filter((node) => node.labels.some((label) => hiddenTypes.has(label)))
+        .map((node) => node.id)
+    );
+  }, [activeFilters.hiddenNodeTypes, graphData]);
 
   const handleVideoPlay = useCallback((videoUrl: string, title: string) => {
     setCurrentVideo({ url: videoUrl, title });
@@ -506,14 +517,18 @@ export function GraphCanvas({ rendererRef: externalRendererRef, onGroupingUpdate
   useEffect(() => {
     if (!rendererRef.current) return;
 
-    const combinedHiddenNodes = new Set<string>([...hiddenNodeIds, ...collapsedNodeIds]);
+    const combinedHiddenNodes = new Set<string>([
+      ...hiddenNodeIds,
+      ...collapsedNodeIds,
+      ...hiddenTypeNodeIds,
+    ]);
     rendererRef.current.setFilter({
       nodeTypes: activeFilters.nodeTypes,
       edgeTypes: activeFilters.relationshipTypes,
       hiddenNodeIds: combinedHiddenNodes,
       hiddenEdgeIds,
     });
-  }, [activeFilters, collapsedNodeIds, hiddenEdgeIds, hiddenNodeIds, rendererRef, viewMode, rendererKey]);
+  }, [activeFilters, collapsedNodeIds, hiddenEdgeIds, hiddenNodeIds, hiddenTypeNodeIds, rendererRef, viewMode, rendererKey]);
 
   useEffect(() => {
     if (!rendererRef.current) return;

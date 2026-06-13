@@ -72,6 +72,7 @@ export interface UserInfo {
   id: number;
   username: string;
   email?: string;
+  preferred_home_path?: '/admin/dashboard' | '/workspace';
   is_active: boolean;
   created_at: string;
   last_login?: string;
@@ -210,6 +211,25 @@ export interface ConnectionTestResult {
   checks?: ConnectionTestCheck[];
 }
 
+export interface ModelCatalogItem {
+  provider: string;
+  model: string;
+  label: string;
+  enabled: boolean;
+  supports_reasoning: boolean;
+  supported_profiles: Array<'fast' | 'balanced' | 'deep' | string>;
+  default_profile: 'fast' | 'balanced' | 'deep' | string;
+}
+
+export interface ModelCatalogResponse {
+  models: string[];
+  catalog: ModelCatalogItem[];
+  scenario_profiles?: {
+    docqa?: 'fast' | 'balanced' | 'deep' | string;
+    deep_research?: 'fast' | 'balanced' | 'deep' | string;
+  };
+}
+
 // ============================================================
 // 监控相关类型
 // ============================================================
@@ -303,6 +323,7 @@ export interface QATraceItem {
   question: string;
   operator_id?: number;
   model?: string;
+  reasoning_profile?: 'fast' | 'balanced' | 'deep' | string;
   top_k?: number;
   latency_ms?: number;
   retrieval_count: number;
@@ -316,6 +337,19 @@ export interface QATraceDetail extends QATraceItem {
   retrieval_snapshot?: unknown;
   generation_snapshot?: unknown;
   response_snapshot?: unknown;
+}
+
+export interface QATraceGenerationSnapshot {
+  mode?: string;
+  model?: string;
+  base_url?: string;
+  reasoning_profile?: 'fast' | 'balanced' | 'deep' | string;
+  usage?: {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    total_tokens?: number;
+    source?: string;
+  };
 }
 
 export interface QATraceQueryParams {
@@ -753,6 +787,7 @@ export interface ProfileInfo {
   full_name?: string;
   phone?: string;
   avatar?: string;
+  preferred_home_path?: '/admin/dashboard' | '/workspace';
   is_active: boolean;
   created_at: string;
   last_login?: string;
@@ -767,6 +802,7 @@ export interface ProfileUpdateRequest {
   email?: string;
   full_name?: string;
   phone?: string;
+  preferred_home_path?: '/admin/dashboard' | '/workspace';
 }
 
 /**
@@ -776,15 +812,4 @@ export interface PasswordChangeRequest {
   old_password: string;
   new_password: string;
   confirm_password: string;
-}
-
-/**
- * 登录历史记录
- */
-export interface LoginHistory {
-  id: number;
-  ip_address: string;
-  user_agent: string;
-  login_time: string;
-  status: 'success' | 'failed';
 }

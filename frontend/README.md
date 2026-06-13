@@ -89,7 +89,7 @@ frontend/
 
 前端 E2E 推荐说明见：
 
-1. [FRONTEND_E2E_RUNTIME_GUIDE.md](/mnt/c/Users/AxTlz/projects/GraphInsight/docs/FRONTEND_E2E_RUNTIME_GUIDE.md)
+1. [FRONTEND_E2E_RUNTIME_GUIDE.md](/home/yuanhuan/GraphInsight/docs/FRONTEND_E2E_RUNTIME_GUIDE.md)
 
 当前建议：
 
@@ -97,3 +97,4 @@ frontend/
 2. 优先使用 `./frontend/tests/run_admin_e2e.sh`
 3. 避免长期依赖 `WSL 前端 -> Windows Go` 这种跨环境代理方式
 4. 若前端与 Go / Python 同在 Windows 侧，优先使用 `frontend/tests/run_admin_e2e.ps1`
+5. 浏览器联调建议使用 `VITE_API_BASE_URL=same-origin`；Node 侧直连后端检查单独使用 `ADMIN_BASE_URL` 或 `E2E_API_BASE_URL`

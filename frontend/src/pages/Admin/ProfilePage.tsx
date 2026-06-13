@@ -14,6 +14,8 @@ import {
   CircularProgress,
   Avatar,
   Divider,
+  ToggleButton,
+  ToggleButtonGroup,
 } from '@mui/material';
 import Grid from '@mui/material/GridLegacy';
 import {
@@ -27,6 +29,7 @@ import type { ProfileInfo } from '../../types/admin';
 import PasswordDialog from '../../components/Admin/PasswordDialog';
 import AdminLayout from '../../components/Admin/AdminLayout';
 import { getErrorMessage } from '../../utils/errorMessage';
+import { clearAdminSession, getPreferredAdminHome, type AdminHomePath } from '../../utils/adminAuth';
 
 const ProfilePage: React.FC = () => {
   const navigate = useNavigate();
@@ -41,6 +44,7 @@ const ProfilePage: React.FC = () => {
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [passwordDialogOpen, setPasswordDialogOpen] = useState(false);
+  const [preferredHome, setPreferredHomeState] = useState<AdminHomePath>(getPreferredAdminHome());
 
   useEffect(() => {
     fetchProfile();
@@ -58,6 +62,7 @@ const ProfilePage: React.FC = () => {
         full_name: data.full_name || '',
         phone: data.phone || '',
       });
+      setPreferredHomeState(data.preferred_home_path || getPreferredAdminHome());
     } catch (err: unknown) {
       setError(getErrorMessage(err, '加载个人信息失败'));
     } finally {
@@ -83,8 +88,12 @@ const ProfilePage: React.FC = () => {
         return;
       }
 
-      const updated = await profileApi.updateProfile(formData);
+      const updated = await profileApi.updateProfile({
+        ...formData,
+        preferred_home_path: preferredHome,
+      });
       setProfile(updated);
+      setPreferredHomeState(updated.preferred_home_path || preferredHome);
       setSuccess('保存成功！');
       
       setTimeout(() => setSuccess(''), 3000);
@@ -98,9 +107,16 @@ const ProfilePage: React.FC = () => {
   const handlePasswordChangeSuccess = () => {
     setSuccess('密码修改成功！请重新登录');
     setTimeout(() => {
-      localStorage.removeItem('admin_token');
+      clearAdminSession();
       navigate('/admin/login');
     }, 2000);
+  };
+
+  const handlePreferredHomeChange = (_event: React.MouseEvent<HTMLElement>, value: AdminHomePath | null) => {
+    if (!value) {
+      return;
+    }
+    setPreferredHomeState(value);
   };
 
   if (loading) {
@@ -255,6 +271,28 @@ const ProfilePage: React.FC = () => {
                 {saving ? '保存中...' : '保存修改'}
               </Button>
             </Box>
+          </CardContent>
+        </Card>
+
+        <Card sx={{ mb: 3 }}>
+          <CardContent>
+            <Box sx={{ display: 'flex', alignItems: 'center', mb: 3 }}>
+              <PersonIcon sx={{ mr: 1 }} />
+              <Typography variant="h6">进入偏好</Typography>
+            </Box>
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+              登录成功和打开首页时，默认进入你常用的工作区域。
+            </Typography>
+            <ToggleButtonGroup
+              color="primary"
+              exclusive
+              value={preferredHome}
+              onChange={handlePreferredHomeChange}
+              sx={{ flexWrap: 'wrap', gap: 1 }}
+            >
+              <ToggleButton value="/admin/dashboard">系统仪表板</ToggleButton>
+              <ToggleButton value="/workspace">图谱工作台</ToggleButton>
+            </ToggleButtonGroup>
           </CardContent>
         </Card>
 

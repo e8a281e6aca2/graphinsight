@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 FRONTEND_DIR="$ROOT_DIR/frontend"
-BACKEND_PYTHON="$ROOT_DIR/backend/venv/Scripts/python.exe"
+BACKEND_PYTHON="$ROOT_DIR/backend/.venv/bin/python"
 ISSUE_ADMIN_TOKEN_SCRIPT="$ROOT_DIR/backend/tests/issue_admin_token.py"
 BACKEND_HEALTH_URL="${ADMIN_BASE_URL:-http://127.0.0.1:8081}"
 E2E_BASE_URL="${E2E_BASE_URL:-http://127.0.0.1:4173}"
@@ -15,25 +15,46 @@ E2E_REQUIRE_BACKEND_DEPENDENCIES="${E2E_REQUIRE_BACKEND_DEPENDENCIES:-1}"
 E2E_SPEC="${E2E_SPEC:-}"
 PLAYWRIGHT_CACHE_ROOT="${XDG_CACHE_HOME:-$HOME/.cache}/graphinsight-playwright-libs"
 PLAYWRIGHT_LIB_DIR="$PLAYWRIGHT_CACHE_ROOT/root/usr/lib/x86_64-linux-gnu"
+PLAYWRIGHT_BROWSERS_JSON="$FRONTEND_DIR/node_modules/playwright-core/browsers.json"
 
 wsl_health_check() {
   local url="$1"
   curl -fsS --max-time 3 "$url/health" >/dev/null 2>&1
 }
 
+fetch_backend_health() {
+  curl -fsS --max-time 5 "$BACKEND_HEALTH_URL/health"
+}
+
 health_check() {
-  powershell.exe -NoProfile -Command "\
-    try { \
-      \$resp = Invoke-RestMethod -Method Get -Uri '$BACKEND_HEALTH_URL/health' -TimeoutSec 5; \
-      if (\$resp.code -ne 200) { exit 1 }; \
-      if ('$E2E_REQUIRE_BACKEND_DEPENDENCIES' -ne '1') { exit 0 }; \
-      \$data = \$resp.data; \
-      if (\$data -and \$data.neo4j -and \$data.neo4j.connected -eq \$true -and \$data.python_backend -and \$data.python_backend.connected -eq \$true -and \$data.orchestrator -and \$data.orchestrator.connected -eq \$true) { exit 0 } else { exit 1 } \
-    } catch { exit 1 }" >/dev/null 2>&1
+  local response
+
+  response="$(fetch_backend_health)" || return 1
+
+  python3 - <<'PY' "$response" "$E2E_REQUIRE_BACKEND_DEPENDENCIES"
+import json
+import sys
+
+payload = json.loads(sys.argv[1])
+require_dependencies = sys.argv[2] == "1"
+
+if payload.get("code") != 200:
+    raise SystemExit(1)
+
+if not require_dependencies:
+    raise SystemExit(0)
+
+data = payload.get("data") or {}
+neo4j_ok = bool((data.get("neo4j") or {}).get("connected"))
+python_ok = bool((data.get("python_backend") or {}).get("connected"))
+orchestrator_ok = bool((data.get("orchestrator") or {}).get("connected"))
+
+raise SystemExit(0 if neo4j_ok and python_ok and orchestrator_ok else 1)
+PY
 }
 
 show_backend_health() {
-  powershell.exe -NoProfile -Command "try { Invoke-RestMethod -Method Get -Uri '$BACKEND_HEALTH_URL/health' -TimeoutSec 5 | ConvertTo-Json -Depth 8 } catch { Write-Host \$_.Exception.Message }"
+  fetch_backend_health || echo "backend health unavailable"
 }
 
 ensure_playwright_runtime_libs() {
@@ -74,6 +95,37 @@ ensure_playwright_runtime_libs() {
   done
 
   export LD_LIBRARY_PATH="$PLAYWRIGHT_LIB_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+}
+
+resolve_playwright_headless_shell_path() {
+  if [[ ! -f "$PLAYWRIGHT_BROWSERS_JSON" ]]; then
+    return 1
+  fi
+
+  node - <<'NODE' "$PLAYWRIGHT_BROWSERS_JSON"
+const fs = require('fs');
+const path = require('path');
+
+const configPath = process.argv[2];
+const cacheRoot = process.env.PLAYWRIGHT_BROWSERS_PATH || path.join(process.env.HOME || '', '.cache', 'ms-playwright');
+const data = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+const browser = (data.browsers || []).find((item) => item.name === 'chromium-headless-shell');
+if (!browser || !browser.revision) {
+  process.exit(1);
+}
+process.stdout.write(path.join(cacheRoot, `chromium_headless_shell-${browser.revision}`, 'chrome-headless-shell-linux64', 'chrome-headless-shell'));
+NODE
+}
+
+ensure_playwright_browser() {
+  local browser_path
+
+  if browser_path="$(resolve_playwright_headless_shell_path 2>/dev/null)" && [[ -x "$browser_path" ]]; then
+    return 0
+  fi
+
+  echo "PLAYWRIGHT_BROWSER_MISSING installing=chromium-headless-shell"
+  node node_modules/playwright/cli.js install chromium-headless-shell
 }
 
 resolve_vite_api_base_url() {
@@ -166,6 +218,7 @@ if ! health_check; then
 fi
 
 cd "$FRONTEND_DIR"
+ensure_playwright_browser
 ensure_playwright_runtime_libs
 export ADMIN_EMAIL
 export ADMIN_PASSWORD
@@ -196,7 +249,7 @@ fi
 export ADMIN_TOKEN
 
 if [[ -n "$E2E_SPEC" ]]; then
-  npm run e2e -- "$E2E_SPEC"
+  node node_modules/@playwright/test/cli.js test "$E2E_SPEC"
 else
-  npm run e2e
+  node node_modules/@playwright/test/cli.js test
 fi

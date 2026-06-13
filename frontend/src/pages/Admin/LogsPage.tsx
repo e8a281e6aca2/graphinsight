@@ -23,7 +23,7 @@ import {
   MenuItem,
   Button,
 } from '@mui/material';
-import { Refresh, FilterList } from '@mui/icons-material';
+import { Refresh, FilterList, Download } from '@mui/icons-material';
 import { logApi } from '../../services/adminService';
 import type { LogItem } from '../../types/admin';
 import AdminLayout from '../../components/Admin/AdminLayout';
@@ -62,6 +62,30 @@ const LogsPage: React.FC = () => {
       setLoading(false);
     }
   }, [action, page, rowsPerPage, status, traceId]);
+
+  const handleExportCsv = async () => {
+    try {
+      setLoading(true);
+      const blob = await logApi.exportLogsCsv({
+        action: action || undefined,
+        status: status || undefined,
+        trace_id: traceId.trim() || undefined,
+      });
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      link.href = url;
+      link.download = `admin_logs_${stamp}.csv`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (err: unknown) {
+      setError(getErrorMessage(err, '导出失败'));
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
     loadLogs();
@@ -144,6 +168,14 @@ const LogsPage: React.FC = () => {
               >
                 刷新
               </Button>
+              <Button
+                variant="outlined"
+                startIcon={<Download />}
+                onClick={handleExportCsv}
+                disabled={loading}
+              >
+                导出 CSV
+              </Button>
             </Box>
           </CardContent>
         </Card>
@@ -216,6 +248,7 @@ const LogsPage: React.FC = () => {
                   page={page}
                   onPageChange={(_, newPage) => setPage(newPage)}
                   rowsPerPage={rowsPerPage}
+                  rowsPerPageOptions={[10, 20, 25, 50, 100]}
                   onRowsPerPageChange={(e) => {
                     setRowsPerPage(parseInt(e.target.value, 10));
                     setPage(0);

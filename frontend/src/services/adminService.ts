@@ -11,6 +11,7 @@ import type {
   ChangePasswordRequest,
   ConfigItem,
   ConnectionTestResult,
+  ModelCatalogResponse,
   SystemStats,
   HealthStatus,
   PerformanceMetricsData,
@@ -23,7 +24,6 @@ import type {
   ProfileInfo,
   ProfileUpdateRequest,
   PasswordChangeRequest,
-  LoginHistory,
   RoleItem,
   PermissionItem,
   BindingItem,
@@ -51,6 +51,7 @@ import type {
   QATraceType,
 } from '../types/admin';
 import { API_BASE_URL } from '../utils/apiBase';
+import { clearAdminSession, setAdminToken, syncPreferredAdminHome } from '../utils/adminAuth';
 
 // ============================================================
 // Axios 实例配置
@@ -82,7 +83,7 @@ apiClient.interceptors.response.use(
   (error: AxiosError) => {
     if (error.response?.status === 401) {
       // Token 过期或无效，清除并跳转到登录页
-      localStorage.removeItem('admin_token');
+      clearAdminSession();
       window.location.href = '/admin/login';
     }
     return Promise.reject(error);
@@ -235,8 +236,9 @@ export const authApi = {
 
       // 保存 token
       if (response.data.data?.token) {
-        localStorage.setItem('admin_token', response.data.data.token);
+        setAdminToken(response.data.data.token);
       }
+      syncPreferredAdminHome(response.data.data?.user?.preferred_home_path);
 
       return response.data.data!;
     } catch (error) {
@@ -250,11 +252,10 @@ export const authApi = {
   async logout(): Promise<void> {
     try {
       await apiClient.post('/api/v1/admin/auth/logout');
-      localStorage.removeItem('admin_token');
+      clearAdminSession();
     } catch (error) {
       // 即使失败也清除本地 token
-      localStorage.removeItem('admin_token');
-      handleApiError(error);
+      clearAdminSession();
     }
   },
 
@@ -266,6 +267,7 @@ export const authApi = {
       const response = await apiClient.get<ApiResponse<UserInfo>>(
         '/api/v1/admin/auth/me'
       );
+      syncPreferredAdminHome(response.data.data?.preferred_home_path);
       return response.data.data!;
     } catch (error) {
       handleApiError(error);
@@ -409,25 +411,29 @@ export const configApi = {
     provider?: string;
     base_url?: string;
     model?: string;
-  }): Promise<string[]> {
+  }): Promise<ModelCatalogResponse> {
     try {
-      const response = await apiClient.get<ApiResponse<{ models: string[] }>>(
+      const response = await apiClient.get<ApiResponse<ModelCatalogResponse | { models: string[] }>>(
         '/api/v1/admin/config/openai/models',
         { params }
       );
-
-      // 尝试多种方式获取 models
-      let models: string[] = [];
       const data = extractApiData(response);
+      const fallbackModels = Array.isArray(data)
+        ? data.filter((item): item is string => typeof item === 'string')
+        : [];
       if (data && typeof data === 'object' && 'models' in data && Array.isArray(data.models)) {
-        models = data.models.filter((item): item is string => typeof item === 'string');
-      } else if (Array.isArray(data)) {
-        models = data.filter((item): item is string => typeof item === 'string');
-      } else if ('models' in response.data && Array.isArray(response.data.models)) {
-        models = response.data.models.filter((item): item is string => typeof item === 'string');
+        return {
+          models: data.models.filter((item): item is string => typeof item === 'string'),
+          catalog: Array.isArray((data as ModelCatalogResponse).catalog)
+            ? (data as ModelCatalogResponse).catalog
+            : [],
+          scenario_profiles:
+            typeof (data as ModelCatalogResponse).scenario_profiles === 'object'
+              ? (data as ModelCatalogResponse).scenario_profiles
+              : undefined,
+        };
       }
-
-      return models;
+      return { models: fallbackModels, catalog: [] };
     } catch (error) {
       console.error('获取模型列表 API 错误:', error);
       handleApiError(error);
@@ -574,6 +580,21 @@ export const logApi = {
     }
   },
 
+  async exportLogsCsv(params: LogQueryParams): Promise<Blob> {
+    try {
+      const response = await apiClient.get<Blob>('/api/v1/admin/logs', {
+        params: {
+          ...params,
+          export: true,
+        },
+        responseType: 'blob',
+      });
+      return response.data;
+    } catch (error) {
+      handleApiError(error);
+    }
+  },
+
   /**
    * 清理旧日志
    */
@@ -604,6 +625,7 @@ export const profileApi = {
       const response = await apiClient.get<ApiResponse<ProfileInfo>>(
         '/api/v1/admin/profile'
       );
+      syncPreferredAdminHome(response.data.data?.preferred_home_path);
       return response.data.data!;
     } catch (error) {
       handleApiError(error);
@@ -619,6 +641,7 @@ export const profileApi = {
         '/api/v1/admin/profile',
         data
       );
+      syncPreferredAdminHome(response.data.data?.preferred_home_path);
       return response.data.data!;
     } catch (error) {
       handleApiError(error);
@@ -634,44 +657,6 @@ export const profileApi = {
         old_password: data.old_password,
         new_password: data.new_password,
       });
-    } catch (error) {
-      handleApiError(error);
-    }
-  },
-
-  /**
-   * 上传头像
-   */
-  async uploadAvatar(file: File): Promise<{ avatar_url: string }> {
-    try {
-      const formData = new FormData();
-      formData.append('file', file);
-
-      const response = await apiClient.post<ApiResponse<{ avatar_url: string }>>(
-        '/api/v1/admin/profile/avatar',
-        formData,
-        {
-          headers: {
-            'Content-Type': 'multipart/form-data',
-          },
-        }
-      );
-      return response.data.data!;
-    } catch (error) {
-      handleApiError(error);
-    }
-  },
-
-  /**
-   * 获取登录历史
-   */
-  async getLoginHistory(params?: { page?: number; page_size?: number }): Promise<{ logs: LoginHistory[]; total: number }> {
-    try {
-      const response = await apiClient.get<ApiResponse<{ logs: LoginHistory[]; total: number }>>(
-        '/api/v1/admin/profile/login-history',
-        { params }
-      );
-      return response.data.data!;
     } catch (error) {
       handleApiError(error);
     }

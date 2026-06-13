@@ -16,6 +16,7 @@ import { useNavigate } from 'react-router-dom';
 import { authApi } from '../../services/adminService';
 import AdminAuthLayout from '../../components/Admin/AdminAuthLayout';
 import { getErrorMessage } from '../../utils/errorMessage';
+import { getPreferredAdminHome } from '../../utils/adminAuth';
 
 const LoginPage: React.FC = () => {
   const navigate = useNavigate();
@@ -30,18 +31,8 @@ const LoginPage: React.FC = () => {
     setLoading(true);
 
     try {
-      console.log('开始登录...');
-      // 使用邮箱登录,但字段名保持为 username 以兼容后端
-      const result = await authApi.login({ username: email, password });
-      console.log('登录成功:', result);
-      
-      // 确保 token 已保存
-      const token = localStorage.getItem('admin_token');
-      console.log('Token 已保存:', !!token);
-      
-      // 跳转到仪表盘
-      console.log('跳转到仪表盘...');
-      navigate('/admin/dashboard');
+      await authApi.login({ username: email, password });
+      navigate(getPreferredAdminHome());
     } catch (err: unknown) {
       console.error('登录失败:', err);
       setError(getErrorMessage(err, '登录失败，请检查邮箱和密码'));

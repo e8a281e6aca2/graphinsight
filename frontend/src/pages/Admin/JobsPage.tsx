@@ -152,7 +152,7 @@ const JobsPage: React.FC = () => {
         payload: { source: 'admin_jobs_page', force: false },
         max_retries: 3,
       });
-      setMessage('建图任务已创建并开始执行');
+      setMessage('建图任务已创建');
       await loadJobs(false);
     } catch (err: unknown) {
       setError(getErrorMessage(err, '创建建图任务失败'));
@@ -172,7 +172,7 @@ const JobsPage: React.FC = () => {
         payload: { purge_graph: clearKbPurgeGraph },
         max_retries: 1,
       });
-      setMessage('清库任务已创建并开始执行');
+      setMessage('清库任务已创建');
       setClearKbDialogOpen(false);
       setClearKbConfirmText('');
       await loadJobs(false);
@@ -194,7 +194,7 @@ const JobsPage: React.FC = () => {
         payload: {},
         max_retries: 1,
       });
-      setMessage('重建索引任务已创建并开始执行');
+      setMessage('重建索引任务已创建');
       await loadJobs(false);
     } catch (err: unknown) {
       setError(getErrorMessage(err, '创建重建索引任务失败'));

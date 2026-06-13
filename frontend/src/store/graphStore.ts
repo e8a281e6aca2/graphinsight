@@ -57,6 +57,7 @@ export interface CitationRef {
 export interface FilterState {
   nodeTypes: string[];
   relationshipTypes: string[];
+  hiddenNodeTypes: string[];
 }
 
 // 节点分组相关类型
@@ -85,11 +86,11 @@ interface GraphStore {
   // 图数据
   graphData: GraphData | null;
   setGraphData: (data: GraphData) => void;
-  
+
   // 选中的节点
   selectedNodeId: string | null;
   setSelectedNodeId: (id: string | null) => void;
-  
+
   // 查询历史
   queryHistory: QueryHistoryItem[];
   addQueryToHistory: (cypher: string, resultCount: number) => void;
@@ -99,8 +100,10 @@ interface GraphStore {
   activeFilters: FilterState;
   setNodeTypeFilter: (types: string[]) => void;
   setRelationshipTypeFilter: (types: string[]) => void;
+  toggleHiddenNodeType: (nodeType: string) => void;
+  isNodeTypeHidden: (nodeType: string) => boolean;
   clearFilters: () => void;
-  
+
   // 主题
   isDarkMode: boolean;
   toggleTheme: () => void;
@@ -118,7 +121,7 @@ interface GraphStore {
   // 自动推理链
   autoPaths: GraphPathInfo[];
   setAutoPaths: (paths: GraphPathInfo[]) => void;
-  
+
   // 查询统计
   lastQueryStats: {
     nodeCount: number;
@@ -126,9 +129,9 @@ interface GraphStore {
     executionTime: number;
   } | null;
   setLastQueryStats: (stats: { nodeCount: number; edgeCount: number; executionTime: number }) => void;
-  
 
-  
+
+
   // 节点样式配置 - 按标签类型配置
   nodeTypeStyles: Record<string, {
     color: string;
@@ -148,11 +151,11 @@ interface GraphStore {
     showImages: boolean;
     caption: string[];
   }) => void;
-  
+
   // 节点分组功能
   groupingState: GroupingState;
   setAutoGroupByType: (enabled: boolean) => void;
-  
+
   // 布局偏好
   preferredLayout: string;
   setPreferredLayout: (layout: string) => void;
@@ -168,7 +171,7 @@ interface GraphStore {
 
 export const useGraphStore = create<GraphStore>()(
   persist(
-    (set) => ({
+    (set, get) => ({
       // 初始状态
       graphData: null,
       selectedNodeId: null,
@@ -176,6 +179,7 @@ export const useGraphStore = create<GraphStore>()(
       activeFilters: {
         nodeTypes: [],
         relationshipTypes: [],
+        hiddenNodeTypes: [],
       },
       isDarkMode: false,
       activeWorkspaceTab: 'document',
@@ -194,9 +198,9 @@ export const useGraphStore = create<GraphStore>()(
 
       // Actions
       setGraphData: (data) => set({ graphData: data }),
-      
+
       setSelectedNodeId: (id) => set({ selectedNodeId: id }),
-      
+
       addQueryToHistory: (cypher, resultCount) =>
         set((state) => {
           const newItem: QueryHistoryItem = {
@@ -209,27 +213,44 @@ export const useGraphStore = create<GraphStore>()(
           const newHistory = [newItem, ...state.queryHistory].slice(0, 20);
           return { queryHistory: newHistory };
         }),
-      
+
       clearQueryHistory: () => set({ queryHistory: [] }),
 
       setNodeTypeFilter: (types) =>
         set((state) => ({
           activeFilters: { ...state.activeFilters, nodeTypes: types },
         })),
-      
+
       setRelationshipTypeFilter: (types) =>
         set((state) => ({
           activeFilters: { ...state.activeFilters, relationshipTypes: types },
         })),
-      
+
+      toggleHiddenNodeType: (nodeType) =>
+        set((state) => {
+          const current = state.activeFilters.hiddenNodeTypes;
+          const exists = current.includes(nodeType);
+          return {
+            activeFilters: {
+              ...state.activeFilters,
+              hiddenNodeTypes: exists
+                ? current.filter((item) => item !== nodeType)
+                : [...current, nodeType],
+            },
+          };
+        }),
+
+      isNodeTypeHidden: (nodeType) => get().activeFilters.hiddenNodeTypes.includes(nodeType),
+
       clearFilters: () =>
         set({
           activeFilters: {
             nodeTypes: [],
             relationshipTypes: [],
+            hiddenNodeTypes: [],
           },
         }),
-      
+
       toggleTheme: () => set((state) => ({ isDarkMode: !state.isDarkMode })),
 
       setWorkspaceTab: (tab) => set({ activeWorkspaceTab: tab }),
@@ -238,10 +259,10 @@ export const useGraphStore = create<GraphStore>()(
       setRecentUploadedDocIds: (docIds) => set({ recentUploadedDocIds: docIds }),
 
       setAutoPaths: (paths) => set({ autoPaths: paths }),
-      
+
       setLastQueryStats: (stats) => set({ lastQueryStats: stats }),
-      
-      setNodeTypeStyle: (nodeType, style) => 
+
+      setNodeTypeStyle: (nodeType, style) =>
         set((state) => {
           console.log('🎨 GraphStore - Setting node type style:', nodeType, style);
           const newStyles = {
@@ -253,7 +274,7 @@ export const useGraphStore = create<GraphStore>()(
             nodeTypeStyles: newStyles,
           };
         }),
-      
+
       // 节点分组功能
       setAutoGroupByType: (enabled) =>
         set((state) => ({
@@ -262,7 +283,7 @@ export const useGraphStore = create<GraphStore>()(
             autoGroupByType: enabled,
           },
         })),
-      
+
       setShowGroupLabels: (show) =>
         set((state) => ({
           groupingState: {
@@ -270,7 +291,7 @@ export const useGraphStore = create<GraphStore>()(
             showGroupLabels: show,
           },
         })),
-      
+
       createGroup: (name, nodeIds, color = '#1976d2') =>
         set((state) => {
           const newGroup: NodeGroup = {
@@ -293,7 +314,7 @@ export const useGraphStore = create<GraphStore>()(
             },
           };
         }),
-      
+
       updateGroup: (groupId, updates) =>
         set((state) => ({
           groupingState: {
@@ -303,7 +324,7 @@ export const useGraphStore = create<GraphStore>()(
             ),
           },
         })),
-      
+
       deleteGroup: (groupId) =>
         set((state) => ({
           groupingState: {
@@ -311,7 +332,7 @@ export const useGraphStore = create<GraphStore>()(
             groups: state.groupingState.groups.filter((group) => group.id !== groupId),
           },
         })),
-      
+
       addNodesToGroup: (groupId, nodeIds) =>
         set((state) => ({
           groupingState: {
@@ -326,7 +347,7 @@ export const useGraphStore = create<GraphStore>()(
             ),
           },
         })),
-      
+
       removeNodesFromGroup: (groupId, nodeIds) =>
         set((state) => ({
           groupingState: {
@@ -341,7 +362,7 @@ export const useGraphStore = create<GraphStore>()(
             ),
           },
         })),
-      
+
       toggleGroupCollapse: (groupId) =>
         set((state) => ({
           groupingState: {
@@ -351,7 +372,7 @@ export const useGraphStore = create<GraphStore>()(
             ),
           },
         })),
-      
+
       clearAllGroups: () =>
         set((state) => ({
           groupingState: {
@@ -359,7 +380,7 @@ export const useGraphStore = create<GraphStore>()(
             groups: [],
           },
         })),
-      
+
       setPreferredLayout: (layout) => set({ preferredLayout: layout }),
     }),
     {
@@ -369,6 +390,7 @@ export const useGraphStore = create<GraphStore>()(
         isDarkMode: state.isDarkMode,
         queryHistory: state.queryHistory,
         nodeTypeStyles: state.nodeTypeStyles,
+        activeFilters: state.activeFilters,
         groupingState: state.groupingState,
         preferredLayout: state.preferredLayout,
       }),

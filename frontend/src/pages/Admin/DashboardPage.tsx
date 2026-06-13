@@ -50,85 +50,63 @@ const DashboardPage: React.FC = () => {
     updateInterval: 30000,
   });
 
-  const fetchStats = useCallback(async () => {
+  const fetchStats = useCallback(async (showSpinner = true) => {
     try {
-      setLoading(true);
-      setError('');
-      
-      // 检查是否有 token
-      const token = localStorage.getItem('admin_token');
-      console.log('Dashboard - Token check:', !!token);
-      if (!token) {
-        console.log('No token found, redirecting to login');
-        navigate('/admin/login');
-        return;
+      if (showSpinner) {
+        setLoading(true);
       }
-      
-      console.log('Dashboard - 开始获取数据...');
-      
-      // 并行获取多个统计信息
+      setError('');
+
       const [systemData, healthData, logData] = await Promise.allSettled([
         monitorApi.getStats(),
         monitorApi.getHealth(),
         logApi.getStats(),
       ]);
       const failures: string[] = [];
-      
-      console.log('Dashboard - 数据获取结果:', {
-        system: systemData.status,
-        health: healthData.status,
-        log: logData.status
-      });
-      
+      let hasSuccess = false;
+
       if (systemData.status === 'fulfilled') {
-        console.log('Dashboard - 系统数据:', systemData.value);
         setSystemStats(systemData.value);
-        // 添加到历史数据
         addDataPoint(systemData.value);
+        hasSuccess = true;
       } else {
-        console.error('Dashboard - 系统数据失败:', systemData.reason);
         failures.push(`系统指标：${getErrorMessage(systemData.reason, '请求失败')}`);
       }
-      
+
       if (healthData.status === 'fulfilled') {
-        console.log('Dashboard - 健康数据:', healthData.value);
         setHealthStatus(healthData.value);
+        hasSuccess = true;
       } else {
-        console.error('Dashboard - 健康数据失败:', healthData.reason);
         failures.push(`健康状态：${getErrorMessage(healthData.reason, '请求失败')}`);
       }
-      
+
       if (logData.status === 'fulfilled') {
-        console.log('Dashboard - 日志数据:', logData.value);
         setLogStats(logData.value);
+        hasSuccess = true;
       } else {
-        console.error('Dashboard - 日志数据失败:', logData.reason);
         failures.push(`日志统计：${getErrorMessage(logData.reason, '请求失败')}`);
       }
 
-      if (failures.length > 0 && !systemStats && !healthStatus && !logStats) {
+      if (failures.length > 0 && !hasSuccess) {
         setError(failures.join('；'));
       }
-      
-      // 即使部分数据加载失败,也不显示错误,只在控制台记录
-      console.log('Dashboard - 数据加载完成');
-      
     } catch (err: unknown) {
-      console.error('Dashboard error:', err);
-      // 不设置错误,让页面显示已加载的数据
-      console.error('Dashboard 加载出错,但继续显示可用数据');
+      console.error('Dashboard load failed:', err);
     } finally {
-      setLoading(false);
+      if (showSpinner) {
+        setLoading(false);
+      }
     }
-  }, [addDataPoint, healthStatus, logStats, navigate, systemStats]);
+  }, [addDataPoint]);
 
   useEffect(() => {
-    fetchStats();
-    // 每 30 秒自动刷新
+    void fetchStats();
     if (!pageVisible) {
       return undefined;
     }
-    const interval = window.setInterval(fetchStats, 30000);
+    const interval = window.setInterval(() => {
+      void fetchStats(false);
+    }, 30000);
     return () => window.clearInterval(interval);
   }, [fetchStats, pageVisible]);
 
@@ -172,7 +150,7 @@ const DashboardPage: React.FC = () => {
       <Button variant="outlined" onClick={() => navigate('/admin/analytics')}>
         数据分析
       </Button>
-      <Button variant="contained" startIcon={<RefreshIcon />} onClick={fetchStats} disabled={loading}>
+      <Button variant="contained" startIcon={<RefreshIcon />} onClick={() => void fetchStats()} disabled={loading}>
         刷新
       </Button>
     </Stack>

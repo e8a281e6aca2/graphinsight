@@ -7,6 +7,7 @@ import {
   Chip,
   Divider,
   IconButton,
+  MenuItem,
   TextField,
   Typography,
 } from '@mui/material';
@@ -19,7 +20,7 @@ import {
 import { triggerGraphBuild } from '../../services/graphBuild';
 import { reportClientLog } from '../../services/clientLog';
 import { useGraphStore } from '../../store/graphStore';
-import { askDocDeepResearch, askDocQa } from '../../services/docQa';
+import { askDocDeepResearch, askDocQa, type ReasoningProfile } from '../../services/docQa';
 import { executeQuery } from '../../services/graphService';
 
 interface Citation {
@@ -57,18 +58,12 @@ interface ChatMessage {
   };
 }
 
-interface BuildStats {
-  documents?: number;
-  chunks?: number;
-  entities?: number;
-}
-
-interface BuildFailure {
-  file?: string;
-  reason?: string;
-}
-
 const CITATION_COUNT = 2;
+const REASONING_PROFILE_OPTIONS: Array<{ value: ReasoningProfile; label: string }> = [
+  { value: 'fast', label: 'fast' },
+  { value: 'balanced', label: 'balanced' },
+  { value: 'deep', label: 'deep' },
+];
 
 const quickPrompts = [
   '总结这批文档的核心主题',
@@ -170,6 +165,8 @@ export function DocChatPanel() {
   const [buildError, setBuildError] = useState<string | null>(null);
   const [buildSummary, setBuildSummary] = useState<string | null>(null);
   const [graphSyncMode, setGraphSyncMode] = useState<'precise' | 'full'>('precise');
+  const [qaReasoningProfile, setQaReasoningProfile] = useState<ReasoningProfile>('balanced');
+  const [deepResearchReasoningProfile, setDeepResearchReasoningProfile] = useState<ReasoningProfile>('deep');
   const endRef = useRef<HTMLDivElement | null>(null);
   const lastSyncRef = useRef<{ citations: Citation[]; question: string; answer: string } | null>(null);
 
@@ -243,7 +240,7 @@ export function DocChatPanel() {
     setTypingLabel('正在整理答案...');
 
     try {
-      const result = await askDocQa(value, CITATION_COUNT);
+      const result = await askDocQa(value, CITATION_COUNT, qaReasoningProfile);
       const citations = result?.citations || [];
       const assistantMessage: ChatMessage = {
         id: `assistant-${Date.now()}`,
@@ -294,7 +291,11 @@ export function DocChatPanel() {
     setTypingLabel('正在进行深度调研...');
 
     try {
-      const result = await askDocDeepResearch(value, { topK: 8, maxSubQuestions: 4 });
+      const result = await askDocDeepResearch(value, {
+        topK: 8,
+        maxSubQuestions: 4,
+        reasoningProfile: deepResearchReasoningProfile,
+      });
       const citations = result?.citations || [];
       const assistantMessage: ChatMessage = {
         id: `assistant-${Date.now()}`,
@@ -485,50 +486,13 @@ export function DocChatPanel() {
       note: targetDocIds.length > 0 ? 'recent_upload_scope' : 'full_library_scope',
     })
       .then((result) => {
-        const failures: BuildFailure[] = Array.isArray(result?.failures) ? result.failures : [];
-        if (result?.status === 'completed') {
-          setBuildStatus('done');
-          if (targetDocIds.length > 0) {
-            setRecentUploadedDocIds([]);
-          }
-          if (result?.stats) {
-            const { documents = 0, chunks = 0, entities = 0 } = result.stats as BuildStats;
-            setBuildSummary(`文档 ${documents} · 片段 ${chunks} · 实体 ${entities}`);
-          }
-          runDocGraphQuery();
-          if (failures.length > 0) {
-            const sample = failures
-              .slice(0, 2)
-              .map((item) => item.file)
-              .filter((item): item is string => Boolean(item))
-              .join('、');
-            setBuildError(`解析失败 ${failures.length} 个文件${sample ? `：${sample}` : ''}`);
-          }
-        } else if (result?.status === 'empty') {
-          setBuildStatus('done');
-          if (targetDocIds.length > 0) {
-            setRecentUploadedDocIds([]);
-          }
-          if (result?.message?.includes('文档未变更')) {
-            runDocGraphQuery();
-          }
-          if (failures.length > 0) {
-            const sample = failures
-              .slice(0, 2)
-              .map((item) => item.file)
-              .filter((item): item is string => Boolean(item))
-              .join('、');
-            setBuildError(`解析失败 ${failures.length} 个文件${sample ? `：${sample}` : ''}`);
-          } else {
-            setBuildError('未发现可解析文档');
-          }
-          if (result?.stats) {
-            const { documents = 0, chunks = 0, entities = 0 } = result.stats as BuildStats;
-            setBuildSummary(`文档 ${documents} · 片段 ${chunks} · 实体 ${entities}`);
-          }
-        } else {
-          setBuildStatus('done');
+        setBuildStatus('done');
+        if (targetDocIds.length > 0) {
+          setRecentUploadedDocIds([]);
         }
+        const jobId = typeof result?.job_id === 'number' ? result.job_id : null;
+        setBuildSummary(jobId ? `建图任务 #${jobId} 已提交` : '建图任务已提交');
+        setBuildError(result?.message ?? '建图任务已提交，请在任务中心查看进度。');
       })
       .catch((error) => {
         const message = error instanceof Error ? error.message : String(error);
@@ -545,8 +509,8 @@ export function DocChatPanel() {
   };
 
   const buildLabel = useMemo(() => {
-    if (buildStatus === 'running') return '正在建图...';
-    if (buildStatus === 'done') return '已完成建图';
+    if (buildStatus === 'running') return '正在提交...';
+    if (buildStatus === 'done') return '任务已提交';
     return '一键建图';
   }, [buildStatus]);
 
@@ -609,6 +573,8 @@ export function DocChatPanel() {
             variant="outlined"
           />
           <Chip label={`引用摘要：${CITATION_COUNT} 条`} size="small" variant="outlined" />
+          <Chip label={`问答档位：${qaReasoningProfile}`} size="small" variant="outlined" />
+          <Chip label={`调研档位：${deepResearchReasoningProfile}`} size="small" variant="outlined" />
           <Chip label="已接入文档" size="small" variant="outlined" />
           <Chip
             label={`图谱联动：${graphSyncMode === 'precise' ? '精准' : '全量'}`}
@@ -816,8 +782,36 @@ export function DocChatPanel() {
           }}
         />
         <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
             <Chip label="回答必带引用" size="small" variant="outlined" color="primary" />
+            <TextField
+              select
+              size="small"
+              label="问答档位"
+              value={qaReasoningProfile}
+              onChange={(e) => setQaReasoningProfile(e.target.value as ReasoningProfile)}
+              sx={{ minWidth: 120 }}
+            >
+              {REASONING_PROFILE_OPTIONS.map((option) => (
+                <MenuItem key={option.value} value={option.value}>
+                  {option.label}
+                </MenuItem>
+              ))}
+            </TextField>
+            <TextField
+              select
+              size="small"
+              label="调研档位"
+              value={deepResearchReasoningProfile}
+              onChange={(e) => setDeepResearchReasoningProfile(e.target.value as ReasoningProfile)}
+              sx={{ minWidth: 120 }}
+            >
+              {REASONING_PROFILE_OPTIONS.map((option) => (
+                <MenuItem key={option.value} value={option.value}>
+                  {option.label}
+                </MenuItem>
+              ))}
+            </TextField>
             <Button
               size="small"
               variant="outlined"

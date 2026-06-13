@@ -1,7 +1,11 @@
 import { defineConfig, devices } from '@playwright/test';
 
-const port = process.env.E2E_PORT || '4173';
-const baseURL = process.env.E2E_BASE_URL || `http://127.0.0.1:${port}`;
+const configuredBaseURL = process.env.E2E_BASE_URL;
+const resolvedBaseURL = configuredBaseURL || `http://127.0.0.1:${process.env.E2E_PORT || '4173'}`;
+const parsedBaseURL = new URL(resolvedBaseURL);
+const host = process.env.E2E_HOST || parsedBaseURL.hostname || '127.0.0.1';
+const port = process.env.E2E_PORT || parsedBaseURL.port || (parsedBaseURL.protocol === 'https:' ? '443' : '80');
+const baseURL = resolvedBaseURL;
 
 export default defineConfig({
   testDir: './tests/e2e',
@@ -20,7 +24,7 @@ export default defineConfig({
     video: 'retain-on-failure',
   },
   webServer: {
-    command: `npm run dev -- --host 127.0.0.1 --port ${port}`,
+    command: `npm run dev -- --host ${host} --port ${port}`,
     url: `${baseURL}/admin/login`,
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,

@@ -29,9 +29,11 @@ import {
 } from '@mui/icons-material';
 import { useSearchParams } from 'react-router-dom';
 import { configApi } from '../../services/adminService';
-import type { ConfigItem, ConfigCategory, ConnectionTestResult } from '../../types/admin';
+import type { ConfigItem, ConfigCategory, ConnectionTestResult, ModelCatalogItem } from '../../types/admin';
 import AdminLayout from '../../components/Admin/AdminLayout';
 import { getErrorMessage } from '../../utils/errorMessage';
+
+const REASONING_PROFILE_OPTIONS = ['fast', 'balanced', 'deep'] as const;
 
 interface TabPanelProps {
   children?: React.ReactNode;
@@ -60,6 +62,10 @@ interface FormValues {
   ai_service_base_url: string;
   ai_service_api_key: string;
   ai_service_model: string;
+  ai_service_docqa_reasoning_profile: string;
+  ai_service_deep_research_reasoning_profile: string;
+  ai_service_graph_extract_reasoning_profile: string;
+  ai_service_graph_extract_complex_reasoning_profile: string;
   ai_service_max_tokens: string;
   ai_service_temperature: string;
   // NL2Cypher
@@ -95,6 +101,7 @@ const ConfigPage: React.FC = () => {
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const [availableModels, setAvailableModels] = useState<string[]>([]);
+  const [modelCatalog, setModelCatalog] = useState<ModelCatalogItem[]>([]);
   const [loadingModels, setLoadingModels] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -112,6 +119,10 @@ const ConfigPage: React.FC = () => {
     ai_service_base_url: '',
     ai_service_api_key: '',
     ai_service_model: '',
+    ai_service_docqa_reasoning_profile: 'balanced',
+    ai_service_deep_research_reasoning_profile: 'deep',
+    ai_service_graph_extract_reasoning_profile: 'fast',
+    ai_service_graph_extract_complex_reasoning_profile: 'balanced',
     ai_service_max_tokens: '',
     ai_service_temperature: '',
     nl2cypher_enabled: 'true',
@@ -140,6 +151,10 @@ const ConfigPage: React.FC = () => {
         ai_service_base_url: configs.ai_service?.base_url?.value || '',
         ai_service_api_key: '',
         ai_service_model: configs.ai_service?.model?.value || '',
+        ai_service_docqa_reasoning_profile: configs.ai_service?.docqa_reasoning_profile?.value || 'balanced',
+        ai_service_deep_research_reasoning_profile: configs.ai_service?.deep_research_reasoning_profile?.value || 'deep',
+        ai_service_graph_extract_reasoning_profile: configs.ai_service?.graph_extract_reasoning_profile?.value || 'fast',
+        ai_service_graph_extract_complex_reasoning_profile: configs.ai_service?.graph_extract_complex_reasoning_profile?.value || 'balanced',
         ai_service_max_tokens: configs.ai_service?.max_tokens?.value || '',
         ai_service_temperature: configs.ai_service?.temperature?.value || '',
         nl2cypher_enabled: configs.nl2cypher?.enabled?.value || 'true',
@@ -216,6 +231,10 @@ const ConfigPage: React.FC = () => {
         ai_service_base_url: { category: 'ai_service' as ConfigCategory, key: 'base_url' },
         ai_service_api_key: { category: 'ai_service' as ConfigCategory, key: 'api_key' },
         ai_service_model: { category: 'ai_service' as ConfigCategory, key: 'model' },
+        ai_service_docqa_reasoning_profile: { category: 'ai_service' as ConfigCategory, key: 'docqa_reasoning_profile' },
+        ai_service_deep_research_reasoning_profile: { category: 'ai_service' as ConfigCategory, key: 'deep_research_reasoning_profile' },
+        ai_service_graph_extract_reasoning_profile: { category: 'ai_service' as ConfigCategory, key: 'graph_extract_reasoning_profile' },
+        ai_service_graph_extract_complex_reasoning_profile: { category: 'ai_service' as ConfigCategory, key: 'graph_extract_complex_reasoning_profile' },
         ai_service_max_tokens: { category: 'ai_service' as ConfigCategory, key: 'max_tokens' },
         ai_service_temperature: { category: 'ai_service' as ConfigCategory, key: 'temperature' },
         nl2cypher_enabled: { category: 'nl2cypher', key: 'enabled' },
@@ -254,6 +273,10 @@ const ConfigPage: React.FC = () => {
         ai_service_base_url: configs.ai_service?.base_url?.value || '',
         ai_service_api_key: '',
         ai_service_model: configs.ai_service?.model?.value || '',
+        ai_service_docqa_reasoning_profile: configs.ai_service?.docqa_reasoning_profile?.value || 'balanced',
+        ai_service_deep_research_reasoning_profile: configs.ai_service?.deep_research_reasoning_profile?.value || 'deep',
+        ai_service_graph_extract_reasoning_profile: configs.ai_service?.graph_extract_reasoning_profile?.value || 'fast',
+        ai_service_graph_extract_complex_reasoning_profile: configs.ai_service?.graph_extract_complex_reasoning_profile?.value || 'balanced',
         ai_service_max_tokens: configs.ai_service?.max_tokens?.value || '',
         ai_service_temperature: configs.ai_service?.temperature?.value || '',
         nl2cypher_enabled: configs.nl2cypher?.enabled?.value || 'true',
@@ -305,6 +328,10 @@ const ConfigPage: React.FC = () => {
       { field: 'ai_service_base_url', key: 'base_url' },
       { field: 'ai_service_api_key', key: 'api_key' },
       { field: 'ai_service_model', key: 'model' },
+      { field: 'ai_service_docqa_reasoning_profile', key: 'docqa_reasoning_profile' },
+      { field: 'ai_service_deep_research_reasoning_profile', key: 'deep_research_reasoning_profile' },
+      { field: 'ai_service_graph_extract_reasoning_profile', key: 'graph_extract_reasoning_profile' },
+      { field: 'ai_service_graph_extract_complex_reasoning_profile', key: 'graph_extract_complex_reasoning_profile' },
       { field: 'ai_service_max_tokens', key: 'max_tokens' },
       { field: 'ai_service_temperature', key: 'temperature' },
     ];
@@ -351,12 +378,14 @@ const ConfigPage: React.FC = () => {
       // 先落库 AI 配置（尤其 API Key），避免 onBlur 未触发时读到旧值
       await saveDirtyAiServiceFields();
 
-      const models = await configApi.getAvailableModels({
+      const modelResponse = await configApi.getAvailableModels({
         provider: formValues.ai_service_provider,
         base_url: formValues.ai_service_base_url,
         model: formValues.ai_service_model,
       });
+      const models = modelResponse.models || [];
       setAvailableModels(models);
+      setModelCatalog(Array.isArray(modelResponse.catalog) ? modelResponse.catalog : []);
       if (models.length > 0) {
         setMessage(`成功获取 ${models.length} 个可用模型`);
         if (!formValues.ai_service_model) {
@@ -565,6 +594,100 @@ const ConfigPage: React.FC = () => {
                     {loadingModels ? '加载中...' : '获取模型'}
                   </Button>
                 </Box>
+                <Box sx={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 2 }}>
+                  <TextField
+                    fullWidth
+                    select
+                    label="问答默认档位"
+                    SelectProps={{ native: true }}
+                    value={formValues.ai_service_docqa_reasoning_profile}
+                    onChange={(e) => handleFormChange('ai_service_docqa_reasoning_profile', e.target.value)}
+                    onBlur={() => handleSaveField('ai_service' as ConfigCategory, 'docqa_reasoning_profile', 'ai_service_docqa_reasoning_profile')}
+                    helperText="文档问答默认使用的推理档位"
+                  >
+                    {REASONING_PROFILE_OPTIONS.map((item) => (
+                      <option key={item} value={item}>{item}</option>
+                    ))}
+                  </TextField>
+                  <TextField
+                    fullWidth
+                    select
+                    label="调研默认档位"
+                    SelectProps={{ native: true }}
+                    value={formValues.ai_service_deep_research_reasoning_profile}
+                    onChange={(e) => handleFormChange('ai_service_deep_research_reasoning_profile', e.target.value)}
+                    onBlur={() => handleSaveField('ai_service' as ConfigCategory, 'deep_research_reasoning_profile', 'ai_service_deep_research_reasoning_profile')}
+                    helperText="深度调研默认使用的推理档位"
+                  >
+                    {REASONING_PROFILE_OPTIONS.map((item) => (
+                      <option key={item} value={item}>{item}</option>
+                    ))}
+                  </TextField>
+                  <TextField
+                    fullWidth
+                    select
+                    label="建图默认档位"
+                    SelectProps={{ native: true }}
+                    value={formValues.ai_service_graph_extract_reasoning_profile}
+                    onChange={(e) => handleFormChange('ai_service_graph_extract_reasoning_profile', e.target.value)}
+                    onBlur={() => handleSaveField('ai_service' as ConfigCategory, 'graph_extract_reasoning_profile', 'ai_service_graph_extract_reasoning_profile')}
+                    helperText="常规图谱抽取默认使用的推理档位"
+                  >
+                    {REASONING_PROFILE_OPTIONS.map((item) => (
+                      <option key={item} value={item}>{item}</option>
+                    ))}
+                  </TextField>
+                  <TextField
+                    fullWidth
+                    select
+                    label="复杂建图档位"
+                    SelectProps={{ native: true }}
+                    value={formValues.ai_service_graph_extract_complex_reasoning_profile}
+                    onChange={(e) => handleFormChange('ai_service_graph_extract_complex_reasoning_profile', e.target.value)}
+                    onBlur={() => handleSaveField('ai_service' as ConfigCategory, 'graph_extract_complex_reasoning_profile', 'ai_service_graph_extract_complex_reasoning_profile')}
+                    helperText="复杂抽取任务默认使用的推理档位"
+                  >
+                    {REASONING_PROFILE_OPTIONS.map((item) => (
+                      <option key={item} value={item}>{item}</option>
+                    ))}
+                  </TextField>
+                </Box>
+                {modelCatalog.length > 0 && (
+                  <Box sx={{ display: 'grid', gap: 1 }}>
+                    <Typography variant="subtitle2">模型目录</Typography>
+                    {modelCatalog.slice(0, 8).map((item) => (
+                      <Box
+                        key={`${item.provider}:${item.model}`}
+                        sx={(theme) => ({
+                          display: 'grid',
+                          gridTemplateColumns: 'minmax(0, 1.4fr) minmax(0, 1fr) auto',
+                          gap: 1.5,
+                          alignItems: 'center',
+                          p: 1.25,
+                          border: `1px solid ${theme.palette.divider}`,
+                          borderRadius: 1,
+                          bgcolor: theme.palette.background.default,
+                        })}
+                      >
+                        <Box>
+                          <Typography variant="body2" fontWeight={600}>{item.label || item.model}</Typography>
+                          <Typography variant="caption" color="text.secondary">
+                            {item.provider} · {item.model}
+                          </Typography>
+                        </Box>
+                        <Typography variant="caption" color="text.secondary">
+                          默认档位 {item.default_profile} · 支持 {item.supported_profiles.join(' / ')}
+                        </Typography>
+                        <Chip
+                          size="small"
+                          color={item.supports_reasoning ? 'success' : 'default'}
+                          variant={item.supports_reasoning ? 'filled' : 'outlined'}
+                          label={item.supports_reasoning ? '支持推理档位' : '固定档位'}
+                        />
+                      </Box>
+                    ))}
+                  </Box>
+                )}
                 <Box sx={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 2 }}>
                   <TextField
                     fullWidth

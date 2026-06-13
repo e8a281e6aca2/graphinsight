@@ -1,19 +1,10 @@
 import { api } from './api';
 
 export interface GraphBuildResponse {
-  job_id: string;
+  job_id: number;
   status: string;
   message?: string;
-  doc_ids?: string[];
-  stats?: {
-    documents: number;
-    chunks: number;
-    entities: number;
-  };
-  failures?: Array<{
-    file: string;
-    reason: string;
-  }>;
+  job?: Record<string, unknown>;
 }
 
 export async function triggerGraphBuild(payload?: {
@@ -21,6 +12,8 @@ export async function triggerGraphBuild(payload?: {
   force?: boolean;
   note?: string;
   docIds?: string[];
+  complexExtraction?: boolean;
+  reasoningProfile?: 'fast' | 'balanced' | 'deep';
 }) {
   const response = await api.post(
     '/api/graph/build',
@@ -29,6 +22,8 @@ export async function triggerGraphBuild(payload?: {
       force: payload?.force ?? false,
       note: payload?.note ?? null,
       doc_ids: payload?.docIds ?? [],
+      complex_extraction: payload?.complexExtraction ?? false,
+      reasoning_profile: payload?.reasoningProfile,
     },
     { timeout: 180000 }
   );

@@ -35,7 +35,13 @@ export function NodeDetail({ nodeDetail, isLoading, error }: NodeDetailProps) {
   const [styleConfigOpen, setStyleConfigOpen] = useState(false);
   const [menuAnchorEl, setMenuAnchorEl] = useState<HTMLElement | null>(null);
   const [selectedNodeType, setSelectedNodeType] = useState<string>('');
-  const { graphData, nodeTypeStyles, setNodeTypeStyle } = useGraphStore();
+  const {
+    graphData,
+    nodeTypeStyles,
+    setNodeTypeStyle,
+    toggleHiddenNodeType,
+    isNodeTypeHidden,
+  } = useGraphStore();
 
   // 分析当前节点类型的可用属性
   const availableProperties = useMemo(() => {
@@ -112,9 +118,13 @@ export function NodeDetail({ nodeDetail, isLoading, error }: NodeDetailProps) {
   };
 
   const handleToggleVisibility = () => {
-    // TODO: 实现节点类型的显示/隐藏功能
-    console.log('Toggle visibility for:', selectedNodeType);
+    if (!selectedNodeType) {
+      return;
+    }
+    toggleHiddenNodeType(selectedNodeType);
   };
+
+  const selectedNodeTypeVisible = selectedNodeType ? !isNodeTypeHidden(selectedNodeType) : true;
 
   // 加载状态
   if (isLoading) {
@@ -173,10 +183,11 @@ export function NodeDetail({ nodeDetail, isLoading, error }: NodeDetailProps) {
       <Box sx={{ display: 'flex', gap: 1, mb: 2, flexWrap: 'wrap' }}>
         {nodeDetail.labels.map((label) => {
           const nodeTypeStyle = getNodeTypeStyle(label);
+          const hidden = isNodeTypeHidden(label);
           return (
-            <Tooltip 
-              key={label} 
-              title="右键更多选项" 
+            <Tooltip
+              key={label}
+              title={hidden ? '此类型当前已隐藏，右键可恢复显示' : '右键更多选项'}
               placement="top"
             >
               <Chip
@@ -185,12 +196,13 @@ export function NodeDetail({ nodeDetail, isLoading, error }: NodeDetailProps) {
                 icon={<LabelIcon />}
                 onClick={() => handleLabelClick(label)}
                 onContextMenu={(e) => handleLabelContextMenu(e, label)}
-                sx={{ 
+                sx={{
                   cursor: 'pointer',
                   backgroundColor: nodeTypeStyle.color,
                   color: 'white',
+                  opacity: hidden ? 0.45 : 1,
                   '&:hover': {
-                    opacity: 0.8,
+                    opacity: hidden ? 0.65 : 0.8,
                     transform: 'scale(1.02)',
                   },
                   '& .MuiChip-icon': {
@@ -276,7 +288,7 @@ export function NodeDetail({ nodeDetail, isLoading, error }: NodeDetailProps) {
         onClose={handleMenuClose}
         onConfigureStyle={handleConfigureStyle}
         onToggleVisibility={handleToggleVisibility}
-        isVisible={true} // TODO: 实现真实的可见性状态
+        isVisible={selectedNodeTypeVisible}
       />
 
 
