@@ -83,6 +83,7 @@ STAGE_KEYWORDS = {
 }
 
 SCHEMA_RELATION_LABELS = {
+    "作者",
     "防治对象",
     "平均防效",
     "病情指数",
@@ -90,7 +91,16 @@ SCHEMA_RELATION_LABELS = {
     "增产率",
     "使用剂量",
     "发生阶段",
+    "时间",
     "地点",
+    "海拔",
+    "土壤类型",
+    "土壤肥力",
+    "土壤pH",
+    "供试品种",
+    "供试药剂",
+    "提供方",
+    "工作单位",
     "属于",
     "影响",
     "高发期",
@@ -99,6 +109,7 @@ SCHEMA_RELATION_LABELS = {
 }
 
 RULE_RELATION_KEYWORDS = {
+    "作者",
     "属于",
     "隶属",
     "位于",
@@ -118,6 +129,16 @@ RULE_RELATION_KEYWORDS = {
     "支持",
     "关联",
     "相关",
+    "时间",
+    "地点",
+    "海拔",
+    "土壤类型",
+    "土壤肥力",
+    "土壤pH",
+    "供试品种",
+    "供试药剂",
+    "提供方",
+    "工作单位",
 }
 
 MIN_DEFAULT_RELATION_CONFIDENCE = 0.3
@@ -1100,8 +1121,12 @@ class DocumentGraphService:
         use_llm: bool = True,
     ) -> List[str]:
         llm_entities = llm_entity_extractor.extract(text, reasoning_profile=reasoning_profile) if use_llm else []
-        if llm_entities:
-            return normalize_entity_values(llm_entities, max_items=max_entities)
+        rule_entities = self._extract_entities_by_rules(text)
+        if llm_entities or rule_entities:
+            return normalize_entity_values(
+                [*rule_entities, *llm_entities],
+                max_items=max(max_entities, settings.llm_max_entities, 32),
+            )
 
         tokens = re.findall(r"[\u4e00-\u9fff]{2,6}|[A-Za-z][A-Za-z0-9_-]{2,}", text)
         freq: Dict[str, int] = {}
@@ -1113,6 +1138,92 @@ class DocumentGraphService:
         ranked = sorted(freq.items(), key=lambda item: item[1], reverse=True)
         result = [token for token, _ in ranked[:max_entities]]
         return normalize_entity_values(result, max_items=max_entities)
+
+    @staticmethod
+    def _extract_entities_by_rules(text: str) -> List[str]:
+        raw = text or ""
+        compact = re.sub(r"\s+", "", raw)
+        candidates: List[object] = []
+
+        def clean_location(value: str) -> str:
+            value = re.sub(r"^.*[在于]", "", value)
+            value = re.sub(r"^(?:至|到|从|自)", "", value)
+            return value
+
+        contextual_location = re.search(
+            r"[在于]([\u4e00-\u9fff]{2,8}省[\u4e00-\u9fff]{2,12}县[\u4e00-\u9fff]{1,12}镇[\u4e00-\u9fff]{1,12}村)进行",
+            compact,
+        )
+        if contextual_location:
+            candidates.append(contextual_location.group(1))
+
+        for match in re.finditer(r"(?<![年月日])[\u4e00-\u9fff]{2,12}(?:省|市|县|区|镇|乡|村|州|盟|旗)", compact):
+            value = clean_location(match.group(0))
+            if len(value) >= 4:
+                candidates.append(value)
+
+        for match in re.finditer(
+            r"(?<![年月日])[\u4e00-\u9fff]{2,8}省[\u4e00-\u9fff]{2,12}县[\u4e00-\u9fff]{1,12}镇[\u4e00-\u9fff]{1,12}村",
+            compact,
+        ):
+            candidates.append(clean_location(match.group(0)))
+        for match in re.finditer(r"[\u4e00-\u9fff]{2,12}镇[\u4e00-\u9fff]{1,12}村", compact):
+            candidates.append(clean_location(match.group(0)))
+
+        for match in re.finditer(r"(?:19|20)\d{2}年\d{1,2}月至(?:19|20)\d{2}年\d{1,2}月", compact):
+            candidates.append(match.group(0))
+        for match in re.finditer(r"(?:19|20)\d{2}年", compact):
+            candidates.append(match.group(0))
+
+        altitude = re.search(r"海拔(?:约|为)?\s*(\d+(?:\.\d+)?)\s*m", raw, flags=re.IGNORECASE)
+        if altitude:
+            candidates.append(f"海拔{altitude.group(1)}m")
+            candidates.append("海拔")
+
+        soil_type = re.search(r"土壤为([\u4e00-\u9fffA-Za-z0-9-]{2,16})", compact)
+        if soil_type:
+            candidates.append(soil_type.group(1))
+        fertility = re.search(r"土壤肥力([\u4e00-\u9fffA-Za-z0-9-]{1,12})", compact)
+        if fertility:
+            candidates.append(f"土壤肥力{fertility.group(1)}")
+        ph = re.search(r"pH\s*([0-9]+(?:\.[0-9]+)?)", raw, flags=re.IGNORECASE)
+        if ph:
+            candidates.append(f"pH{ph.group(1)}")
+
+        wheat_variety = re.search(r"供试小麦品种为([\u4e00-\u9fffA-Za-z0-9-]{2,24})", compact)
+        if wheat_variety:
+            candidates.append(wheat_variety.group(1))
+        equipment = re.search(r"施药器械为([\u4e00-\u9fffA-Za-z0-9 ./%-]{2,32})", raw)
+        if equipment:
+            candidates.append(equipment.group(1).strip())
+
+        for match in re.finditer(r"\d+(?:\.\d+)?\s*(?:%|g/L|mg/L)?\s*[\u4e00-\u9fff]{2,12}\s*(?:WP|SC|EC|ME|SE|WG)?", raw):
+            value = match.group(0).strip()
+            if re.search(r"(酮|醇|唑|环唑|药剂|WP|SC|EC)", value):
+                candidates.append(value)
+
+        for match in re.finditer(r"[\u4e00-\u9fff]{2,24}(?:公司|中心|研究所|学院|大学|合作社|有限公司)", compact):
+            candidates.append(match.group(0))
+
+        author_line = re.match(r"^([\u4e00-\u9fff，、,\s]{4,80})（([^）]{4,80})）", raw.strip())
+        if author_line:
+            for name in re.split(r"[，、,\s]+", author_line.group(1)):
+                if 2 <= len(name) <= 4:
+                    candidates.append(name)
+            org = author_line.group(2).split("，")[0].strip()
+            if org:
+                candidates.append(org)
+
+        if "试验" in compact:
+            candidates.append("试验")
+        if "供试药剂" in compact:
+            candidates.append("供试药剂")
+        if "供试小麦品种" in compact:
+            candidates.append("供试小麦品种")
+        if "施药器械" in compact:
+            candidates.append("施药器械")
+
+        return normalize_entity_values(candidates, max_items=64)
 
     def _extract_relations(
         self,
@@ -1136,6 +1247,9 @@ class DocumentGraphService:
             )
             if item
         ]
+        high_value_relations = self._extract_high_value_relations(text, entities)
+        if high_value_relations:
+            relations = (relations or []) + high_value_relations
         stage_relations = self._extract_stage_relations(text, entities)
         if stage_relations:
             relations = (relations or []) + stage_relations
@@ -1143,6 +1257,99 @@ class DocumentGraphService:
             # LLM 失败时回退到规则抽取，避免图谱只剩 Chunk -> Entity 的结构。
             relations = self._extract_relations_by_rules(text, entities)
         return self._normalize_relations(relations)
+
+    @staticmethod
+    def _extract_high_value_relations(text: str, entities: List[str]) -> List[Dict[str, object]]:
+        raw = text or ""
+        compact = re.sub(r"\s+", "", raw)
+        entity_keys = {re.sub(r"\s+", "", item).lower(): item for item in entities if item}
+        relations: List[Dict[str, object]] = []
+        seen = set()
+
+        def canonical(name: object) -> str:
+            normalized = normalize_entity_name(name)
+            if not normalized:
+                return ""
+            return entity_keys.get(re.sub(r"\s+", "", normalized).lower(), normalized)
+
+        def add(source: object, target: object, label: str, confidence: float, terms: List[str]) -> None:
+            source_name = canonical(source)
+            target_name = canonical(target)
+            if not source_name or not target_name or source_name == target_name:
+                return
+            key = (source_name.lower(), target_name.lower(), label)
+            if key in seen:
+                return
+            evidence = evidence_validator.find_evidence(raw, terms, require_all=False)
+            if not evidence:
+                return
+            seen.add(key)
+            relations.append(
+                {
+                    "source": source_name,
+                    "target": target_name,
+                    "label": label,
+                    "confidence": confidence,
+                    "evidence": evidence,
+                }
+            )
+
+        experiment = "试验" if "试验" in compact else ""
+        location = ""
+        location_match = re.search(
+            r"在([\u4e00-\u9fff]{2,8}省[\u4e00-\u9fff]{2,12}县[\u4e00-\u9fff]{1,12}镇[\u4e00-\u9fff]{1,12}村)进行",
+            compact,
+        )
+        if location_match:
+            location = location_match.group(1)
+        elif experiment:
+            fallback_location = re.search(r"在([\u4e00-\u9fff]{2,12}镇[\u4e00-\u9fff]{1,12}村)进行", compact)
+            if fallback_location:
+                location = fallback_location.group(1)
+
+        time_match = re.search(r"((?:19|20)\d{2}年\d{1,2}月至(?:19|20)\d{2}年\d{1,2}月)", compact)
+        if experiment and location:
+            add(experiment, location, "地点", 0.9, [location, "试验"])
+        if experiment and time_match:
+            add(experiment, time_match.group(1), "时间", 0.9, [time_match.group(1), "试验"])
+
+        anchor = location or experiment or "试验"
+        altitude_match = re.search(r"海拔(?:约|为)?\s*(\d+(?:\.\d+)?)\s*m", raw, flags=re.IGNORECASE)
+        if altitude_match:
+            add(anchor, f"海拔{altitude_match.group(1)}m", "海拔", 0.9, ["海拔", altitude_match.group(1)])
+
+        soil_type = re.search(r"土壤为([\u4e00-\u9fffA-Za-z0-9-]{2,16})", compact)
+        if soil_type:
+            add(anchor, soil_type.group(1), "土壤类型", 0.86, ["土壤", soil_type.group(1)])
+        fertility = re.search(r"土壤肥力([\u4e00-\u9fffA-Za-z0-9-]{1,12})", compact)
+        if fertility:
+            add(anchor, f"土壤肥力{fertility.group(1)}", "土壤肥力", 0.84, ["土壤肥力", fertility.group(1)])
+        ph = re.search(r"pH\s*([0-9]+(?:\.[0-9]+)?)", raw, flags=re.IGNORECASE)
+        if ph:
+            add(anchor, f"pH{ph.group(1)}", "土壤pH", 0.84, ["pH", ph.group(1)])
+
+        variety = re.search(r"供试小麦品种为([\u4e00-\u9fffA-Za-z0-9-]{2,24})", compact)
+        if variety:
+            add("供试小麦品种", variety.group(1), "供试品种", 0.88, ["供试小麦品种", variety.group(1)])
+            if experiment:
+                add(experiment, variety.group(1), "供试品种", 0.78, ["供试小麦品种", variety.group(1)])
+
+        provider = re.search(r"均由([\u4e00-\u9fff]{2,24}(?:公司|中心|研究所|学院|大学|合作社|有限公司))提供", compact)
+        if provider:
+            add("供试药剂", provider.group(1), "提供方", 0.88, ["供试药剂", provider.group(1), "提供"])
+
+        equipment = re.search(r"施药器械为([\u4e00-\u9fffA-Za-z0-9 ./%-]{2,32})", raw)
+        if equipment:
+            add("施药器械", equipment.group(1).strip(), "使用", 0.82, ["施药器械", equipment.group(1).strip()])
+
+        author_line = re.match(r"^([\u4e00-\u9fff，、,\s]{4,80})（([^）]{4,80})）", raw.strip())
+        if author_line:
+            org = author_line.group(2).split("，")[0].strip()
+            for name in re.split(r"[，、,\s]+", author_line.group(1)):
+                if 2 <= len(name) <= 4:
+                    add(name, org, "工作单位", 0.9, [name, org])
+
+        return relations
 
     @staticmethod
     def _merge_relations(

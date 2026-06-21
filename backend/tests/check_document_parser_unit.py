@@ -468,6 +468,28 @@ def _check_relation_timeout_circuit_breaker() -> None:
         _assert(calls["count"] == 2, calls)
 
 
+def _check_high_value_experiment_fact_rules() -> None:
+    from services.document_graph_service import DocumentGraphService
+
+    service = DocumentGraphService()
+    text = (
+        "试验于 2022 年 10 月至 2023 年 5 月在贵州省金沙县茶园镇民乐村进行，"
+        "海拔 850 m，土地平整，土壤为黄泥土，土壤肥力中等，pH 5.7。"
+    )
+    entities = service._extract_entities(text, use_llm=False)
+    _assert("贵州省金沙县茶园镇民乐村" in entities, entities)
+    _assert("2022年10月至2023年5月" in entities, entities)
+    _assert("海拔850m" in entities, entities)
+    _assert("黄泥土" in entities, entities)
+
+    relations = service._extract_relations(text, entities, use_llm=False)
+    triples = {(item["source"], item["label"], item["target"]) for item in relations}
+    _assert(("试验", "地点", "贵州省金沙县茶园镇民乐村") in triples, relations)
+    _assert(("试验", "时间", "2022年10月至2023年5月") in triples, relations)
+    _assert(("贵州省金沙县茶园镇民乐村", "海拔", "海拔850m") in triples, relations)
+    _assert(("贵州省金沙县茶园镇民乐村", "土壤类型", "黄泥土") in triples, relations)
+
+
 def main() -> int:
     _check_native_text_and_json()
     _check_mineru_response_parsing()
@@ -481,6 +503,7 @@ def main() -> int:
     _check_schema_aware_relations_and_evidence_validation()
     _check_relation_prompt_budget()
     _check_relation_timeout_circuit_breaker()
+    _check_high_value_experiment_fact_rules()
     print("DOCUMENT_PARSER_UNIT_OK")
     return 0
 

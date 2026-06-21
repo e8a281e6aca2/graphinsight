@@ -125,12 +125,14 @@ WHERE d.source = 'document_ingest'
   AND c.chunk_id IN $chunkIds
 MATCH (c)-[m:MENTIONS]->(e:Entity)
 WHERE size($keywords) = 0
+   OR toLower(e.name) IN $entityNames
    OR any(k IN $keywords WHERE toLower(e.name) CONTAINS k OR k CONTAINS toLower(e.name))
 WITH DISTINCT d, h, c, m, e
 OPTIONAL MATCH (c)-[:MENTIONS]->(ePeer:Entity)
 WHERE ePeer <> e
   AND (
     size($keywords) = 0
+    OR toLower(ePeer.name) IN $entityNames
     OR any(k IN $keywords WHERE toLower(ePeer.name) CONTAINS k OR k CONTAINS toLower(ePeer.name))
   )
 OPTIONAL MATCH (e)-[r]-(ePeer)
@@ -476,7 +478,7 @@ export function DocChatPanel() {
       let queryUsed = '';
 
       if (chunkIds.length > 0) {
-        result = await executeQuery(DOC_CITATION_FOCUS_QUERY, { chunkIds, keywords });
+        result = await executeQuery(DOC_CITATION_FOCUS_QUERY, { chunkIds, entityNames, keywords });
         queryUsed = DOC_CITATION_FOCUS_QUERY;
       }
 

@@ -1,7 +1,7 @@
 # GraphInsight 知识发现管线设计
 
 更新时间：2026-06-21
-状态：设计中；结构化 chunker、实体归一化、表格行级关系抽取、schema-aware LLM 关系抽取和 evidence 校验基础实现已接入，DocumentProfiler 与按文档类型 prompt 待实施
+状态：设计中；结构化 chunker、实体归一化、表格行级关系抽取、schema-aware LLM 关系抽取、evidence 校验和高价值事实规则抽取基础实现已接入，DocumentProfiler 与按文档类型 prompt 待实施
 
 ## 1. 背景
 
@@ -10,6 +10,7 @@
 
 1. 结构化 chunker 已覆盖标题、段落和 HTML table，但列表、条款、图片说明、公式、跨页表格和精确 page/bbox 定位仍需增强。
 2. 实体/关系抽取仍以通用 LLM 抽取和规则兜底为主，缺少文档类型识别、schema 约束和完整 evidence 校验。
+3. 2026-06-22 已补充农业试验类高价值事实规则兜底：试验时间、试验地点、海拔、土壤类型、土壤肥力、pH、供试品种、供试药剂提供方、施药器械、作者工作单位。该规则用于避免向量可答但图谱只剩 `Chunk -> Entity` 的弱结构。
 
 结果是：文档能被解析，但图谱容易退化为 `Document -> Chunk -> Entity`，缺少高质量实体间关系。
 
