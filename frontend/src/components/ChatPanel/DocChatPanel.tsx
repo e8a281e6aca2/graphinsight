@@ -288,7 +288,7 @@ export function DocChatPanel() {
         {
           id: `assistant-${Date.now()}`,
           role: 'assistant',
-          content: '抱歉，当前问答服务不可用，请稍后重试。',
+          content: getErrorMessage(error, '抱歉，当前问答服务不可用，请稍后重试。'),
           citations: [],
         },
       ]);
@@ -349,7 +349,7 @@ export function DocChatPanel() {
         {
           id: `assistant-${Date.now()}`,
           role: 'assistant',
-          content: '抱歉，深度调研暂时不可用，请稍后重试。',
+          content: getErrorMessage(error, '抱歉，深度调研暂时不可用，请稍后重试。'),
           citations: [],
           mode: 'deep_research',
         },
