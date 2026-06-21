@@ -6,14 +6,19 @@ from pathlib import Path
 from dotenv import load_dotenv
 from functools import lru_cache
 
-# 强制重新加载 .env 文件。Linux 统一启动脚本可通过
-# GRAPHINSIGHT_BACKEND_ENV_FILE 指向临时开发配置，避免覆盖用户的 backend/.env。
+# 先加载用户 backend/.env 中的密钥与模型配置，再用开发运行时 env 覆盖端口、
+# 存储目录和数据库连接等本地启动参数。这样 Go 网关与 Python worker 使用
+# 同一份 AI/Embedding 凭据，同时不需要把密钥复制进 logs/dev/backend.env。
 _env_override = os.getenv("GRAPHINSIGHT_BACKEND_ENV_FILE", "").strip()
-_env_path = Path(_env_override).expanduser().resolve() if _env_override else Path(__file__).resolve().parent / ".env"
-if _env_path.exists():
-    load_dotenv(dotenv_path=_env_path, override=True)
+_default_env_path = Path(__file__).resolve().parent / ".env"
+if _default_env_path.exists():
+    load_dotenv(dotenv_path=_default_env_path, override=True)
 else:
     load_dotenv(override=True)
+if _env_override:
+    _env_path = Path(_env_override).expanduser().resolve()
+    if _env_path.exists():
+        load_dotenv(dotenv_path=_env_path, override=True)
 
 
 _BASE_DIR = Path(__file__).resolve().parent
@@ -53,6 +58,22 @@ class Settings:
 
         # 文档存储路径（用于建图与问答，统一解析为绝对路径）
         self.document_storage_path = _resolve_path(os.getenv("DOCUMENT_STORAGE_PATH", "./documents"), _BASE_DIR)
+        # 文档解析中间产物路径（Markdown/raw JSON/blocks/chunks），用于排障与验收。
+        self.parsed_document_storage_path = _resolve_path(
+            os.getenv("PARSED_DOCUMENT_STORAGE_PATH", "./parsed_documents"),
+            _BASE_DIR,
+        )
+
+        # 文档解析配置。MinerU 作为独立 HTTP 侧车接入，默认继续使用内置解析器。
+        self.document_parser_provider = os.getenv("DOCUMENT_PARSER_PROVIDER", "native").strip().lower()
+        self.document_parser_fallback_provider = os.getenv("DOCUMENT_PARSER_FALLBACK_PROVIDER", "native").strip().lower()
+        self.mineru_base_url = os.getenv("MINERU_BASE_URL", "").strip()
+        self.mineru_endpoint_path = os.getenv("MINERU_ENDPOINT_PATH", "/file_parse").strip() or "/file_parse"
+        self.mineru_file_field = os.getenv("MINERU_FILE_FIELD", "files").strip() or "files"
+        self.mineru_parse_mode = os.getenv("MINERU_PARSE_MODE", "auto").strip() or "auto"
+        self.mineru_output_format = os.getenv("MINERU_OUTPUT_FORMAT", "markdown,json").strip() or "markdown,json"
+        self.mineru_timeout_seconds = float(os.getenv("MINERU_TIMEOUT_SECONDS", "300"))
+        self.mineru_parser_version = os.getenv("MINERU_PARSER_VERSION", "").strip()
         
         # OpenAI 配置
         self.openai_api_key = os.getenv("OPENAI_API_KEY", "")
@@ -74,12 +95,44 @@ class Settings:
         self.llm_relation_temperature = float(os.getenv("LLM_RELATION_TEMPERATURE", "0.1"))
         self.llm_max_relations = int(os.getenv("LLM_MAX_RELATIONS", "8"))
         self.llm_relation_dynamic_type = os.getenv("LLM_RELATION_DYNAMIC_TYPE", "true").lower() == "true"
+        self.llm_relation_text_budget = int(os.getenv("LLM_RELATION_TEXT_BUDGET", "1000"))
+        self.llm_relation_max_prompt_entities = int(os.getenv("LLM_RELATION_MAX_PROMPT_ENTITIES", "18"))
+        self.llm_graph_extract_max_llm_chunks = int(os.getenv("LLM_GRAPH_EXTRACT_MAX_LLM_CHUNKS", "2"))
+        self.llm_graph_extract_timeout_seconds = float(os.getenv("LLM_GRAPH_EXTRACT_TIMEOUT_SECONDS", "12"))
 
         # LLM 问答配置（默认复用 LLM_MODEL）
         self.llm_qa_model = os.getenv("LLM_QA_MODEL") or self.llm_model
         self.llm_qa_temperature = float(os.getenv("LLM_QA_TEMPERATURE", "0.2"))
         self.llm_qa_max_tokens = int(os.getenv("LLM_QA_MAX_TOKENS", "600"))
         self.llm_qa_max_context = int(os.getenv("LLM_QA_MAX_CONTEXT", "4"))
+
+        # 文档问答检索配置
+        # keyword: Neo4j 全文检索；vector: Milvus 向量检索；
+        # hybrid: 全文 + 向量；graph_hybrid: 全文 + 向量 + 图谱扩展。
+        self.docqa_retrieval_mode = os.getenv("DOCQA_RETRIEVAL_MODE", "keyword").strip().lower()
+        self.docqa_retrieval_rrf_k = int(os.getenv("DOCQA_RETRIEVAL_RRF_K", "60"))
+        self.docqa_retrieval_candidate_multiplier = int(os.getenv("DOCQA_RETRIEVAL_CANDIDATE_MULTIPLIER", "6"))
+        self.docqa_retrieval_graph_enabled = os.getenv("DOCQA_RETRIEVAL_GRAPH_ENABLED", "true").lower() == "true"
+
+        # OpenAI-compatible embedding 配置，默认复用 ai_service 的 base_url/api_key。
+        self.embedding_enabled = os.getenv("EMBEDDING_ENABLED", "true").lower() == "true"
+        self.embedding_model = os.getenv(
+            "EMBEDDING_MODEL",
+            os.getenv("AI_SERVICE_EMBEDDING_MODEL", "text-embedding-3-small"),
+        )
+        self.embedding_dimension = int(os.getenv("EMBEDDING_DIMENSION", "1536"))
+        self.embedding_batch_size = int(os.getenv("EMBEDDING_BATCH_SIZE", "32"))
+
+        # 向量库配置。默认不开启，避免没有 Milvus 或 embedding key 时影响现有全文问答。
+        self.vector_store_enabled = os.getenv("VECTOR_STORE_ENABLED", "false").lower() == "true"
+        self.vector_store_provider = os.getenv("VECTOR_STORE_PROVIDER", "milvus").strip().lower()
+        self.milvus_uri = os.getenv("MILVUS_URI", "http://127.0.0.1:19530")
+        self.milvus_token = os.getenv("MILVUS_TOKEN", "")
+        self.milvus_db_name = os.getenv("MILVUS_DB_NAME", "default")
+        self.milvus_collection = os.getenv("MILVUS_COLLECTION", "graphinsight_chunks")
+        self.milvus_metric_type = os.getenv("MILVUS_METRIC_TYPE", "COSINE").strip().upper()
+        self.milvus_index_type = os.getenv("MILVUS_INDEX_TYPE", "IVF_FLAT").strip().upper()
+        self.milvus_search_nprobe = int(os.getenv("MILVUS_SEARCH_NPROBE", "16"))
 
         # HTTP client 配置
         self.http_client_trust_env = os.getenv("HTTP_CLIENT_TRUST_ENV", "false").lower() == "true"

@@ -15,11 +15,17 @@ import (
 	"graphinsight/go-backend/internal/orchestrator"
 )
 
+type publicConversationTurn struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
 type publicDocQAPayload struct {
-	Question         string `json:"question"`
-	TopK             *int   `json:"top_k,omitempty"`
-	RequireCitation  *bool  `json:"require_citation,omitempty"`
-	ReasoningProfile string `json:"reasoning_profile,omitempty"`
+	Question            string                   `json:"question"`
+	TopK                *int                     `json:"top_k,omitempty"`
+	RequireCitation     *bool                    `json:"require_citation,omitempty"`
+	ReasoningProfile    string                   `json:"reasoning_profile,omitempty"`
+	ConversationHistory []publicConversationTurn `json:"conversation_history,omitempty"`
 }
 
 type publicDeepResearchPayload struct {

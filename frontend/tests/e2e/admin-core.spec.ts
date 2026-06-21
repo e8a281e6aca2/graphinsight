@@ -63,6 +63,40 @@ async function authenticate(page: Page) {
   await expect(page).toHaveURL(/\/admin\/dashboard$/);
 }
 
+async function installFullscreenLoadingObserver(page: Page) {
+  await page.evaluate(() => {
+    const marker = 'GraphInsight 正在加载';
+    const globalWindow = window as Window & {
+      __graphInsightFullscreenLoadingSeen?: boolean;
+      __graphInsightLoadingObserver?: MutationObserver;
+    };
+    globalWindow.__graphInsightFullscreenLoadingSeen = false;
+    const check = () => {
+      if (document.body?.innerText.includes(marker)) {
+        globalWindow.__graphInsightFullscreenLoadingSeen = true;
+      }
+    };
+    check();
+    globalWindow.__graphInsightLoadingObserver?.disconnect();
+    globalWindow.__graphInsightLoadingObserver = new MutationObserver(check);
+    globalWindow.__graphInsightLoadingObserver.observe(document.body, {
+      childList: true,
+      subtree: true,
+      characterData: true,
+    });
+  });
+}
+
+async function expectAdminShellStable(page: Page) {
+  await expect(page.getByText('GraphInsight 正在加载')).toBeHidden();
+  await expect(page.getByText('Enterprise Admin')).toBeVisible();
+  const seen = await page.evaluate(() => {
+    const globalWindow = window as Window & { __graphInsightFullscreenLoadingSeen?: boolean };
+    return Boolean(globalWindow.__graphInsightFullscreenLoadingSeen);
+  });
+  expect(seen).toBe(false);
+}
+
 test.describe('Admin Console Core Flow', () => {
   test.beforeEach(async ({ request }, testInfo) => {
     if (!adminPassword) {
@@ -149,21 +183,31 @@ test.describe('Admin Console Core Flow', () => {
 
     await page.goto('/admin/dashboard');
     await expect(page.getByRole('heading', { name: '系统仪表板' })).toBeVisible();
+    await installFullscreenLoadingObserver(page);
+    await expectAdminShellStable(page);
 
-    await page.getByRole('button', { name: '配置中心' }).first().click();
+    const sidebar = page.getByRole('list').first();
+
+    await sidebar.getByRole('button', { name: '配置中心', exact: true }).click();
+    await expectAdminShellStable(page);
     await expect(page).toHaveURL(/\/admin\/config$/);
-    await expect(page.getByRole('heading', { name: '配置中心' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: '配置中心', exact: true })).toBeVisible();
+    await expectAdminShellStable(page);
     await page.getByRole('tab', { name: 'AI 服务配置' }).click();
     await expect(page.getByRole('button', { name: /测试当前模型/ })).toBeVisible();
 
-    await page.getByRole('button', { name: '任务中心' }).click();
+    await sidebar.getByRole('button', { name: '任务中心', exact: true }).click();
+    await expectAdminShellStable(page);
     await expect(page).toHaveURL(/\/admin\/jobs$/);
-    await expect(page.getByRole('heading', { name: '任务中心' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: '任务中心', exact: true })).toBeVisible();
+    await expectAdminShellStable(page);
     await expect(page.getByRole('button', { name: '新建建图任务' })).toBeVisible();
 
-    await page.getByRole('button', { name: '问答追踪' }).click();
+    await sidebar.getByRole('button', { name: '问答追踪', exact: true }).click();
+    await expectAdminShellStable(page);
     await expect(page).toHaveURL(/\/admin\/qa-traces$/);
-    await expect(page.getByRole('heading', { name: '问答追踪' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: '问答追踪', exact: true })).toBeVisible();
+    await expectAdminShellStable(page);
     await expect(page.getByRole('table')).toBeVisible();
   });
 });

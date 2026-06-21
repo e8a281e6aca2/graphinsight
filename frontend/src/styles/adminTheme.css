@@ -11,14 +11,12 @@
 }
 
 .admin-root {
-  min-height: 100vh;
-  background: radial-gradient(circle at 12% 12%, rgba(27, 127, 121, 0.18), transparent 45%),
-    radial-gradient(circle at 88% 18%, rgba(242, 183, 5, 0.2), transparent 40%),
-    radial-gradient(circle at 50% 80%, rgba(15, 31, 45, 0.08), transparent 45%),
-    linear-gradient(180deg, #f8fbfd 0%, #eff3f6 60%, #eef2f5 100%);
+  height: 100vh;
+  background: linear-gradient(180deg, #f8fbfd 0%, #eff3f6 60%, #eef2f5 100%);
   color: var(--admin-ink);
   position: relative;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
@@ -43,19 +41,4 @@
     );
   opacity: 0.5;
   pointer-events: none;
-}
-
-.admin-orb {
-  position: absolute;
-  width: 220px;
-  height: 220px;
-  border-radius: 50%;
-  background: radial-gradient(circle, rgba(27, 127, 121, 0.25) 0%, rgba(27, 127, 121, 0) 70%);
-  filter: blur(6px);
-}
-
-.admin-orb.secondary {
-  width: 180px;
-  height: 180px;
-  background: radial-gradient(circle, rgba(242, 183, 5, 0.25) 0%, rgba(242, 183, 5, 0) 70%);
 }

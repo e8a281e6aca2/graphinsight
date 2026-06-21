@@ -245,13 +245,16 @@ def _check_build_graph_job_passes_reasoning_profile() -> None:
                 "doc_ids": ["doc-1"],
                 "reasoning_profile": "balanced",
                 "complex_extraction": True,
+                "parser_provider": "mineru",
             },
         )
 
     _assert(captured.get("reasoning_profile") == "balanced", f"unexpected reasoning profile: {captured}")
     _assert(captured.get("complex_extraction") is True, f"unexpected complex_extraction: {captured}")
+    _assert(captured.get("parser_provider") == "mineru", f"unexpected parser_provider: {captured}")
     _assert(result["reasoning_profile"] == "balanced", f"unexpected result reasoning profile: {result}")
     _assert(result["complex_extraction"] is True, f"unexpected result complex flag: {result}")
+    _assert(result["parser_provider"] == "mineru", f"unexpected result parser provider: {result}")
 
 
 def main() -> int:

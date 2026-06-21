@@ -24,6 +24,7 @@ import {
 } from '@mui/icons-material';
 import { profileApi } from '../../services/adminService';
 import { getErrorMessage } from '../../utils/errorMessage';
+import AdminLoadingButton from './AdminLoadingButton';
 
 interface PasswordDialogProps {
   open: boolean;
@@ -256,13 +257,14 @@ const PasswordDialog: React.FC<PasswordDialogProps> = ({ open, onClose, onSucces
         <Button onClick={handleClose} disabled={loading}>
           取消
         </Button>
-        <Button
+        <AdminLoadingButton
           onClick={handleSubmit}
           variant="contained"
+          loading={loading}
           disabled={loading || success}
-        >
-          {loading ? '修改中...' : '确认修改'}
-        </Button>
+          label="确认修改"
+          loadingLabel="修改中..."
+        />
       </DialogActions>
     </Dialog>
   );

@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useCallback, useContext, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import {
   Box,
@@ -19,6 +19,7 @@ import {
   Analytics,
   Dashboard,
   Description,
+  Folder,
   FactCheck,
   Hub,
   ManageSearch,
@@ -45,30 +46,106 @@ type AdminLayoutProps = {
 
 const drawerWidth = 260;
 
-const AdminLayout: React.FC<AdminLayoutProps> = ({ title, subtitle, actions, children }) => {
+type AdminFrameControls = {
+  isMobile: boolean;
+  openMobileNav: () => void;
+};
+
+type AdminNavItem = {
+  label: string;
+  icon: ReactNode;
+  path: string;
+};
+
+type AdminNavGroup = {
+  label: string;
+  items: AdminNavItem[];
+};
+
+const AdminShellControlsContext = React.createContext<AdminFrameControls | null>(null);
+
+const AdminPageChrome: React.FC<AdminLayoutProps & { controls: AdminFrameControls }> = ({
+  title,
+  subtitle,
+  actions,
+  children,
+  controls,
+}) => (
+  <Box sx={{ flexGrow: 1, minWidth: 0, px: { xs: 2, md: 5 }, pt: 4, pb: { xs: 8, md: 10 } }}>
+    <Stack direction="row" alignItems="center" spacing={2} sx={{ mb: 4 }}>
+      {controls.isMobile && (
+        <IconButton onClick={controls.openMobileNav}>
+          <MenuIcon />
+        </IconButton>
+      )}
+      <Box sx={{ flex: 1, minWidth: 0 }}>
+        <Typography variant="h4">{title}</Typography>
+        {subtitle && (
+          <Typography variant="body2" color="text.secondary">
+            {subtitle}
+          </Typography>
+        )}
+      </Box>
+      {actions}
+    </Stack>
+    {children}
+  </Box>
+);
+
+const AdminFrame: React.FC<{ children: (controls: AdminFrameControls) => ReactNode }> = ({ children }) => {
   const navigate = useNavigate();
   const location = useLocation();
   const isMobile = useMediaQuery(adminTheme.breakpoints.down('md'));
   const [mobileOpen, setMobileOpen] = useState(false);
+  const openMobileNav = useCallback(() => setMobileOpen(true), []);
+  const controls = useMemo(() => ({ isMobile, openMobileNav }), [isMobile, openMobileNav]);
 
-  const navItems = useMemo(
+  const navGroups = useMemo<AdminNavGroup[]>(
     () => [
-      { label: '仪表盘', icon: <Dashboard />, path: '/admin/dashboard' },
-      { label: '图谱工作台', icon: <Hub />, path: '/workspace' },
-      { label: '配置中心', icon: <Settings />, path: '/admin/config' },
-      { label: '系统监控', icon: <MonitorHeart />, path: '/admin/monitor' },
-      { label: '日志审计', icon: <FactCheck />, path: '/admin/logs' },
-      { label: '数据分析', icon: <Analytics />, path: '/admin/analytics' },
-      { label: '权限管理', icon: <Shield />, path: '/admin/rbac' },
-      { label: '用户管理', icon: <Person />, path: '/admin/users' },
-      { label: '任务中心', icon: <WorkHistory />, path: '/admin/jobs' },
-      { label: '问答追踪', icon: <ManageSearch />, path: '/admin/qa-traces' },
+      {
+        label: '总览',
+        items: [
+          { label: '仪表盘', icon: <Dashboard />, path: '/admin/dashboard' },
+          { label: '图谱工作台', icon: <Hub />, path: '/workspace' },
+        ],
+      },
+      {
+        label: '知识库运营',
+        items: [
+          { label: '知识库治理', icon: <Folder />, path: '/admin/knowledge-base' },
+          { label: '任务中心', icon: <WorkHistory />, path: '/admin/jobs' },
+        ],
+      },
+      {
+        label: '问答与模型',
+        items: [
+          { label: '问答追踪', icon: <ManageSearch />, path: '/admin/qa-traces' },
+          { label: '配置中心', icon: <Settings />, path: '/admin/config' },
+        ],
+      },
+      {
+        label: '观测与审计',
+        items: [
+          { label: '系统监控', icon: <MonitorHeart />, path: '/admin/monitor' },
+          { label: '日志审计', icon: <FactCheck />, path: '/admin/logs' },
+          { label: '数据分析', icon: <Analytics />, path: '/admin/analytics' },
+        ],
+      },
+      {
+        label: '组织安全',
+        items: [
+          { label: '权限管理', icon: <Shield />, path: '/admin/rbac' },
+          { label: '用户管理', icon: <Person />, path: '/admin/users' },
+        ],
+      },
     ],
     []
   );
 
   const handleNavigate = (path: string) => {
-    navigate(path);
+    if (location.pathname !== path) {
+      navigate(path);
+    }
     if (isMobile) {
       setMobileOpen(false);
     }
@@ -89,36 +166,53 @@ const AdminLayout: React.FC<AdminLayoutProps> = ({ title, subtitle, actions, chi
           GraphInsight
         </Typography>
         <Typography variant="body2" color="text.secondary">
-          Enterprise Admin
+          Control Plane
         </Typography>
       </Stack>
 
-      <List sx={{ flex: 1 }}>
-        {navItems.map((item) => {
-          const selected = location.pathname.startsWith(item.path);
-          return (
-            <ListItemButton
-              key={item.path}
-              selected={selected}
-              onClick={() => handleNavigate(item.path)}
+      <List sx={{ flex: 1, py: 0 }}>
+        {navGroups.map((group) => (
+          <Box key={group.label} sx={{ mb: 2 }}>
+            <Typography
+              variant="caption"
               sx={{
-                borderRadius: 2,
-                mb: 1,
-                '&.Mui-selected': {
-                  backgroundColor: 'rgba(27, 127, 121, 0.12)',
-                },
-                '&.Mui-selected:hover': {
-                  backgroundColor: 'rgba(27, 127, 121, 0.18)',
-                },
+                display: 'block',
+                px: 1.5,
+                pb: 0.75,
+                fontWeight: 700,
+                color: 'text.secondary',
               }}
             >
-              <ListItemIcon sx={{ minWidth: 40, color: selected ? 'primary.main' : 'text.secondary' }}>
-                {item.icon}
-              </ListItemIcon>
-              <ListItemText primary={item.label} />
-            </ListItemButton>
-          );
-        })}
+              {group.label}
+            </Typography>
+            {group.items.map((item) => {
+              const selected =
+                location.pathname === item.path || location.pathname.startsWith(`${item.path}/`);
+              return (
+                <ListItemButton
+                  key={item.path}
+                  selected={selected}
+                  onClick={() => handleNavigate(item.path)}
+                  sx={{
+                    borderRadius: 2,
+                    mb: 0.5,
+                    '&.Mui-selected': {
+                      backgroundColor: 'rgba(27, 127, 121, 0.12)',
+                    },
+                    '&.Mui-selected:hover': {
+                      backgroundColor: 'rgba(27, 127, 121, 0.18)',
+                    },
+                  }}
+                >
+                  <ListItemIcon sx={{ minWidth: 40, color: selected ? 'primary.main' : 'text.secondary' }}>
+                    {item.icon}
+                  </ListItemIcon>
+                  <ListItemText primary={item.label} />
+                </ListItemButton>
+              );
+            })}
+          </Box>
+        ))}
       </List>
 
       <Stack spacing={1} sx={{ mt: 2, pt: 2, borderTop: '1px solid rgba(15, 31, 45, 0.08)' }}>
@@ -159,53 +253,68 @@ const AdminLayout: React.FC<AdminLayoutProps> = ({ title, subtitle, actions, chi
   );
 
   return (
+    <Box className="admin-root" sx={{ minHeight: '100vh', position: 'relative' }}>
+      <Box sx={{ display: 'flex', position: 'relative', zIndex: 1 }}>
+        <Drawer
+          variant={isMobile ? 'temporary' : 'permanent'}
+          open={isMobile ? mobileOpen : true}
+          onClose={() => setMobileOpen(false)}
+          sx={{
+            width: drawerWidth,
+            flexShrink: 0,
+            '& .MuiDrawer-paper': {
+              width: drawerWidth,
+              boxSizing: 'border-box',
+              backgroundColor: 'rgba(255, 255, 255, 0.92)',
+              backdropFilter: 'blur(10px)',
+              borderRight: '1px solid rgba(15, 31, 45, 0.08)',
+            },
+          }}
+        >
+          <Toolbar sx={{ minHeight: 24 }} />
+          {drawer}
+        </Drawer>
+
+        {children(controls)}
+      </Box>
+    </Box>
+  );
+};
+
+export const AdminShell: React.FC<{ children: ReactNode }> = ({ children }) => (
+  <ThemeProvider theme={adminTheme}>
+    <CssBaseline />
+    <AdminFrame>
+      {(controls) => (
+        <AdminShellControlsContext.Provider value={controls}>
+          {children}
+        </AdminShellControlsContext.Provider>
+      )}
+    </AdminFrame>
+  </ThemeProvider>
+);
+
+const AdminLayout: React.FC<AdminLayoutProps> = ({ title, subtitle, actions, children }) => {
+  const shellControls = useContext(AdminShellControlsContext);
+
+  if (shellControls) {
+    return (
+      <AdminPageChrome title={title} subtitle={subtitle} actions={actions} controls={shellControls}>
+        {children}
+      </AdminPageChrome>
+    );
+  }
+
+  return (
     <ThemeProvider theme={adminTheme}>
       <CssBaseline />
-      <Box className="admin-root" sx={{ minHeight: '100vh', position: 'relative' }}>
-        <Box className="admin-orb" sx={{ top: 40, left: 180 }} />
-        <Box className="admin-orb secondary" sx={{ top: 140, right: 120 }} />
-        <Box sx={{ display: 'flex', position: 'relative', zIndex: 1 }}>
-          <Drawer
-            variant={isMobile ? 'temporary' : 'permanent'}
-            open={isMobile ? mobileOpen : true}
-            onClose={() => setMobileOpen(false)}
-            sx={{
-              width: drawerWidth,
-              flexShrink: 0,
-              '& .MuiDrawer-paper': {
-                width: drawerWidth,
-                boxSizing: 'border-box',
-                backgroundColor: 'rgba(255, 255, 255, 0.92)',
-                backdropFilter: 'blur(10px)',
-                borderRight: '1px solid rgba(15, 31, 45, 0.08)',
-              },
-            }}
-          >
-            <Toolbar sx={{ minHeight: 24 }} />
-            {drawer}
-          </Drawer>
-
-          <Box sx={{ flexGrow: 1, px: { xs: 2, md: 5 }, py: 4 }}>
-            <Stack direction="row" alignItems="center" spacing={2} sx={{ mb: 4 }}>
-              {isMobile && (
-                <IconButton onClick={() => setMobileOpen(true)}>
-                  <MenuIcon />
-                </IconButton>
-              )}
-              <Box sx={{ flex: 1 }}>
-                <Typography variant="h4">{title}</Typography>
-                {subtitle && (
-                  <Typography variant="body2" color="text.secondary">
-                    {subtitle}
-                  </Typography>
-                )}
-              </Box>
-              {actions}
-            </Stack>
+      <AdminFrame>
+        {(controls) => (
+          <AdminPageChrome title={title} subtitle={subtitle} actions={actions} controls={controls}>
             {children}
-          </Box>
-        </Box>
-      </Box>
+          </AdminPageChrome>
+        )}
+      </AdminFrame>
     </ThemeProvider>
   );
 };

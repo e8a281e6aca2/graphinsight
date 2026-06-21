@@ -13,7 +13,6 @@ import {
   Chip,
   ToggleButtonGroup,
   ToggleButton,
-  CircularProgress,
   Tooltip,
   IconButton,
   Alert,
@@ -26,6 +25,7 @@ import {
 import type { RendererAPI } from '../../renderers/core/types';
 import { analyzeNodeImportance, getNodeSizeOverrides, type NodeImportance } from '../../utils/graphAnalysis';
 import { useGraphStore } from '../../store/graphStore';
+import { AppleSpinner } from '../Loading/AppleSpinner';
 
 interface NodeImportancePanelProps {
   rendererRef: React.RefObject<RendererAPI | null>;
@@ -190,7 +190,7 @@ export function NodeImportancePanel({ rendererRef }: NodeImportancePanelProps) {
 
       {loading && (
         <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
-          <CircularProgress />
+          <AppleSpinner size={34} label="正在分析节点" />
         </Box>
       )}
 

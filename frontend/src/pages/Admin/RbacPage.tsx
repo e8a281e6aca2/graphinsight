@@ -4,11 +4,9 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   Alert,
-  Box,
   Button,
   Card,
   CardContent,
-  CircularProgress,
   Container,
   FormControl,
   IconButton,
@@ -25,7 +23,7 @@ import {
   TextField,
   Typography,
 } from '@mui/material';
-import { Delete, Refresh } from '@mui/icons-material';
+import { Delete } from '@mui/icons-material';
 import { rbacApi, usersApi } from '../../services/adminService';
 import type {
   AdminUserItem,
@@ -35,6 +33,8 @@ import type {
   ScopeType,
 } from '../../types/admin';
 import AdminLayout from '../../components/Admin/AdminLayout';
+import AdminRefreshButton from '../../components/Admin/AdminRefreshButton';
+import { LoadingState } from '../../components/Loading/AppleSpinner';
 import { getErrorMessage } from '../../utils/errorMessage';
 
 const scopeOptions: ScopeType[] = ['global', 'tenant', 'project', 'kb'];
@@ -155,9 +155,7 @@ const RbacPage: React.FC = () => {
   };
 
   const actionBar = (
-    <Button variant="outlined" startIcon={<Refresh />} onClick={loadInitial} disabled={loading}>
-      刷新
-    </Button>
+    <AdminRefreshButton onClick={loadInitial} loading={loading} />
   );
 
   return (
@@ -170,9 +168,7 @@ const RbacPage: React.FC = () => {
         )}
 
         {loading && roles.length === 0 ? (
-          <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
-            <CircularProgress />
-          </Box>
+          <LoadingState label="正在加载权限数据" minHeight={320} />
         ) : null}
 
         <Stack spacing={3}>

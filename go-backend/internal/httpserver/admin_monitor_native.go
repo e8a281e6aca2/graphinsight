@@ -8,6 +8,7 @@ import (
 	"math"
 	"net/http"
 	"os"
+	"os/exec"
 	"runtime"
 	"strconv"
 	"strings"
@@ -616,6 +617,14 @@ func collectAdminSystemStats() (adminSystemStats, error) {
 	var runtimeMem runtime.MemStats
 	runtime.ReadMemStats(&runtimeMem)
 
+	if memTotal <= 0 && runtime.GOOS == "darwin" {
+		if darwinTotal, darwinUsed, err := readDarwinMemInfo(); err == nil {
+			memTotal = darwinTotal
+			memAvailable = darwinTotal - darwinUsed
+			memErr = nil
+		}
+	}
+
 	memoryTotalMB := bytesToMB(memTotal)
 	memoryUsedMB := bytesToMB(memTotal - memAvailable)
 	if memTotal <= 0 {
@@ -626,7 +635,7 @@ func collectAdminSystemStats() (adminSystemStats, error) {
 	diskUsedGB := bytesToGB(diskTotal - diskFree)
 
 	stats := adminSystemStats{
-		CPUPercent:    0,
+		CPUPercent:    round2(readCPUPercent()),
 		MemoryPercent: percent(memoryUsedMB, memoryTotalMB),
 		MemoryUsedMB:  round2(memoryUsedMB),
 		MemoryTotalMB: round2(memoryTotalMB),
@@ -641,6 +650,87 @@ func collectAdminSystemStats() (adminSystemStats, error) {
 		return stats, memErr
 	}
 	return stats, diskErr
+}
+
+func readCPUPercent() float64 {
+	if runtime.GOOS == "linux" {
+		first, err := readLinuxCPUStat()
+		if err != nil {
+			return 0
+		}
+		time.Sleep(100 * time.Millisecond)
+		second, err := readLinuxCPUStat()
+		if err != nil {
+			return 0
+		}
+		totalDelta := second.total - first.total
+		idleDelta := second.idle - first.idle
+		if totalDelta <= 0 {
+			return 0
+		}
+		return math.Max(0, math.Min(100, (1-float64(idleDelta)/float64(totalDelta))*100))
+	}
+	if runtime.GOOS == "darwin" {
+		output, err := exec.Command("ps", "-A", "-o", "%cpu").Output()
+		if err != nil {
+			return 0
+		}
+		var total float64
+		for _, line := range strings.Split(string(output), "\n") {
+			value, parseErr := strconv.ParseFloat(strings.TrimSpace(line), 64)
+			if parseErr == nil {
+				total += value
+			}
+		}
+		cpus := runtime.NumCPU()
+		if cpus <= 0 {
+			return 0
+		}
+		return math.Min(100, total/float64(cpus))
+	}
+	return 0
+}
+
+type linuxCPUStat struct {
+	total uint64
+	idle  uint64
+}
+
+func readLinuxCPUStat() (linuxCPUStat, error) {
+	file, err := os.Open("/proc/stat")
+	if err != nil {
+		return linuxCPUStat{}, err
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	if !scanner.Scan() {
+		if err := scanner.Err(); err != nil {
+			return linuxCPUStat{}, err
+		}
+		return linuxCPUStat{}, fmt.Errorf("missing cpu line in /proc/stat")
+	}
+	fields := strings.Fields(scanner.Text())
+	if len(fields) < 5 || fields[0] != "cpu" {
+		return linuxCPUStat{}, fmt.Errorf("invalid cpu line in /proc/stat")
+	}
+	var values []uint64
+	for _, field := range fields[1:] {
+		value, parseErr := strconv.ParseUint(field, 10, 64)
+		if parseErr != nil {
+			return linuxCPUStat{}, parseErr
+		}
+		values = append(values, value)
+	}
+	var total uint64
+	for _, value := range values {
+		total += value
+	}
+	idle := values[3]
+	if len(values) > 4 {
+		idle += values[4]
+	}
+	return linuxCPUStat{total: total, idle: idle}, nil
 }
 
 func readLinuxMemInfo() (totalBytes uint64, availableBytes uint64, err error) {
@@ -671,6 +761,48 @@ func readLinuxMemInfo() (totalBytes uint64, availableBytes uint64, err error) {
 		return totalBytes, availableBytes, scanErr
 	}
 	return totalBytes, availableBytes, nil
+}
+
+func readDarwinMemInfo() (totalBytes uint64, usedBytes uint64, err error) {
+	totalOutput, err := exec.Command("sysctl", "-n", "hw.memsize").Output()
+	if err != nil {
+		return 0, 0, err
+	}
+	totalBytes, err = strconv.ParseUint(strings.TrimSpace(string(totalOutput)), 10, 64)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	pageSize := uint64(os.Getpagesize())
+	vmOutput, err := exec.Command("vm_stat").Output()
+	if err != nil {
+		return totalBytes, 0, err
+	}
+	var activePages, wiredPages, compressedPages uint64
+	for _, line := range strings.Split(string(vmOutput), "\n") {
+		parts := strings.SplitN(line, ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		valueText := strings.Trim(strings.TrimSpace(parts[1]), ".")
+		value, parseErr := strconv.ParseUint(strings.ReplaceAll(valueText, ".", ""), 10, 64)
+		if parseErr != nil {
+			continue
+		}
+		switch strings.TrimSpace(parts[0]) {
+		case "Pages active":
+			activePages = value
+		case "Pages wired down":
+			wiredPages = value
+		case "Pages occupied by compressor":
+			compressedPages = value
+		}
+	}
+	usedBytes = (activePages + wiredPages + compressedPages) * pageSize
+	if usedBytes > totalBytes {
+		usedBytes = totalBytes
+	}
+	return totalBytes, usedBytes, nil
 }
 
 func readDiskUsage(path string) (totalBytes uint64, freeBytes uint64, err error) {

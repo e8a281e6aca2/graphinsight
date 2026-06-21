@@ -326,6 +326,144 @@ class ConfigService:
                     "is_sensitive": "false",
                 },
             },
+            "retrieval": {
+                "mode": {
+                    "value": os.getenv("DOCQA_RETRIEVAL_MODE", "keyword"),
+                    "description": "文档问答检索模式(keyword/vector/hybrid/graph_hybrid)",
+                    "is_sensitive": "false",
+                },
+                "rrf_k": {
+                    "value": os.getenv("DOCQA_RETRIEVAL_RRF_K", "60"),
+                    "description": "RRF 融合参数",
+                    "is_sensitive": "false",
+                },
+                "candidate_multiplier": {
+                    "value": os.getenv("DOCQA_RETRIEVAL_CANDIDATE_MULTIPLIER", "6"),
+                    "description": "候选召回倍数",
+                    "is_sensitive": "false",
+                },
+                "graph_enabled": {
+                    "value": os.getenv("DOCQA_RETRIEVAL_GRAPH_ENABLED", "true"),
+                    "description": "是否启用图谱扩展召回",
+                    "is_sensitive": "false",
+                },
+                "rerank_enabled": {
+                    "value": os.getenv("DOCQA_RERANK_ENABLED", "false"),
+                    "description": "是否启用重排器",
+                    "is_sensitive": "false",
+                },
+            },
+            "embedding": {
+                "enabled": {
+                    "value": os.getenv("EMBEDDING_ENABLED", "true"),
+                    "description": "是否启用 Embedding",
+                    "is_sensitive": "false",
+                },
+                "provider": {
+                    "value": os.getenv("EMBEDDING_PROVIDER", os.getenv("AI_SERVICE_PROVIDER", os.getenv("OPENAI_PROVIDER", "openai"))),
+                    "description": "Embedding 服务提供商",
+                    "is_sensitive": "false",
+                },
+                "base_url": {
+                    "value": os.getenv("EMBEDDING_BASE_URL", ""),
+                    "description": "Embedding OpenAI-compatible API 地址；留空时复用 AI 服务地址",
+                    "is_sensitive": "false",
+                },
+                "api_key": {
+                    "value": os.getenv("EMBEDDING_API_KEY", os.getenv("AI_SERVICE_API_KEY", os.getenv("OPENAI_API_KEY", ""))),
+                    "description": "Embedding API Key",
+                    "is_sensitive": "true",
+                },
+                "model": {
+                    "value": os.getenv("EMBEDDING_MODEL", "text-embedding-3-small"),
+                    "description": "Embedding 模型",
+                    "is_sensitive": "false",
+                },
+                "dimension": {
+                    "value": os.getenv("EMBEDDING_DIMENSION", "1536"),
+                    "description": "Embedding 维度",
+                    "is_sensitive": "false",
+                },
+                "batch_size": {
+                    "value": os.getenv("EMBEDDING_BATCH_SIZE", "32"),
+                    "description": "Embedding 批大小",
+                    "is_sensitive": "false",
+                },
+            },
+            "vector_store": {
+                "enabled": {
+                    "value": os.getenv("VECTOR_STORE_ENABLED", "false"),
+                    "description": "是否启用向量库",
+                    "is_sensitive": "false",
+                },
+                "provider": {
+                    "value": os.getenv("VECTOR_STORE_PROVIDER", "milvus"),
+                    "description": "向量库提供商",
+                    "is_sensitive": "false",
+                },
+                "uri": {
+                    "value": os.getenv("MILVUS_URI", "http://127.0.0.1:19530"),
+                    "description": "Milvus 连接地址",
+                    "is_sensitive": "false",
+                },
+                "db_name": {
+                    "value": os.getenv("MILVUS_DB_NAME", "default"),
+                    "description": "Milvus 数据库名称",
+                    "is_sensitive": "false",
+                },
+                "collection": {
+                    "value": os.getenv("MILVUS_COLLECTION", "graphinsight_chunks"),
+                    "description": "Milvus Collection 名称",
+                    "is_sensitive": "false",
+                },
+                "token": {
+                    "value": os.getenv("MILVUS_TOKEN", ""),
+                    "description": "Milvus Token",
+                    "is_sensitive": "true",
+                },
+            },
+            "document_parser": {
+                "provider": {
+                    "value": os.getenv("DOCUMENT_PARSER_PROVIDER", "native"),
+                    "description": "文档解析器提供商(native/mineru)",
+                    "is_sensitive": "false",
+                },
+                "fallback_provider": {
+                    "value": os.getenv("DOCUMENT_PARSER_FALLBACK_PROVIDER", "native"),
+                    "description": "解析失败时的回退解析器(native/none)",
+                    "is_sensitive": "false",
+                },
+                "base_url": {
+                    "value": os.getenv("MINERU_BASE_URL", ""),
+                    "description": "MinerU API 地址",
+                    "is_sensitive": "false",
+                },
+                "endpoint_path": {
+                    "value": os.getenv("MINERU_ENDPOINT_PATH", "/file_parse"),
+                    "description": "MinerU 解析接口路径",
+                    "is_sensitive": "false",
+                },
+                "file_field": {
+                    "value": os.getenv("MINERU_FILE_FIELD", "files"),
+                    "description": "MinerU multipart 文件字段名",
+                    "is_sensitive": "false",
+                },
+                "parse_mode": {
+                    "value": os.getenv("MINERU_PARSE_MODE", "auto"),
+                    "description": "MinerU parse_method(auto/ocr/txt)",
+                    "is_sensitive": "false",
+                },
+                "output_format": {
+                    "value": os.getenv("MINERU_OUTPUT_FORMAT", "markdown,json"),
+                    "description": "MinerU 输出格式",
+                    "is_sensitive": "false",
+                },
+                "timeout_seconds": {
+                    "value": os.getenv("MINERU_TIMEOUT_SECONDS", "300"),
+                    "description": "MinerU 请求超时时间",
+                    "is_sensitive": "false",
+                },
+            },
             "nl2cypher": {
                 "enabled": {
                     "value": os.getenv("NL2CYPHER_ENABLED", "true"),
@@ -617,11 +755,6 @@ class ConfigService:
             "temperature": float(self.get_config(db, "ai_service", "temperature", "0.7")),
         }
 
-    def get_openai_config(self, db: Session, include_sensitive: bool = True) -> Dict[str, any]:
-        """获取 OpenAI 配置（兼容旧代码）"""
-        # 为了兼容性，保留这个方法，但实际使用 ai_service 配置
-        return self.get_ai_service_config(db, include_sensitive=include_sensitive)
-
     def get_nl2cypher_config(self, db: Session) -> Dict[str, any]:
         """获取 NL2Cypher 配置"""
         return {
@@ -674,71 +807,6 @@ class ConfigService:
             "source": "admin_config" if has_admin_value else "env_fallback",
             "mode": mode,
         }
-
-    def init_from_env(
-        self,
-        db: Session,
-        user: AdminUser,
-        ip_address: Optional[str] = None,
-        tenant_id: Optional[str] = None,
-        trace_id: Optional[str] = None
-    ) -> int:
-        """从环境变量初始化配置"""
-        try:
-            count = 0
-
-            # Neo4j 配置
-            neo4j_configs = {
-                "uri": os.getenv("NEO4J_URI", "bolt://localhost:7687"),
-                "user": os.getenv("NEO4J_USER", os.getenv("NEO4J_USERNAME", "neo4j")),
-                "password": os.getenv("NEO4J_PASSWORD", "password"),
-                "database": os.getenv("NEO4J_DATABASE", "neo4j"),
-            }
-
-            for key, value in neo4j_configs.items():
-                try:
-                    self.set_config(db, "neo4j", key, value, user_id=user.id)
-                    count += 1
-                except Exception as exc:
-                    logger.warning(f"初始化配置失败(neo4j.{key}): {str(exc)}")
-
-            # AI Service 配置（标准分类）
-            ai_service_configs = {
-                "provider": os.getenv("AI_SERVICE_PROVIDER", os.getenv("OPENAI_PROVIDER", "openai")),
-                "enabled": os.getenv("AI_SERVICE_ENABLED", "true"),
-                "api_key": os.getenv("AI_SERVICE_API_KEY", os.getenv("OPENAI_API_KEY", "")),
-                "base_url": os.getenv("AI_SERVICE_BASE_URL", os.getenv("OPENAI_BASE_URL", "")),
-                "model": os.getenv("AI_SERVICE_MODEL", os.getenv("OPENAI_MODEL", "gpt-3.5-turbo")),
-                "max_tokens": os.getenv("AI_SERVICE_MAX_TOKENS", os.getenv("OPENAI_MAX_TOKENS", "2000")),
-                "temperature": os.getenv("AI_SERVICE_TEMPERATURE", os.getenv("OPENAI_TEMPERATURE", "0.7")),
-            }
-
-            for key, value in ai_service_configs.items():
-                try:
-                    self.set_config(db, "ai_service", key, value, user_id=user.id)
-                    count += 1
-                except Exception as exc:
-                    logger.warning(f"初始化配置失败(ai_service.{key}): {str(exc)}")
-
-            # 记录日志
-            log_crud.create(db, LogCreate(
-                user_id=user.id,
-                operator_id=user.id,
-                tenant_id=tenant_id,
-                trace_id=trace_id,
-                action="init_config",
-                resource="config",
-                details={"count": count},
-                ip_address=ip_address,
-                status="success"
-            ))
-
-            logger.info(f"从环境变量初始化配置: {count} 项")
-            return count
-
-        except Exception as e:
-            logger.error(f"初始化配置失败: {str(e)}", exc_info=True)
-            raise BusinessException("初始化配置失败")
 
     def test_neo4j_connection(self, db: Session) -> Dict[str, any]:
         """测试 Neo4j 连接"""
@@ -1065,10 +1133,6 @@ class ConfigService:
         """获取最近一次模型连通性测试结果（进程内留存）。"""
         return self._last_model_connection_test
 
-    def test_openai_connection(self, db: Session) -> Dict[str, any]:
-        """测试 OpenAI 连接（兼容旧代码）"""
-        return self.test_ai_service_connection(db)
-
     def _build_models_urls(self, base_url: str) -> List[str]:
         """把 base_url 规整为候选 models 接口地址（兼容 /v1 与非 /v1）。"""
         normalized = (base_url or "").strip().rstrip("/")
@@ -1226,11 +1290,6 @@ class ConfigService:
         except Exception as e:
             logger.error(f"获取模型列表异常: {str(e)}", exc_info=True)
             return self._fallback_models("openai", "", "")
-
-    def get_available_openai_models(self, db: Session, overrides: Optional[Dict[str, str]] = None) -> List[str]:
-        """获取可用的 OpenAI 模型列表（兼容旧代码）"""
-        return self.get_available_models(db, overrides=overrides)
-
 
 # 创建全局实例
 config_service = ConfigService()

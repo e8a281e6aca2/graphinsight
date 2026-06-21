@@ -1,0 +1,29 @@
+.apple-spinner-wrap {
+  display: inline-grid;
+  place-items: center;
+  color: #64748b;
+}
+
+.apple-spinner {
+  position: relative;
+  display: inline-block;
+}
+
+.apple-spinner-segment {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  background: currentColor;
+  opacity: 0.18;
+  transform-origin: center;
+  animation: apple-spinner-fade 0.96s linear infinite;
+}
+
+@keyframes apple-spinner-fade {
+  0% {
+    opacity: 0.95;
+  }
+  100% {
+    opacity: 0.16;
+  }
+}

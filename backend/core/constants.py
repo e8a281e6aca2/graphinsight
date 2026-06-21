@@ -38,7 +38,8 @@ class Environment:
 class ConfigCategory:
     SYSTEM = "system"
     NEO4J = "neo4j"
-    OPENAI = "openai"
+    AI_SERVICE = "ai_service"
+    EMBEDDING = "embedding"
     NL2CYPHER = "nl2cypher"
     MEDIA = "media"
 

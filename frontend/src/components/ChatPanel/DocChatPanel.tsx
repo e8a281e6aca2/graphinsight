@@ -5,6 +5,7 @@ import {
   Box,
   Button,
   Chip,
+  Collapse,
   Divider,
   IconButton,
   MenuItem,
@@ -13,15 +14,22 @@ import {
 } from '@mui/material';
 import {
   AutoGraph as AutoGraphIcon,
+  AttachFile as AttachFileIcon,
+  ExpandLess as ExpandLessIcon,
+  ExpandMore as ExpandMoreIcon,
   Send as SendIcon,
   TipsAndUpdates as TipsIcon,
+  Tune as TuneIcon,
   MenuBook as MenuBookIcon,
 } from '@mui/icons-material';
 import { triggerGraphBuild } from '../../services/graphBuild';
 import { reportClientLog } from '../../services/clientLog';
 import { useGraphStore } from '../../store/graphStore';
-import { askDocDeepResearch, askDocQa, type ReasoningProfile } from '../../services/docQa';
+import { askDocDeepResearch, askDocQa, type DocQaConversationTurn, type ReasoningProfile } from '../../services/docQa';
 import { executeQuery } from '../../services/graphService';
+import { uploadDocuments } from '../../services/documents';
+import { getErrorMessage } from '../../utils/errorMessage';
+import LoadingButton from '../Loading/LoadingButton';
 
 interface Citation {
   id: string;
@@ -151,11 +159,12 @@ export function DocChatPanel() {
   const setHighlightAll = useGraphStore((state) => state.setHighlightAll);
   const recentUploadedDocIds = useGraphStore((state) => state.recentUploadedDocIds);
   const setRecentUploadedDocIds = useGraphStore((state) => state.setRecentUploadedDocIds);
+  const requestDocumentRefresh = useGraphStore((state) => state.requestDocumentRefresh);
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       id: 'welcome',
       role: 'assistant',
-      content: '已连接文档知识库。你可以直接提问，我会给出答案并附带引用摘要。',
+      content: '已连接文档知识库。你可以直接提问，我会给出答案并定位引用证据。',
     },
   ]);
   const [input, setInput] = useState('');
@@ -164,9 +173,16 @@ export function DocChatPanel() {
   const [buildStatus, setBuildStatus] = useState<'idle' | 'running' | 'done'>('idle');
   const [buildError, setBuildError] = useState<string | null>(null);
   const [buildSummary, setBuildSummary] = useState<string | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [uploadSummary, setUploadSummary] = useState<string | null>(null);
+  const [uploadError, setUploadError] = useState<string | null>(null);
   const [graphSyncMode, setGraphSyncMode] = useState<'precise' | 'full'>('precise');
   const [qaReasoningProfile, setQaReasoningProfile] = useState<ReasoningProfile>('balanced');
   const [deepResearchReasoningProfile, setDeepResearchReasoningProfile] = useState<ReasoningProfile>('deep');
+  const [showAdvancedOptions, setShowAdvancedOptions] = useState(false);
+  const [showPromptSuggestions, setShowPromptSuggestions] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const messageScrollRef = useRef<HTMLDivElement | null>(null);
   const endRef = useRef<HTMLDivElement | null>(null);
   const lastSyncRef = useRef<{ citations: Citation[]; question: string; answer: string } | null>(null);
 
@@ -203,6 +219,17 @@ export function DocChatPanel() {
       )
     ).slice(0, 60);
 
+  const buildConversationHistory = (items: ChatMessage[]): DocQaConversationTurn[] =>
+    items
+      .filter((item) => item.id !== 'welcome')
+      .filter((item) => item.role === 'user' || item.role === 'assistant')
+      .map((item) => ({
+        role: item.role,
+        content: item.content.replace(/\s+/g, ' ').trim().slice(0, 1200),
+      }))
+      .filter((item) => item.content.length > 0)
+      .slice(-6);
+
   const applyCitationSelection = useCallback((
     citation: Citation,
     openGraph = true,
@@ -233,14 +260,16 @@ export function DocChatPanel() {
       role: 'user',
       content: value,
     };
+    const conversationHistory = buildConversationHistory(messages);
 
     setMessages((prev) => [...prev, userMessage]);
+    setSelectedCitation(null);
     setInput('');
     setIsTyping(true);
     setTypingLabel('正在整理答案...');
 
     try {
-      const result = await askDocQa(value, CITATION_COUNT, qaReasoningProfile);
+      const result = await askDocQa(value, CITATION_COUNT, qaReasoningProfile, conversationHistory);
       const citations = result?.citations || [];
       const assistantMessage: ChatMessage = {
         id: `assistant-${Date.now()}`,
@@ -286,6 +315,7 @@ export function DocChatPanel() {
     };
 
     setMessages((prev) => [...prev, userMessage]);
+    setSelectedCitation(null);
     setInput('');
     setIsTyping(true);
     setTypingLabel('正在进行深度调研...');
@@ -339,6 +369,46 @@ export function DocChatPanel() {
 
   const handlePromptClick = (prompt: string) => {
     setInput(prompt);
+  };
+
+  const handleUpload = useCallback(
+    async (files: File[]) => {
+      if (files.length === 0 || uploading) return;
+      setUploading(true);
+      setUploadSummary(null);
+      setUploadError(null);
+      try {
+        const result = await uploadDocuments(files);
+        const uploaded = result?.uploaded?.length || 0;
+        const skipped = result?.skipped?.length || 0;
+        const uploadedDocIds = (result?.uploaded || [])
+          .map((item) => item.doc_id || item.id)
+          .filter((item): item is string => Boolean(item));
+        setRecentUploadedDocIds(uploadedDocIds);
+        requestDocumentRefresh();
+        setUploadSummary(`上传成功 ${uploaded} · 跳过 ${skipped}`);
+        setWorkspaceTab('document');
+      } catch (error) {
+        setUploadError(getErrorMessage(error, '文档上传失败'));
+      } finally {
+        setUploading(false);
+      }
+    },
+    [requestDocumentRefresh, setRecentUploadedDocIds, setWorkspaceTab, uploading]
+  );
+
+  const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files || []);
+    void handleUpload(files);
+    event.target.value = '';
+  };
+
+  const handleChatDrop = (event: React.DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const files = Array.from(event.dataTransfer.files || []);
+    if (files.length > 0) {
+      void handleUpload(files);
+    }
   };
 
   const handleCitationClick = (citation: Citation) => {
@@ -395,6 +465,7 @@ export function DocChatPanel() {
         if (focusCitations.length > 0) {
           applyCitationSelection(focusCitations[0], true, keywords);
         } else {
+          setSelectedCitation(null);
           setWorkspaceTab('graph');
         }
         return;
@@ -433,6 +504,7 @@ export function DocChatPanel() {
       if (focusCitations.length > 0) {
         applyCitationSelection(focusCitations[0], true, keywords);
       } else {
+        setSelectedCitation(null);
         setWorkspaceTab('graph');
       }
     } catch (error) {
@@ -453,6 +525,7 @@ export function DocChatPanel() {
       if (focusCitations.length > 0) {
         applyCitationSelection(focusCitations[0], true, keywords);
       } else {
+        setSelectedCitation(null);
         setWorkspaceTab('graph');
       }
     }
@@ -464,6 +537,7 @@ export function DocChatPanel() {
     setGraphData,
     setHighlightAll,
     setLastQueryStats,
+    setSelectedCitation,
     setWorkspaceTab,
   ]);
 
@@ -515,8 +589,14 @@ export function DocChatPanel() {
   }, [buildStatus]);
 
   useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, isTyping]);
+    const frame = window.requestAnimationFrame(() => {
+      const scrollBox = messageScrollRef.current;
+      if (scrollBox) {
+        scrollBox.scrollTop = scrollBox.scrollHeight;
+      }
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [messages, isTyping, showAdvancedOptions, showPromptSuggestions]);
 
   return (
     <Box
@@ -533,8 +613,8 @@ export function DocChatPanel() {
     >
       <Box
         sx={(theme) => ({
-          px: 2.5,
-          py: 2,
+          px: 2.25,
+          py: 1.25,
           borderBottom: `1px solid ${theme.palette.divider}`,
           background:
             theme.palette.mode === 'dark'
@@ -546,72 +626,64 @@ export function DocChatPanel() {
               : 'radial-gradient(120% 120% at 15% 0%, rgba(56, 189, 248, 0.18) 0%, rgba(248, 250, 252, 0) 55%), radial-gradient(120% 120% at 100% 20%, rgba(34, 197, 94, 0.12) 0%, rgba(248, 250, 252, 0) 45%)',
         })}
       >
-        <Box sx={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 1.5 }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1.5 }}>
           <Box sx={{ minWidth: 0 }}>
             <Typography variant="h6" fontWeight={700} sx={{ letterSpacing: 0.3 }}>
               文档问答
             </Typography>
-            <Typography variant="body2" color="text.secondary" sx={{ mt: 0.25 }}>
-              一键建图 · 回答强制引用
-            </Typography>
           </Box>
-          <Button
-            variant="contained"
-            size="small"
-            startIcon={<AutoGraphIcon />}
-            onClick={handleBuildGraph}
-            disabled={buildStatus === 'running'}
-            sx={{ flexShrink: 0 }}
-          >
-            {buildLabel}
-          </Button>
-        </Box>
-
-        <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75, mt: 1.5 }}>
-          <Chip
-            icon={<MenuBookIcon />}
-            label={recentUploadedDocIds.length > 0 ? `范围：最近上传 ${recentUploadedDocIds.length} 个文档` : '范围：全库文档'}
-            size="small"
-            variant="outlined"
-          />
-          <Chip label={`引用摘要：${CITATION_COUNT} 条`} size="small" variant="outlined" />
-          <Chip label={`问答档位：${qaReasoningProfile}`} size="small" variant="outlined" />
-          <Chip label={`调研档位：${deepResearchReasoningProfile}`} size="small" variant="outlined" />
-          <Chip label="已接入文档" size="small" variant="outlined" />
-          <Chip
-            label={`图谱联动：${graphSyncMode === 'precise' ? '精准' : '全量'}`}
-            size="small"
-            color={graphSyncMode === 'precise' ? 'primary' : 'default'}
-            variant={graphSyncMode === 'precise' ? 'filled' : 'outlined'}
-            onClick={() => setGraphSyncMode((prev) => (prev === 'precise' ? 'full' : 'precise'))}
-          />
-          {buildSummary && (
-            <Chip label={buildSummary} size="small" color="success" variant="outlined" />
-          )}
-          {buildError && (
-            <Chip label={buildError} size="small" color="error" variant="outlined" />
-          )}
-        </Box>
-
-        <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, mt: 1.5 }}>
-          {quickPrompts.map((prompt) => (
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
             <Chip
-              key={prompt}
-              label={prompt}
+              icon={<MenuBookIcon />}
+              label={recentUploadedDocIds.length > 0 ? `最近上传 ${recentUploadedDocIds.length}` : '全库'}
               size="small"
-              onClick={() => handlePromptClick(prompt)}
-              sx={{ bgcolor: 'background.paper', maxWidth: '100%' }}
+              variant="outlined"
             />
-          ))}
+            <Chip
+              label={graphSyncMode === 'precise' ? '精准联动' : '全量联动'}
+              size="small"
+              color={graphSyncMode === 'precise' ? 'primary' : 'default'}
+              variant={graphSyncMode === 'precise' ? 'filled' : 'outlined'}
+              onClick={() => setGraphSyncMode((prev) => (prev === 'precise' ? 'full' : 'precise'))}
+            />
+            <Button
+              size="small"
+              variant="text"
+              endIcon={showPromptSuggestions ? <ExpandLessIcon /> : <ExpandMoreIcon />}
+              onClick={() => setShowPromptSuggestions((prev) => !prev)}
+              sx={{ flexShrink: 0 }}
+            >
+              提示词
+            </Button>
+          </Box>
         </Box>
+
+        <Collapse in={showPromptSuggestions} timeout="auto" unmountOnExit>
+          <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75, mt: 1 }}>
+            {quickPrompts.map((prompt) => (
+              <Chip
+                key={prompt}
+                label={prompt}
+                size="small"
+                onClick={() => handlePromptClick(prompt)}
+                sx={{ bgcolor: 'background.paper', maxWidth: '100%' }}
+              />
+            ))}
+          </Box>
+        </Collapse>
       </Box>
 
       <Box
+        ref={messageScrollRef}
+        onDrop={handleChatDrop}
+        onDragOver={(event) => event.preventDefault()}
         sx={(theme) => ({
           flex: 1,
-          overflow: 'auto',
+          overflowY: 'auto',
+          overflowX: 'hidden',
           px: 2.5,
-          py: 2,
+          pt: 2,
+          pb: 0,
           display: 'flex',
           flexDirection: 'column',
           gap: 2,
@@ -695,64 +767,28 @@ export function DocChatPanel() {
               </Box>
 
               {!isUser && message.citations && message.citations.length > 0 && (
-                <Box sx={{ width: '100%', maxWidth: '90%', minWidth: 0 }}>
-                  <Typography
-                    variant="caption"
-                    component="div"
-                    color="text.secondary"
-                    sx={{ mb: 0.5 }}
+                <Box sx={{ width: '100%', maxWidth: '90%', minWidth: 0, display: 'flex' }}>
+                  <Button
+                    size="small"
+                    variant="text"
+                    startIcon={<MenuBookIcon fontSize="small" />}
+                    onClick={() => {
+                      handleCitationClick(message.citations![0]);
+                    }}
+                    sx={(theme) => ({
+                      alignSelf: 'flex-start',
+                      borderRadius: 1,
+                      px: 1,
+                      minHeight: 28,
+                      color: theme.palette.text.secondary,
+                      bgcolor: theme.palette.action.hover,
+                      '&:hover': {
+                        bgcolor: theme.palette.action.selected,
+                      },
+                    })}
                   >
-                    引用摘要（{Math.min(message.citations.length, CITATION_COUNT)}）
-                  </Typography>
-                  <Box sx={{ display: 'grid', gap: 1 }}>
-                    {message.citations.slice(0, CITATION_COUNT).map((citation) => (
-                      <Box
-                        key={citation.id}
-                        component="button"
-                        type="button"
-                        onClick={() => {
-                          handleCitationClick(citation);
-                        }}
-                        sx={(theme) => ({
-                          textAlign: 'left',
-                          width: '100%',
-                          border: `1px solid ${theme.palette.divider}`,
-                          borderRadius: 1.5,
-                          p: 1.25,
-                          bgcolor: theme.palette.background.paper,
-                          cursor: 'pointer',
-                          transition: 'all 0.2s ease',
-                          '&:hover': {
-                            borderColor: theme.palette.primary.light,
-                            boxShadow: theme.shadows[2],
-                            transform: 'translateY(-1px)',
-                          },
-                        })}
-                      >
-                        <Typography variant="caption" component="div" sx={{ fontWeight: 600 }}>
-                          {citation.title}
-                        </Typography>
-                        <Typography variant="body2" component="div" color="text.secondary" sx={{ mt: 0.5 }}>
-                          {citation.snippet}
-                        </Typography>
-                        {typeof citation.confidence === 'number' && (
-                          <Typography variant="caption" component="div" color="text.secondary" sx={{ mt: 0.5 }}>
-                            证据置信度：{Math.round(citation.confidence * 100)}%
-                          </Typography>
-                        )}
-                        {citation.entity_names && citation.entity_names.length > 0 && (
-                          <Typography variant="caption" component="div" color="text.secondary" sx={{ mt: 0.5 }}>
-                            关联实体：{citation.entity_names.slice(0, 6).join('、')}
-                          </Typography>
-                        )}
-                        {citation.location && (
-                          <Typography variant="caption" component="div" color="text.secondary" sx={{ mt: 0.5 }}>
-                            {citation.location}
-                          </Typography>
-                        )}
-                      </Box>
-                    ))}
-                  </Box>
+                    引用 {message.citations.length} 条 · 查看证据
+                  </Button>
                 </Box>
               )}
             </Box>
@@ -767,16 +803,32 @@ export function DocChatPanel() {
             </Typography>
           </Box>
         )}
-        <div ref={endRef} />
+        <Box ref={endRef} sx={{ height: { xs: 132, md: 148 }, flexShrink: 0 }} />
       </Box>
 
       <Divider />
 
-      <Box sx={{ p: 2, display: 'flex', flexDirection: 'column', gap: 1.5 }}>
+      <Box sx={{ px: 2, py: 1.25, display: 'flex', flexDirection: 'column', gap: 1, flexShrink: 0 }}>
+        {(uploadSummary || uploadError || buildSummary || buildError) && (
+          <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75 }}>
+            {uploadSummary && (
+              <Chip label={uploadSummary} size="small" color="success" variant="outlined" />
+            )}
+            {uploadError && (
+              <Chip label={uploadError} size="small" color="error" variant="outlined" />
+            )}
+            {buildSummary && (
+              <Chip label={buildSummary} size="small" color="success" variant="outlined" />
+            )}
+            {buildError && (
+              <Chip label={buildError} size="small" color="error" variant="outlined" />
+            )}
+          </Box>
+        )}
         <TextField
           placeholder="输入问题，Enter 发送，Shift+Enter 换行"
           multiline
-          minRows={2}
+          minRows={1}
           maxRows={6}
           value={input}
           onChange={(e) => setInput(e.target.value)}
@@ -788,80 +840,133 @@ export function DocChatPanel() {
           }}
           sx={{
             '& .MuiOutlinedInput-root': {
-              borderRadius: 2,
+              borderRadius: 3,
               bgcolor: 'background.default',
+              alignItems: 'flex-end',
             },
           }}
+          InputProps={{
+            startAdornment: (
+              <IconButton
+                size="small"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={uploading}
+                aria-label="上传文档"
+                sx={{ mr: 0.5, mb: 0.25 }}
+              >
+                <AttachFileIcon fontSize="small" />
+              </IconButton>
+            ),
+          }}
         />
-        <Box sx={{ display: 'grid', gridTemplateColumns: '1fr auto', alignItems: 'end', gap: 1 }}>
-          <Box
-            sx={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
-              gap: 1,
-              minWidth: 0,
-            }}
-          >
-            <Chip
-              label="回答必带引用"
-              size="small"
-              variant="outlined"
-              color="primary"
-              sx={{ justifyContent: 'center' }}
-            />
-            <TextField
-              select
-              size="small"
-              label="问答档位"
-              value={qaReasoningProfile}
-              onChange={(e) => setQaReasoningProfile(e.target.value as ReasoningProfile)}
-              sx={{ minWidth: 0 }}
+        <input ref={fileInputRef} type="file" multiple hidden onChange={handleFileSelect} />
+        <Box sx={{ display: 'grid', gap: 1 }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1 }}>
+            <Typography
+              variant="caption"
+              color="text.secondary"
+              sx={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
             >
-              {REASONING_PROFILE_OPTIONS.map((option) => (
-                <MenuItem key={option.value} value={option.value}>
-                  {option.label}
-                </MenuItem>
-              ))}
-            </TextField>
-            <TextField
-              select
-              size="small"
-              label="调研档位"
-              value={deepResearchReasoningProfile}
-              onChange={(e) => setDeepResearchReasoningProfile(e.target.value as ReasoningProfile)}
-              sx={{ minWidth: 0 }}
-            >
-              {REASONING_PROFILE_OPTIONS.map((option) => (
-                <MenuItem key={option.value} value={option.value}>
-                  {option.label}
-                </MenuItem>
-              ))}
-            </TextField>
+              回答强制引用 · 问答 {qaReasoningProfile} · 调研 {deepResearchReasoningProfile}
+            </Typography>
             <Button
               size="small"
-              variant="outlined"
-              onClick={handleDeepResearch}
-              disabled={!input.trim() || isTyping}
-              sx={{ minWidth: 0 }}
+              variant="text"
+              startIcon={<TuneIcon />}
+              endIcon={showAdvancedOptions ? <ExpandLessIcon /> : <ExpandMoreIcon />}
+              onClick={() => setShowAdvancedOptions((prev) => !prev)}
+              sx={{ flexShrink: 0 }}
             >
-              深度调研
+              高级
             </Button>
           </Box>
-          <IconButton
-            color="primary"
-            onClick={handleSend}
-            disabled={!input.trim() || isTyping}
-            sx={{
-              borderRadius: 2,
-              bgcolor: 'primary.main',
-              color: 'primary.contrastText',
-              '&:hover': {
-                bgcolor: 'primary.dark',
-              },
-            }}
-          >
-            <SendIcon />
-          </IconButton>
+
+          <Collapse in={showAdvancedOptions} timeout="auto" unmountOnExit>
+            <Box
+              sx={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+                gap: 1,
+                pt: 0.5,
+              }}
+            >
+              <TextField
+                select
+                size="small"
+                label="问答档位"
+                value={qaReasoningProfile}
+                onChange={(e) => setQaReasoningProfile(e.target.value as ReasoningProfile)}
+                sx={{ minWidth: 0 }}
+              >
+                {REASONING_PROFILE_OPTIONS.map((option) => (
+                  <MenuItem key={option.value} value={option.value}>
+                    {option.label}
+                  </MenuItem>
+                ))}
+              </TextField>
+              <TextField
+                select
+                size="small"
+                label="调研档位"
+                value={deepResearchReasoningProfile}
+                onChange={(e) => setDeepResearchReasoningProfile(e.target.value as ReasoningProfile)}
+                sx={{ minWidth: 0 }}
+              >
+                {REASONING_PROFILE_OPTIONS.map((option) => (
+                  <MenuItem key={option.value} value={option.value}>
+                    {option.label}
+                  </MenuItem>
+                ))}
+              </TextField>
+            </Box>
+          </Collapse>
+
+          <Box sx={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) auto', alignItems: 'center', gap: 1 }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, minWidth: 0, flexWrap: 'wrap' }}>
+              <LoadingButton
+                size="small"
+                variant="outlined"
+                startIcon={<AttachFileIcon fontSize="small" />}
+                loading={uploading}
+                disabled={uploading}
+                onClick={() => fileInputRef.current?.click()}
+                label="上传"
+                loadingLabel="上传中"
+              />
+              <Button
+                size="small"
+                variant="outlined"
+                startIcon={<AutoGraphIcon fontSize="small" />}
+                onClick={handleBuildGraph}
+                disabled={buildStatus === 'running'}
+              >
+                {buildLabel}
+              </Button>
+              <Button
+                size="small"
+                variant="outlined"
+                onClick={handleDeepResearch}
+                disabled={!input.trim() || isTyping}
+              >
+                深度调研
+              </Button>
+            </Box>
+            <IconButton
+              color="primary"
+              onClick={handleSend}
+              disabled={!input.trim() || isTyping}
+              sx={{
+                borderRadius: 2,
+                bgcolor: 'primary.main',
+                color: 'primary.contrastText',
+                '&:hover': {
+                  bgcolor: 'primary.dark',
+                },
+              }}
+            >
+              <SendIcon />
+            </IconButton>
+          </Box>
         </Box>
       </Box>
     </Box>

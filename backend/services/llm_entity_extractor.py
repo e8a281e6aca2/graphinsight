@@ -9,7 +9,9 @@ from typing import Any, Dict, List, Optional
 from config import get_settings
 from core import get_logger
 from services.model_runtime_policy import apply_reasoning_profile, reasoning_max_tokens
+from services.knowledge_discovery.normalization import normalize_entity_values
 from services.openai_client_factory import build_openai_client
+from services.runtime_config import get_ai_runtime_config
 
 logger = get_logger()
 settings = get_settings()
@@ -26,15 +28,17 @@ class LLMEntityExtractor:
         self._cache: dict[str, List[str]] = {}
         self._model_checked = False
         self._disabled_until = 0.0
+        self._runtime_signature: tuple[object, ...] | None = None
 
         if self.enabled:
             self._client = build_openai_client(
                 api_key=settings.llm_api_key,
                 base_url=settings.llm_base_url or None,
-                timeout=30.0,
+                timeout=settings.llm_graph_extract_timeout_seconds,
             )
 
     def extract(self, text: str, reasoning_profile: Optional[str] = None) -> List[str]:
+        self._refresh_runtime_config()
         if not self.enabled or not self._client:
             return []
         if self._disabled_until > time.time():
@@ -51,6 +55,7 @@ class LLMEntityExtractor:
         )
 
         try:
+            model_profile = self._bounded_graph_reasoning_profile(reasoning_profile)
             payload: Dict[str, Any] = {
                 "model": self._resolved_model,
                 "messages": [
@@ -58,9 +63,9 @@ class LLMEntityExtractor:
                     {"role": "user", "content": text[:1500]},
                 ],
                 "temperature": self.temperature,
-                "max_tokens": reasoning_max_tokens(reasoning_profile, fast=200, balanced=240, deep=280),
+                "max_tokens": reasoning_max_tokens(model_profile, fast=180, balanced=220, deep=260),
             }
-            response = self._client.chat.completions.create(**apply_reasoning_profile(payload, reasoning_profile))
+            response = self._client.chat.completions.create(**apply_reasoning_profile(payload, model_profile))
             content = response.choices[0].message.content or ""
             entities = self._parse_entities(content)
             if entities:
@@ -68,15 +73,61 @@ class LLMEntityExtractor:
             return entities
         except Exception as exc:  # noqa: BLE001
             error_text = str(exc)
-            if "no channel available for provider" in error_text.lower():
+            lower_error = error_text.lower()
+            provider_level_error = any(
+                marker in lower_error
+                for marker in (
+                    "no channel available for provider",
+                    "invalid api key",
+                    "unauthorized",
+                    "model_not_found",
+                    "model not found",
+                )
+            )
+            if "no channel available for provider" in lower_error:
                 self._model_checked = False
                 self._ensure_model(force=True)
-            self._disabled_until = time.time() + 120
+            if provider_level_error:
+                self._disabled_until = time.time() + 120
             logger.warning(
-                "LLM 抽取失败，回退规则",
-                context={"error": error_text, "model": self._resolved_model, "reasoning_profile": reasoning_profile or ""},
+                "LLM 实体抽取失败，回退规则",
+                context={
+                    "error": error_text,
+                    "model": self._resolved_model,
+                    "reasoning_profile": reasoning_profile or "",
+                    "model_reasoning_profile": self._bounded_graph_reasoning_profile(reasoning_profile),
+                    "text_chars": min(len(text), 1500),
+                },
             )
             return []
+
+    def _refresh_runtime_config(self) -> None:
+        config = get_ai_runtime_config()
+        enabled = bool(config.get("enabled", True))
+        api_key = str(config.get("api_key") or "").strip()
+        base_url = str(config.get("base_url") or "").strip()
+        model = str(config.get("model") or settings.llm_model or "").strip()
+        temperature = float(config.get("temperature") or settings.llm_temperature)
+        signature = (enabled, bool(api_key), base_url, model, temperature)
+        if signature == self._runtime_signature:
+            return
+
+        self._runtime_signature = signature
+        self.enabled = enabled and bool(api_key) and bool(model) and settings.llm_enabled
+        self.model = model
+        self._resolved_model = model
+        self.temperature = temperature
+        self._model_checked = False
+        self._disabled_until = 0.0
+        self._cache.clear()
+        if self.enabled:
+            self._client = build_openai_client(
+                api_key=api_key,
+                base_url=base_url or None,
+                timeout=settings.llm_graph_extract_timeout_seconds,
+            )
+        else:
+            self._client = None
 
     def _ensure_model(self, force: bool = False) -> None:
         if not self._client:
@@ -106,6 +157,10 @@ class LLMEntityExtractor:
             # 模型列表不可用时维持原配置，避免影响主流程
             self._resolved_model = self.model
 
+    @staticmethod
+    def _bounded_graph_reasoning_profile(reasoning_profile: Optional[str]) -> str:
+        return "balanced" if str(reasoning_profile or "").strip().lower() == "deep" else "fast"
+
     def _parse_entities(self, content: str) -> List[str]:
         content = content.strip()
         entities: List[str] = []
@@ -115,7 +170,7 @@ class LLMEntityExtractor:
             if isinstance(parsed, dict):
                 parsed = parsed.get("entities") or parsed.get("data") or []
             if isinstance(parsed, list):
-                entities = [str(item) for item in parsed]
+                entities = parsed
         except Exception:
             match = re.search(r"\[[^\]]+\]", content, re.S)
             if match:
@@ -126,20 +181,7 @@ class LLMEntityExtractor:
             if not entities:
                 entities = re.split(r"[\n,，;；]", content)
 
-        clean: List[str] = []
-        seen = set()
-        for item in entities:
-            token = str(item).strip().strip('"').strip("'")
-            if not token:
-                continue
-            key = token.lower()
-            if key in seen:
-                continue
-            seen.add(key)
-            clean.append(token)
-            if len(clean) >= self.max_entities:
-                break
-        return clean
+        return normalize_entity_values(entities, max_items=self.max_entities)
 
 
 llm_entity_extractor = LLMEntityExtractor()

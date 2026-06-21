@@ -9,8 +9,8 @@ import {
   Card,
   CardContent,
   Chip,
-  CircularProgress,
   Container,
+  Divider,
   Drawer,
   MenuItem,
   Stack,
@@ -24,16 +24,22 @@ import {
   TextField,
   Typography,
 } from '@mui/material';
-import { Refresh, Search } from '@mui/icons-material';
+import { Folder, Search, Settings, WorkHistory } from '@mui/icons-material';
+import { useNavigate } from 'react-router-dom';
 import AdminLayout from '../../components/Admin/AdminLayout';
+import AdminRefreshButton from '../../components/Admin/AdminRefreshButton';
+import AdminLoadingButton from '../../components/Admin/AdminLoadingButton';
+import { LoadingState } from '../../components/Loading/AppleSpinner';
 import { qaTracesApi } from '../../services/adminService';
 import type {
   QACostSummary,
+  QACostModelBreakdown,
   QATraceDetail,
   QATraceGenerationSnapshot,
   QATraceItem,
   QATraceStatus,
   QATraceType,
+  RetrievalDiagnosticsResult,
 } from '../../types/admin';
 import { getErrorMessage } from '../../utils/errorMessage';
 
@@ -51,6 +57,13 @@ const qaTypeLabel = (value: string) => (value === 'deep_research' ? '深度调�
 const formatPercent = (value: number) => `${(Number(value || 0) * 100).toFixed(1)}%`;
 
 const formatCost = (value: number, currency: string) => `${currency || 'USD'} ${Number(value || 0).toFixed(6)}`;
+
+const getTopCostModel = (models: QACostModelBreakdown[]) =>
+  models.find((item) => {
+    const model = String(item.model || '').trim().toLowerCase();
+    return model !== '' && model !== 'unknown' && Number(item.total_tokens || 0) > 0;
+  });
+
 const formatReasoningProfile = (value?: string) => {
   if (value === 'fast') return 'fast';
   if (value === 'deep') return 'deep';
@@ -58,7 +71,38 @@ const formatReasoningProfile = (value?: string) => {
   return '-';
 };
 
+const asRecord = (value: unknown): Record<string, unknown> => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  return value as Record<string, unknown>;
+};
+
+const formatValue = (value: unknown, fallback = '-') => {
+  if (value === null || typeof value === 'undefined' || value === '') return fallback;
+  return String(value);
+};
+
+const recommendationLabel = (value: string) => {
+  const labels: Record<string, string> = {
+    enable_vector_store: '启用向量库',
+    configure_embedding: '配置 Embedding',
+    reindex_or_import_documents: '导入文档或重建索引',
+    verify_graph_mentions: '检查图谱实体关联',
+  };
+  return labels[value] || value;
+};
+
+const sourceLabel = (value: string) => {
+  const labels: Record<string, string> = {
+    keyword: '全文',
+    vector: '向量',
+    graph: '图谱扩展',
+    keyword_fallback: '全文回退',
+  };
+  return labels[value] || value;
+};
+
 const QATracesPage: React.FC = () => {
+  const navigate = useNavigate();
   const [items, setItems] = useState<QATraceItem[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(0);
@@ -72,6 +116,8 @@ const QATracesPage: React.FC = () => {
   const [detailOpen, setDetailOpen] = useState(false);
   const [detail, setDetail] = useState<QATraceDetail | null>(null);
   const [costSummary, setCostSummary] = useState<QACostSummary | null>(null);
+  const [diagnostics, setDiagnostics] = useState<RetrievalDiagnosticsResult | null>(null);
+  const [diagnosticsLoading, setDiagnosticsLoading] = useState(false);
 
   const loadTraces = useCallback(async () => {
     setLoading(true);
@@ -106,6 +152,7 @@ const QATracesPage: React.FC = () => {
 
   const openDetail = async (item: QATraceItem) => {
     setError('');
+    setDiagnostics(null);
     try {
       const data = await qaTracesApi.getTrace(item.id);
       setDetail(data);
@@ -120,10 +167,129 @@ const QATracesPage: React.FC = () => {
     return snapshot.reasoning_profile;
   };
 
+  const runRetrievalDiagnostics = async () => {
+    if (!detail?.question) return;
+    setDiagnosticsLoading(true);
+    setError('');
+    try {
+      const data = await qaTracesApi.runRetrievalDiagnostics({
+        question: detail.question,
+        top_k: detail.top_k || 5,
+        modes: ['keyword', 'vector', 'hybrid', 'graph_hybrid'],
+      });
+      setDiagnostics(data);
+    } catch (err: unknown) {
+      setError(getErrorMessage(err, '检索诊断失败'));
+    } finally {
+      setDiagnosticsLoading(false);
+    }
+  };
+
+  const renderTraceSummary = (detail: QATraceDetail) => {
+    const retrieval = asRecord(detail.retrieval_snapshot);
+    const orchestrator = asRecord(retrieval.orchestrator);
+    const sources = asRecord(orchestrator.sources);
+    const generation = asRecord(detail.generation_snapshot);
+    const usage = asRecord(generation.usage);
+    const skipReasons = Object.entries(sources)
+      .map(([source, sourceTrace]) => {
+        const skipReason = formatValue(asRecord(sourceTrace).skip_reason, '');
+        return skipReason ? `${sourceLabel(source)}: ${skipReason}` : '';
+      })
+      .filter(Boolean);
+
+    return (
+      <Card variant="outlined">
+        <CardContent>
+          <Stack spacing={2}>
+            <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+              <Chip size="small" label={`检索模式: ${formatValue(orchestrator.mode)}`} />
+              <Chip size="small" label={`召回/引用: ${detail.retrieval_count} / ${detail.citation_count}`} />
+              <Chip size="small" label={`生成: ${formatValue(generation.mode)}`} />
+              <Chip size="small" label={`模型: ${formatValue(generation.model || detail.model)}`} />
+              <Chip size="small" label={`档位: ${formatReasoningProfile(extractReasoningProfile(detail))}`} />
+            </Stack>
+            <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: 'repeat(3, 1fr)' }, gap: 1.5 }}>
+              <Box>
+                <Typography variant="caption" color="text.secondary">检索耗时</Typography>
+                <Typography variant="body2">{formatValue(orchestrator.duration_ms)} ms</Typography>
+              </Box>
+              <Box>
+                <Typography variant="caption" color="text.secondary">总 Token</Typography>
+                <Typography variant="body2">{formatValue(usage.total_tokens)}</Typography>
+              </Box>
+              <Box>
+                <Typography variant="caption" color="text.secondary">Trace ID</Typography>
+                <Typography variant="body2" noWrap>{formatValue(detail.trace_id)}</Typography>
+              </Box>
+            </Box>
+            {skipReasons.length > 0 && (
+              <Alert severity="warning">
+                {skipReasons.join('；')}
+              </Alert>
+            )}
+          </Stack>
+        </CardContent>
+      </Card>
+    );
+  };
+
+  const renderDiagnosticsSummary = () => {
+    if (!diagnostics) return null;
+    const modeSummary = diagnostics.summary?.modes || {};
+    const recommendations = diagnostics.summary?.recommendations || [];
+
+    return (
+      <Card variant="outlined">
+        <CardContent>
+          <Stack spacing={2}>
+            <Box>
+              <Typography variant="subtitle2">实时检索诊断</Typography>
+              <Typography variant="body2" color="text.secondary">
+                最优模式: {formatValue(diagnostics.summary?.best_mode)}，最慢模式: {formatValue(diagnostics.summary?.slowest_mode)}
+              </Typography>
+            </Box>
+            {recommendations.length > 0 && (
+              <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                {recommendations.map((item) => (
+                  <Chip key={item} color="warning" size="small" label={recommendationLabel(item)} />
+                ))}
+              </Stack>
+            )}
+            <TableContainer>
+              <Table size="small">
+                <TableHead>
+                  <TableRow>
+                    <TableCell>模式</TableCell>
+                    <TableCell>命中</TableCell>
+                    <TableCell>耗时</TableCell>
+                    <TableCell>来源</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {Object.entries(modeSummary).map(([mode, summary]) => (
+                    <TableRow key={mode}>
+                      <TableCell>{mode}</TableCell>
+                      <TableCell>{summary.hit_count}</TableCell>
+                      <TableCell>{summary.duration_ms} ms</TableCell>
+                      <TableCell>
+                        {Object.entries(summary.source_counts || {})
+                          .map(([source, count]) => `${sourceLabel(source)} ${count}`)
+                          .join(' / ') || '-'}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </TableContainer>
+          </Stack>
+        </CardContent>
+      </Card>
+    );
+  };
+
   const actionBar = (
-    <Button variant="outlined" startIcon={<Refresh />} onClick={loadTraces} disabled={loading}>
-      刷新
-    </Button>
+    <AdminRefreshButton onClick={loadTraces} loading={loading} />
   );
 
   return (
@@ -134,6 +300,9 @@ const QATracesPage: React.FC = () => {
         {costSummary && (
           <Card sx={{ mb: 2 }}>
             <CardContent>
+              {(() => {
+                const topModel = getTopCostModel(costSummary.models || []);
+                return (
               <Stack direction={{ xs: 'column', md: 'row' }} spacing={2} alignItems={{ md: 'center' }}>
                 <Box sx={{ flex: 1 }}>
                   <Typography variant="subtitle2" color="text.secondary">24h 模型成本估算</Typography>
@@ -159,10 +328,12 @@ const QATracesPage: React.FC = () => {
                 <Box>
                   <Typography variant="subtitle2" color="text.secondary">Top 模型</Typography>
                   <Typography variant="body2">
-                    {costSummary.models[0]?.model || '-'} · {costSummary.models[0]?.total_tokens || 0} tokens
+                    {topModel ? `${topModel.model} · ${topModel.total_tokens} tokens` : '暂无有效模型数据'}
                   </Typography>
                 </Box>
               </Stack>
+                );
+              })()}
             </CardContent>
           </Card>
         )}
@@ -207,8 +378,8 @@ const QATracesPage: React.FC = () => {
               <TableBody>
                 {loading ? (
                   <TableRow>
-                    <TableCell colSpan={8} align="center">
-                      <CircularProgress size={24} />
+                    <TableCell colSpan={8} sx={{ p: 0 }}>
+                      <LoadingState label="正在加载问答追踪" minHeight={240} />
                     </TableCell>
                   </TableRow>
                 ) : items.length === 0 ? (
@@ -265,7 +436,7 @@ const QATracesPage: React.FC = () => {
           />
         </Card>
 
-        <Drawer anchor="right" open={detailOpen} onClose={() => setDetailOpen(false)} PaperProps={{ sx: { width: { xs: '100%', md: 620 }, p: 3 } }}>
+        <Drawer anchor="right" open={detailOpen} onClose={() => setDetailOpen(false)} PaperProps={{ sx: { width: { xs: '100%', md: 720 }, p: 3 } }}>
           {detail && (
             <Stack spacing={2}>
               <Box>
@@ -275,6 +446,35 @@ const QATracesPage: React.FC = () => {
               <Alert severity={detail.status === 'success' ? 'success' : 'error'}>
                 {qaTypeLabel(detail.qa_type)} · {detail.status} · {detail.latency_ms ?? 0} ms
               </Alert>
+              {renderTraceSummary(detail)}
+              <Card variant="outlined">
+                <CardContent>
+                  <Stack spacing={1.5}>
+                    <Typography variant="subtitle2">诊断动作</Typography>
+                    <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                      <AdminLoadingButton
+                        variant="contained"
+                        size="small"
+                        startIcon={<Search />}
+                        loading={diagnosticsLoading}
+                        label="跑检索诊断"
+                        onClick={runRetrievalDiagnostics}
+                      />
+                      <Button size="small" variant="outlined" startIcon={<Settings />} onClick={() => navigate('/admin/config')}>
+                        配置中心
+                      </Button>
+                      <Button size="small" variant="outlined" startIcon={<WorkHistory />} onClick={() => navigate('/admin/jobs?job_type=build_graph')}>
+                        建图任务
+                      </Button>
+                      <Button size="small" variant="outlined" startIcon={<Folder />} onClick={() => navigate('/admin/knowledge-base')}>
+                        知识库
+                      </Button>
+                    </Stack>
+                  </Stack>
+                </CardContent>
+              </Card>
+              {renderDiagnosticsSummary()}
+              <Divider />
               <Box>
                 <Typography variant="subtitle2">问题</Typography>
                 <Typography variant="body2">{detail.question}</Typography>

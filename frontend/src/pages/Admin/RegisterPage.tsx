@@ -6,7 +6,6 @@ import {
   Card,
   CardContent,
   TextField,
-  Button,
   Typography,
   Alert,
   Link,
@@ -18,6 +17,7 @@ import { Visibility, VisibilityOff } from '@mui/icons-material';
 import { useNavigate } from 'react-router-dom';
 import { authApi } from '../../services/adminService';
 import AdminAuthLayout from '../../components/Admin/AdminAuthLayout';
+import AdminLoadingButton from '../../components/Admin/AdminLoadingButton';
 import { getErrorMessage } from '../../utils/errorMessage';
 
 const RegisterPage: React.FC = () => {
@@ -160,16 +160,17 @@ const RegisterPage: React.FC = () => {
                 }}
               />
 
-              <Button
+              <AdminLoadingButton
                 type="submit"
                 fullWidth
                 variant="contained"
                 size="large"
+                loading={loading}
                 disabled={loading || !!success}
                 sx={{ py: 1.2 }}
-              >
-                {loading ? '注册中...' : '立即注册'}
-              </Button>
+                label="立即注册"
+                loadingLabel="注册中..."
+              />
 
               <Typography variant="body2" color="text.secondary" align="center">
                 已有账号？{' '}

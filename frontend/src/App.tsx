@@ -1,10 +1,12 @@
 import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import { Routes, Route, Navigate } from 'react-router-dom';
+import { Routes, Route, Navigate, Outlet } from 'react-router-dom';
 import type { LayoutConfig, RendererAPI } from './renderers/core/types';
 import { useAdminSession } from './hooks/useAdminSession';
 import { getPreferredAdminHome } from './utils/adminAuth';
 import { AppLayout } from './components/Layout/AppLayout';
+import { AdminShell } from './components/Admin/AdminLayout';
+import { LoadingState } from './components/Loading/AppleSpinner';
 
 const DocChatPanel = lazy(() => import('./components/ChatPanel/DocChatPanel').then((mod) => ({ default: mod.DocChatPanel })));
 const MainWorkspace = lazy(() => import('./components/Workspace/MainWorkspace').then((mod) => ({ default: mod.MainWorkspace })));
@@ -24,21 +26,10 @@ const RbacPage = lazy(() => import('./pages/Admin/RbacPage'));
 const UsersPage = lazy(() => import('./pages/Admin/UsersPage'));
 const JobsPage = lazy(() => import('./pages/Admin/JobsPage'));
 const QATracesPage = lazy(() => import('./pages/Admin/QATracesPage'));
+const KnowledgeBasePage = lazy(() => import('./pages/Admin/KnowledgeBasePage'));
 
 const PanelLoading = ({ label }: { label: string }) => (
-  <div
-    style={{
-      height: '100%',
-      display: 'grid',
-      placeItems: 'center',
-      color: '#64748b',
-      fontFamily: 'ui-sans-serif, system-ui, sans-serif',
-      fontSize: 14,
-      background: '#f8fafc',
-    }}
-  >
-    {label}
-  </div>
+  <LoadingState label={label} minHeight="100%" size={38} sx={{ bgcolor: '#f8fafc' }} />
 );
 
 const RouteLoading = () => {
@@ -61,7 +52,7 @@ const RouteLoading = () => {
       }}
     >
       <div style={{ textAlign: 'center', display: 'grid', gap: 16 }}>
-        <div style={{ fontSize: 18, fontWeight: 600 }}>GraphInsight 正在加载</div>
+        <LoadingState label="GraphInsight 正在加载" size={52} minHeight={120} sx={{ p: 0 }} />
         {isSlow && (
           <div style={{ display: 'grid', gap: 14 }}>
             <div style={{ color: '#64748b', fontSize: 14 }}>
@@ -167,6 +158,26 @@ function SessionLoading() {
   return <RouteLoading />;
 }
 
+function PageLoading() {
+  return <LoadingState label="正在加载页面" minHeight="calc(100vh - 96px)" />;
+}
+
+function LazyPage({ children }: { children: ReactNode }) {
+  return <Suspense fallback={<PageLoading />}>{children}</Suspense>;
+}
+
+function AdminShellRoute({ session }: { session: AdminSessionSnapshot }) {
+  return (
+    <RequireAdminAuth session={session}>
+      <AdminShell>
+        <LazyPage>
+          <Outlet />
+        </LazyPage>
+      </AdminShell>
+    </RequireAdminAuth>
+  );
+}
+
 type AdminSessionSnapshot = {
   isChecking: boolean;
   isAuthenticated: boolean;
@@ -201,127 +212,55 @@ function App() {
   const session = { isChecking, isAuthenticated };
 
   return (
-    <Suspense fallback={<RouteLoading />}>
-      <Routes>
-        <Route path="/" element={<HomeRedirect session={session} />} />
-        <Route path="/login" element={<Navigate to="/admin/login" replace />} />
-        <Route path="/register" element={<Navigate to="/admin/register" replace />} />
-        <Route path="/admin" element={<HomeRedirect session={session} />} />
-        <Route
-          path="/admin/login"
-          element={
-            <PublicAuthOnly session={session}>
+    <Routes>
+      <Route path="/" element={<HomeRedirect session={session} />} />
+      <Route path="/login" element={<Navigate to="/admin/login" replace />} />
+      <Route path="/register" element={<Navigate to="/admin/register" replace />} />
+      <Route
+        path="/admin/login"
+        element={
+          <PublicAuthOnly session={session}>
+            <LazyPage>
               <LoginPage />
-            </PublicAuthOnly>
-          }
-        />
-        <Route
-          path="/admin/register"
-          element={
-            <PublicAuthOnly session={session}>
+            </LazyPage>
+          </PublicAuthOnly>
+        }
+      />
+      <Route
+        path="/admin/register"
+        element={
+          <PublicAuthOnly session={session}>
+            <LazyPage>
               <RegisterPage />
-            </PublicAuthOnly>
-          }
-        />
-        <Route
-          path="/workspace"
-          element={
-            <RequireAdminAuth session={session}>
-              <MainApp />
-            </RequireAdminAuth>
-          }
-        />
-        <Route
-          path="/admin/test"
-          element={
-            <RequireAdminAuth session={session}>
-              <TestPage />
-            </RequireAdminAuth>
-          }
-        />
-        <Route
-          path="/admin/dashboard"
-          element={
-            <RequireAdminAuth session={session}>
-              <DashboardPage />
-            </RequireAdminAuth>
-          }
-        />
-        <Route
-          path="/admin/config"
-          element={
-            <RequireAdminAuth session={session}>
-              <ConfigPage />
-            </RequireAdminAuth>
-          }
-        />
-        <Route
-          path="/admin/monitor"
-          element={
-            <RequireAdminAuth session={session}>
-              <MonitorPage />
-            </RequireAdminAuth>
-          }
-        />
-        <Route
-          path="/admin/logs"
-          element={
-            <RequireAdminAuth session={session}>
-              <LogsPage />
-            </RequireAdminAuth>
-          }
-        />
-        <Route
-          path="/admin/analytics"
-          element={
-            <RequireAdminAuth session={session}>
-              <AnalyticsPage />
-            </RequireAdminAuth>
-          }
-        />
-        <Route
-          path="/admin/profile"
-          element={
-            <RequireAdminAuth session={session}>
-              <ProfilePage />
-            </RequireAdminAuth>
-          }
-        />
-        <Route
-          path="/admin/rbac"
-          element={
-            <RequireAdminAuth session={session}>
-              <RbacPage />
-            </RequireAdminAuth>
-          }
-        />
-        <Route
-          path="/admin/users"
-          element={
-            <RequireAdminAuth session={session}>
-              <UsersPage />
-            </RequireAdminAuth>
-          }
-        />
-        <Route
-          path="/admin/jobs"
-          element={
-            <RequireAdminAuth session={session}>
-              <JobsPage />
-            </RequireAdminAuth>
-          }
-        />
-        <Route
-          path="/admin/qa-traces"
-          element={
-            <RequireAdminAuth session={session}>
-              <QATracesPage />
-            </RequireAdminAuth>
-          }
-        />
-        <Route path="*" element={<HomeRedirect session={session} />} />
-      </Routes>
-    </Suspense>
+            </LazyPage>
+          </PublicAuthOnly>
+        }
+      />
+      <Route
+        path="/workspace"
+        element={
+          <RequireAdminAuth session={session}>
+            <MainApp />
+          </RequireAdminAuth>
+        }
+      />
+      <Route path="/admin" element={<AdminShellRoute session={session} />}>
+        <Route index element={<HomeRedirect session={session} />} />
+        <Route path="test" element={<TestPage />} />
+        <Route path="dashboard" element={<DashboardPage />} />
+        <Route path="config" element={<ConfigPage />} />
+        <Route path="monitor" element={<MonitorPage />} />
+        <Route path="logs" element={<LogsPage />} />
+        <Route path="analytics" element={<AnalyticsPage />} />
+        <Route path="profile" element={<ProfilePage />} />
+        <Route path="rbac" element={<RbacPage />} />
+        <Route path="users" element={<UsersPage />} />
+        <Route path="knowledge-base" element={<KnowledgeBasePage />} />
+        <Route path="jobs" element={<JobsPage />} />
+        <Route path="qa-traces" element={<QATracesPage />} />
+      </Route>
+      <Route path="*" element={<HomeRedirect session={session} />} />
+    </Routes>
   );
 }
 

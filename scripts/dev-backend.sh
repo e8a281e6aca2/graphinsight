@@ -9,6 +9,7 @@ DEV_PYTHON_ENV_FILE="$LOG_DIR/backend.env"
 RUNTIME_ENV_FILE="$LOG_DIR/runtime.env"
 BACKEND_MEDIA_DIR="$BACKEND_DIR/media"
 BACKEND_DOCUMENTS_DIR="$BACKEND_DIR/documents"
+BACKEND_PARSED_DOCUMENTS_DIR="$BACKEND_DIR/parsed_documents"
 
 PYTHON_HOST="${PYTHON_HOST:-0.0.0.0}"
 PYTHON_PORT="${PYTHON_PORT:-8001}"
@@ -17,10 +18,13 @@ GO_PORT="${GO_PORT:-8081}"
 LOCAL_ACCESS_HOST="${LOCAL_ACCESS_HOST:-localhost}"
 NEO4J_HTTP_PORT="${GRAPHINSIGHT_NEO4J_HTTP_PORT:-7474}"
 NEO4J_BOLT_PORT="${GRAPHINSIGHT_NEO4J_BOLT_PORT:-7687}"
-NEO4J_URI="${GRAPHINSIGHT_NEO4J_URI:-bolt://127.0.0.1:${NEO4J_BOLT_PORT}}"
+NEO4J_URI="${GRAPHINSIGHT_NEO4J_URI:-bolt://localhost:${NEO4J_BOLT_PORT}}"
 NEO4J_USER="${GRAPHINSIGHT_NEO4J_USER:-neo4j}"
 NEO4J_PASSWORD="${GRAPHINSIGHT_NEO4J_PASSWORD:-change-this-password}"
 NEO4J_DATABASE="${GRAPHINSIGHT_NEO4J_DATABASE:-neo4j}"
+MILVUS_PORT="${GRAPHINSIGHT_MILVUS_PORT:-19530}"
+MILVUS_METRICS_PORT="${GRAPHINSIGHT_MILVUS_METRICS_PORT:-9003}"
+MILVUS_URI="${MILVUS_URI:-http://127.0.0.1:${MILVUS_PORT}}"
 ADMIN_DB_PORT="${GRAPHINSIGHT_ADMIN_DB_PORT:-5434}"
 ADMIN_DB_NAME="${GRAPHINSIGHT_ADMIN_DB_NAME:-graphinsight_admin}"
 ADMIN_DB_USER="${GRAPHINSIGHT_ADMIN_DB_USER:-graphinsight}"
@@ -49,6 +53,8 @@ Environment:
   GRAPHINSIGHT_NEO4J_BOLT_PORT=7687
   GRAPHINSIGHT_NEO4J_USER=neo4j
   GRAPHINSIGHT_NEO4J_PASSWORD=change-this-password
+  GRAPHINSIGHT_MILVUS_PORT=19530
+  GRAPHINSIGHT_MILVUS_METRICS_PORT=9003
   GRAPHINSIGHT_ADMIN_DB_PORT=5434
   GRAPHINSIGHT_ADMIN_DB_NAME=graphinsight_admin
   GRAPHINSIGHT_ADMIN_DB_USER=graphinsight
@@ -66,7 +72,11 @@ pid_file() {
 
 is_listening() {
   local port="$1"
-  ss -ltn "( sport = :$port )" | tail -n +2 | grep -q .
+  if command -v ss >/dev/null 2>&1; then
+    ss -ltn "( sport = :$port )" | tail -n +2 | grep -q .
+    return
+  fi
+  lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1
 }
 
 access_url() {
@@ -109,7 +119,9 @@ read_env_value_from_file() {
 }
 
 resolve_admin_database_url() {
-  if [[ "${ALLOW_REMOTE_ADMIN_DB,,}" == "true" && -n "${ADMIN_DATABASE_URL:-}" ]]; then
+  local allow_remote_admin_db
+  allow_remote_admin_db="$(printf '%s' "${ALLOW_REMOTE_ADMIN_DB:-false}" | tr '[:upper:]' '[:lower:]')"
+  if [[ "$allow_remote_admin_db" == "true" && -n "${ADMIN_DATABASE_URL:-}" ]]; then
     return
   fi
 
@@ -213,6 +225,10 @@ ensure_python_venv() {
     echo "[dev-backend] installing Python dependencies"
     "$BACKEND_DIR/.venv/bin/python" -m pip install -r "$BACKEND_DIR/requirements.txt"
   fi
+  if ! "$BACKEND_DIR/.venv/bin/python" -c "import pymilvus" >/dev/null 2>&1; then
+    echo "[dev-backend] installing Milvus Python dependency"
+    "$BACKEND_DIR/.venv/bin/python" -m pip install -r "$BACKEND_DIR/requirements.txt"
+  fi
 }
 
 ensure_neo4j() {
@@ -223,6 +239,31 @@ ensure_neo4j() {
 
   echo "[dev-backend] starting Neo4j via docker compose"
   docker compose -f "$ROOT_DIR/docker-compose.dev.yml" up -d neo4j
+}
+
+wait_for_milvus() {
+  local attempts="${1:-60}"
+  local i
+  for ((i = 1; i <= attempts; i++)); do
+    if curl -fsS --max-time 2 "http://127.0.0.1:${MILVUS_METRICS_PORT}/healthz" >/dev/null 2>&1; then
+      echo "[dev-backend] Milvus is ready: $MILVUS_URI"
+      return
+    fi
+    sleep 1
+  done
+  echo "[dev-backend] Milvus did not become ready on $MILVUS_URI" >&2
+  return 1
+}
+
+ensure_milvus() {
+  if is_listening "$MILVUS_PORT"; then
+    echo "[dev-backend] Milvus port $MILVUS_PORT is already listening"
+    return
+  fi
+
+  echo "[dev-backend] starting Milvus via docker compose"
+  docker compose -f "$ROOT_DIR/docker-compose.dev.yml" up -d milvus
+  wait_for_milvus 90
 }
 
 write_dev_python_env() {
@@ -237,9 +278,11 @@ API_HOST=$PYTHON_HOST
 API_PORT=$PYTHON_PORT
 MEDIA_STORAGE_PATH=$BACKEND_MEDIA_DIR
 DOCUMENT_STORAGE_PATH=$BACKEND_DOCUMENTS_DIR
+PARSED_DOCUMENT_STORAGE_PATH=$BACKEND_PARSED_DOCUMENTS_DIR
 HTTP_CLIENT_TRUST_ENV=false
 RBAC_AUTHZ_MODE=go_db
 ADMIN_DATABASE_URL=$ADMIN_DATABASE_URL
+MILVUS_URI=$MILVUS_URI
 EOF
 }
 
@@ -274,18 +317,35 @@ start_python() {
   echo "[dev-backend] starting Python capability service on $PYTHON_HOST:$PYTHON_PORT"
   (
     cd "$BACKEND_DIR"
-    setsid env \
-      GRAPHINSIGHT_BACKEND_ENV_FILE="$DEV_PYTHON_ENV_FILE" \
-      API_HOST="$PYTHON_HOST" \
-      API_PORT="$PYTHON_PORT" \
-      NEO4J_URI="$NEO4J_URI" \
-      NEO4J_USER="$NEO4J_USER" \
-      NEO4J_PASSWORD="$NEO4J_PASSWORD" \
-      NEO4J_DATABASE="$NEO4J_DATABASE" \
-      ADMIN_DATABASE_URL="$ADMIN_DATABASE_URL" \
-      "$BACKEND_DIR/.venv/bin/uvicorn" main:app --host "$PYTHON_HOST" --port "$PYTHON_PORT" \
-      >"$LOG_DIR/python.log" 2>&1 < /dev/null &
-    echo "$!" >"$(pid_file python)"
+    if command -v screen >/dev/null 2>&1; then
+      screen -S graphinsight-python -X quit >/dev/null 2>&1 || true
+      screen -dmS graphinsight-python sh -c 'log_file="$1"; work_dir="$2"; shift 2; cd "$work_dir" || exit 1; exec "$@" >"$log_file" 2>&1' sh "$LOG_DIR/python.log" "$BACKEND_DIR" env \
+        GRAPHINSIGHT_BACKEND_ENV_FILE="$DEV_PYTHON_ENV_FILE" \
+        API_HOST="$PYTHON_HOST" \
+        API_PORT="$PYTHON_PORT" \
+        NEO4J_URI="$NEO4J_URI" \
+        NEO4J_USER="$NEO4J_USER" \
+        NEO4J_PASSWORD="$NEO4J_PASSWORD" \
+        NEO4J_DATABASE="$NEO4J_DATABASE" \
+        ADMIN_DATABASE_URL="$ADMIN_DATABASE_URL" \
+        MILVUS_URI="$MILVUS_URI" \
+        "$BACKEND_DIR/.venv/bin/uvicorn" main:app --host "$PYTHON_HOST" --port "$PYTHON_PORT"
+      echo "screen:graphinsight-python" >"$(pid_file python)"
+    else
+      nohup env \
+        GRAPHINSIGHT_BACKEND_ENV_FILE="$DEV_PYTHON_ENV_FILE" \
+        API_HOST="$PYTHON_HOST" \
+        API_PORT="$PYTHON_PORT" \
+        NEO4J_URI="$NEO4J_URI" \
+        NEO4J_USER="$NEO4J_USER" \
+        NEO4J_PASSWORD="$NEO4J_PASSWORD" \
+        NEO4J_DATABASE="$NEO4J_DATABASE" \
+        ADMIN_DATABASE_URL="$ADMIN_DATABASE_URL" \
+        MILVUS_URI="$MILVUS_URI" \
+        "$BACKEND_DIR/.venv/bin/uvicorn" main:app --host "$PYTHON_HOST" --port "$PYTHON_PORT" \
+        >"$LOG_DIR/python.log" 2>&1 < /dev/null &
+      echo "$!" >"$(pid_file python)"
+    fi
   )
   wait_for_http "Python capability service" "$(access_url "$PYTHON_PORT")/health" 60
 }
@@ -304,24 +364,61 @@ start_go() {
   resolve_admin_database_url
   (
     cd "$GO_BACKEND_DIR"
-    setsid env \
-      API_HOST="$GO_HOST" \
-      API_PORT="$GO_PORT" \
-      PYTHON_BACKEND_BASE_URL="$(access_url "$PYTHON_PORT")" \
-      MEDIA_STORAGE_PATH="$BACKEND_MEDIA_DIR" \
-      DOCUMENT_STORAGE_PATH="$BACKEND_DOCUMENTS_DIR" \
-      RBAC_AUTHZ_MODE=go_db \
-      NEO4J_URI="$NEO4J_URI" \
-      NEO4J_USER="$NEO4J_USER" \
-      NEO4J_PASSWORD="$NEO4J_PASSWORD" \
-      NEO4J_DATABASE="$NEO4J_DATABASE" \
-      NEO4J_CONFIG_SOURCE=auto \
-      ADMIN_DATABASE_URL="$ADMIN_DATABASE_URL" \
-      go run ./cmd/api \
-      >"$LOG_DIR/go.log" 2>&1 < /dev/null &
-    echo "$!" >"$(pid_file go)"
+    if command -v screen >/dev/null 2>&1; then
+      screen -S graphinsight-go -X quit >/dev/null 2>&1 || true
+      screen -dmS graphinsight-go sh -c 'log_file="$1"; work_dir="$2"; shift 2; cd "$work_dir" || exit 1; exec "$@" >"$log_file" 2>&1' sh "$LOG_DIR/go.log" "$GO_BACKEND_DIR" env \
+        API_HOST="$GO_HOST" \
+        API_PORT="$GO_PORT" \
+        PYTHON_BACKEND_BASE_URL="$(access_url "$PYTHON_PORT")" \
+        MEDIA_STORAGE_PATH="$BACKEND_MEDIA_DIR" \
+        DOCUMENT_STORAGE_PATH="$BACKEND_DOCUMENTS_DIR" \
+        PARSED_DOCUMENT_STORAGE_PATH="$BACKEND_PARSED_DOCUMENTS_DIR" \
+        RBAC_AUTHZ_MODE=go_db \
+        NEO4J_URI="$NEO4J_URI" \
+        NEO4J_USER="$NEO4J_USER" \
+        NEO4J_PASSWORD="$NEO4J_PASSWORD" \
+        NEO4J_DATABASE="$NEO4J_DATABASE" \
+        NEO4J_CONFIG_SOURCE=auto \
+        ADMIN_DATABASE_URL="$ADMIN_DATABASE_URL" \
+        go run ./cmd/api
+      echo "screen:graphinsight-go" >"$(pid_file go)"
+    else
+      nohup env \
+        API_HOST="$GO_HOST" \
+        API_PORT="$GO_PORT" \
+        PYTHON_BACKEND_BASE_URL="$(access_url "$PYTHON_PORT")" \
+        MEDIA_STORAGE_PATH="$BACKEND_MEDIA_DIR" \
+        DOCUMENT_STORAGE_PATH="$BACKEND_DOCUMENTS_DIR" \
+        PARSED_DOCUMENT_STORAGE_PATH="$BACKEND_PARSED_DOCUMENTS_DIR" \
+        RBAC_AUTHZ_MODE=go_db \
+        NEO4J_URI="$NEO4J_URI" \
+        NEO4J_USER="$NEO4J_USER" \
+        NEO4J_PASSWORD="$NEO4J_PASSWORD" \
+        NEO4J_DATABASE="$NEO4J_DATABASE" \
+        NEO4J_CONFIG_SOURCE=auto \
+        ADMIN_DATABASE_URL="$ADMIN_DATABASE_URL" \
+        go run ./cmd/api \
+        >"$LOG_DIR/go.log" 2>&1 < /dev/null &
+      echo "$!" >"$(pid_file go)"
+    fi
   )
   wait_for_http "Go gateway" "$(access_url "$GO_PORT")/health" 60
+}
+
+stop_port_listener() {
+  local port="$1"
+  local pids
+  pids="$(lsof -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null || true)"
+  if [[ -z "$pids" ]]; then
+    return
+  fi
+  echo "[dev-backend] stopping listener(s) on port $port: $pids"
+  kill $pids >/dev/null 2>&1 || true
+  sleep 1
+  pids="$(lsof -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null || true)"
+  if [[ -n "$pids" ]]; then
+    kill -9 $pids >/dev/null 2>&1 || true
+  fi
 }
 
 stop_one() {
@@ -333,6 +430,18 @@ stop_one() {
   fi
   local pid
   pid="$(cat "$file")"
+  if [[ "$pid" == screen:* ]]; then
+    local screen_name="${pid#screen:}"
+    echo "[dev-backend] stopping $name screen $screen_name"
+    screen -S "$screen_name" -X quit >/dev/null 2>&1 || true
+    if [[ "$name" == "python" ]]; then
+      stop_port_listener "$PYTHON_PORT"
+    elif [[ "$name" == "go" ]]; then
+      stop_port_listener "$GO_PORT"
+    fi
+    rm -f "$file"
+    return
+  fi
   if [[ -n "$pid" ]] && kill -0 "$pid" >/dev/null 2>&1; then
     echo "[dev-backend] stopping $name pid $pid"
     kill -- "-$pid" >/dev/null 2>&1 || true
@@ -345,12 +454,13 @@ stop_one() {
 print_status() {
   echo "[dev-backend] Postgres    : 127.0.0.1:$ADMIN_DB_PORT/$ADMIN_DB_NAME"
   echo "[dev-backend] Neo4j HTTP  : http://127.0.0.1:$NEO4J_HTTP_PORT"
-  echo "[dev-backend] Neo4j Bolt  : 127.0.0.1:$NEO4J_BOLT_PORT"
+  echo "[dev-backend] Neo4j Bolt  : $NEO4J_URI"
+  echo "[dev-backend] Milvus     : $MILVUS_URI"
   echo "[dev-backend] Python listen : http://$PYTHON_HOST:$PYTHON_PORT"
   echo "[dev-backend] Go listen     : http://$GO_HOST:$GO_PORT"
   echo "[dev-backend] Python access : $(access_url "$PYTHON_PORT")/health"
   echo "[dev-backend] Go access     : $(access_url "$GO_PORT")/health"
-  docker compose -f "$ROOT_DIR/docker-compose.dev.yml" ps postgres neo4j || true
+  docker compose -f "$ROOT_DIR/docker-compose.dev.yml" ps postgres neo4j milvus || true
   curl -fsS "$(access_url "$PYTHON_PORT")/health" >/dev/null 2>&1 && echo "[dev-backend] Python health: ok" || echo "[dev-backend] Python health: unavailable"
   curl -fsS "$(access_url "$GO_PORT")/health" >/dev/null 2>&1 && echo "[dev-backend] Go health: ok" || echo "[dev-backend] Go health: unavailable"
 }
@@ -368,6 +478,7 @@ case "$command" in
     resolve_runtime_ports
     ensure_postgres
     ensure_neo4j
+    ensure_milvus
     start_python
     start_go
     write_runtime_env

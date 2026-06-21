@@ -93,9 +93,9 @@ Go native:
 38. `GET /api/v1/admin/config/{category}/{key}`
 39. `GET /api/v1/admin/config/neo4j/all`
 40. `GET /api/v1/admin/config/ai-service/all`
-41. `GET /api/v1/admin/config/openai/all`
+41. `GET /api/v1/admin/config/ai-service/all`
 42. `GET /api/v1/admin/config/nl2cypher/all`
-43. `GET /api/v1/admin/config/openai/models`
+43. `GET /api/v1/admin/config/ai-service/models`
 44. `GET /api/v1/admin/config/test/model/latest`
 45. `GET /api/v1/admin/rbac/roles`
 46. `GET /api/v1/admin/rbac/permissions`
@@ -329,9 +329,9 @@ The following Go-native admin routes now read the existing admin relational tabl
 29. `GET /api/v1/admin/config/{category}/{key}`: `admin_configs`.
 30. `GET /api/v1/admin/config/neo4j/all`: `admin_configs` with environment fallback and secret redaction.
 31. `GET /api/v1/admin/config/ai-service/all`: `admin_configs` with environment fallback and secret redaction.
-32. `GET /api/v1/admin/config/openai/all`: `admin_configs` with environment fallback and secret redaction.
+32. `GET /api/v1/admin/config/ai-service/all`: `admin_configs` with environment fallback and secret redaction.
 33. `GET /api/v1/admin/config/nl2cypher/all`: `admin_configs` with environment fallback.
-34. `GET /api/v1/admin/config/openai/models`: Go static model catalog plus current model hint.
+34. `GET /api/v1/admin/config/ai-service/models`: Go model catalog plus current model hint.
 35. `GET /api/v1/admin/rbac/roles`: `admin_roles`.
 36. `GET /api/v1/admin/rbac/permissions`: `admin_permissions`.
 37. `GET /api/v1/admin/monitor/qa`: aggregate from `admin_qa_traces`.
@@ -344,12 +344,15 @@ The following Go-native admin routes now read the existing admin relational tabl
 44. `PUT /api/v1/admin/config/{category}/{key}`: `admin_configs` update or auto-create with `admin_logs` audit entry.
 45. `DELETE /api/v1/admin/config/{category}/{key}`: `admin_configs` delete with `admin_logs` audit entry.
 46. `POST /api/v1/admin/config/batch`: existing `admin_configs` batch update with `admin_logs` audit entry.
-47. `POST /api/v1/admin/config/init`: standard Neo4j and AI service environment/default config upsert with `admin_logs` audit entry.
-48. `POST /api/v1/admin/config/test/neo4j`: Go-native Neo4j connectivity probe using the active resolved config snapshot.
-49. `POST /api/v1/admin/config/test/ai_service`: Go-native AI service configuration validation for provider, enablement, API key presence, and compatible base URL requirements.
-50. `POST /api/v1/admin/config/test/openai`: Go-native alias of the AI service configuration validation path.
-51. `POST /api/v1/admin/config/test/model`: Go-native real model probe against the active configured endpoint, preserving `checked_at`, `latency_ms`, and `checks` snapshot fields for the latest result view.
-52. `DELETE /api/v1/admin/logs/clean`: retention-based cleanup of `admin_logs`, supports `dry_run`, excludes the current `trace_id` when present, and writes an `admin_logs` audit entry on actual cleanup.
+47. `POST /api/v1/admin/config/test/neo4j`: Go-native Neo4j connectivity probe using the active resolved config snapshot.
+48. `POST /api/v1/admin/config/test/ai_service`: Go-native AI service configuration validation for provider, enablement, API key presence, and compatible base URL requirements.
+49. Historical `POST /api/v1/admin/config/test/openai` alias has been removed; use `POST /api/v1/admin/config/test/ai_service`.
+50. `POST /api/v1/admin/config/test/model`: Go-native real model probe against the active configured endpoint, preserving `checked_at`, `latency_ms`, and `checks` snapshot fields for the latest result view.
+51. `DELETE /api/v1/admin/logs/clean`: retention-based cleanup of `admin_logs`, supports `dry_run`, excludes the current `trace_id` when present, and writes an `admin_logs` audit entry on actual cleanup.
+
+Retired from the external control plane:
+
+1. `POST /api/v1/admin/config/init`: environment-to-admin-config bulk initialization has been removed from the UI and Go route surface. Runtime env remains a startup fallback; admin configuration is edited explicitly through config CRUD/test endpoints.
 53. `POST /api/v1/admin/rbac/bindings`: creates or returns an existing `admin_user_role_bindings` row by user, role, and scope, validates scope fields, and writes an `admin_logs` audit entry for new bindings.
 50. `DELETE /api/v1/admin/rbac/bindings/{binding_id}`: deletes an `admin_user_role_bindings` row by id and writes an `admin_logs` audit entry.
 51. `POST /api/v1/admin/users`: creates `admin_users` with Go-generated bcrypt password hash and writes an `admin_logs` audit entry.

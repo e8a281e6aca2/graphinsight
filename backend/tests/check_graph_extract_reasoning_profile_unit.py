@@ -28,7 +28,8 @@ def main() -> int:
     ) as relation_extract:
         entity_extract.side_effect = lambda text, reasoning_profile=None: entity_calls.append(reasoning_profile) or ["Alpha", "Beta"]
         relation_extract.side_effect = (
-            lambda text, entities, reasoning_profile=None: relation_calls.append(reasoning_profile) or [{"source": "Alpha", "target": "Beta", "label": "related"}]
+            lambda text, entities, reasoning_profile=None: relation_calls.append(reasoning_profile)
+            or [{"source": "Alpha", "target": "Beta", "label": "related", "evidence": "Alpha Beta", "confidence": 0.8}]
         )
 
         entities = service._extract_entities("Alpha Beta", reasoning_profile="fast")

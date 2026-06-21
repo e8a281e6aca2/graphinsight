@@ -3,6 +3,7 @@
  * 使用标准化 API
  */
 import axios, { AxiosError } from 'axios';
+import type { AxiosRequestConfig } from 'axios';
 import type {
   ApiResponse,
   LoginRequest,
@@ -49,6 +50,7 @@ import type {
   QATraceQueryParams,
   QATraceStatus,
   QATraceType,
+  RetrievalDiagnosticsResult,
 } from '../types/admin';
 import { API_BASE_URL } from '../utils/apiBase';
 import { clearAdminSession, setAdminToken, syncPreferredAdminHome } from '../utils/adminAuth';
@@ -79,7 +81,13 @@ apiClient.interceptors.request.use(
 
 // 响应拦截器 - 处理错误
 apiClient.interceptors.response.use(
-  (response) => response,
+  (response) => {
+    const method = String(response.config?.method || 'get').toLowerCase();
+    if (method !== 'get') {
+      clearAdminReadCache();
+    }
+    return response;
+  },
   (error: AxiosError) => {
     const requestUrl = error.config?.url || '';
     const isLoginRequest = requestUrl.includes('/api/v1/admin/auth/login');
@@ -108,6 +116,92 @@ type ApiErrorEnvelope = ApiResponse<unknown> & {
 };
 
 type ConfigValueMap = Record<string, unknown>;
+
+type ConnectionTestPayload = Record<string, string | undefined>;
+
+type ReadCacheEntry<T = unknown> = {
+  expiresAt: number;
+  hasValue?: boolean;
+  value?: T;
+  promise?: Promise<T>;
+};
+
+function isSensitiveConfigResponseKey(key: string): boolean {
+  const normalized = key.toLowerCase();
+  if (normalized.endsWith('_configured') || normalized.endsWith('_preview')) {
+    return false;
+  }
+  if (['max_tokens', 'max_output_tokens', 'context_tokens', 'context_window'].includes(normalized)) {
+    return false;
+  }
+  return normalized.includes('password') || normalized.includes('secret') || normalized.includes('token') || normalized.includes('key');
+}
+
+const DEFAULT_READ_CACHE_TTL_MS = 1200;
+const readCache = new Map<string, ReadCacheEntry>();
+
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== 'object') {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => stableStringify(item)).join(',')}]`;
+  }
+  const objectValue = value as Record<string, unknown>;
+  return `{${Object.keys(objectValue)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${stableStringify(objectValue[key])}`)
+    .join(',')}}`;
+}
+
+function readCacheKey(url: string, config?: AxiosRequestConfig): string {
+  return `${url}|${stableStringify(config?.params || {})}`;
+}
+
+function clearAdminReadCache() {
+  readCache.clear();
+}
+
+async function cachedGetData<T>(
+  url: string,
+  config?: AxiosRequestConfig,
+  options?: { ttlMs?: number }
+): Promise<T> {
+  const ttlMs = options?.ttlMs ?? DEFAULT_READ_CACHE_TTL_MS;
+  const key = readCacheKey(url, config);
+  const now = Date.now();
+  const cached = readCache.get(key) as ReadCacheEntry<T> | undefined;
+
+  if (cached?.promise) {
+    return cached.promise;
+  }
+  if (cached?.hasValue && cached.expiresAt > now) {
+    return cached.value as T;
+  }
+
+  const promise = apiClient
+    .get<ApiResponse<T>>(url, config)
+    .then((response) => {
+      const data = extractApiData(response);
+      readCache.set(key, {
+        expiresAt: Date.now() + ttlMs,
+        hasValue: true,
+        value: data,
+      });
+      return data;
+    })
+    .catch((error) => {
+      readCache.delete(key);
+      throw error;
+    });
+
+  readCache.set(key, {
+    expiresAt: now + ttlMs,
+    promise,
+  });
+
+  return promise;
+}
 
 function extractApiData<T>(response: { data: ApiResponse<T> }): T {
   const payload = response.data;
@@ -266,11 +360,9 @@ export const authApi = {
    */
   async getCurrentUser(): Promise<UserInfo> {
     try {
-      const response = await apiClient.get<ApiResponse<UserInfo>>(
-        '/api/v1/admin/auth/me'
-      );
-      syncPreferredAdminHome(response.data.data?.preferred_home_path);
-      return response.data.data!;
+      const data = await cachedGetData<UserInfo>('/api/v1/admin/auth/me', undefined, { ttlMs: 3000 });
+      syncPreferredAdminHome(data?.preferred_home_path);
+      return data;
     } catch (error) {
       handleApiError(error);
     }
@@ -293,7 +385,7 @@ export const authApi = {
 // ============================================================
 
 // 配置分类类型
-export type ConfigCategory = 'neo4j' | 'ai_service' | 'nl2cypher';
+export type ConfigCategory = 'neo4j' | 'ai_service' | 'nl2cypher' | 'retrieval' | 'embedding' | 'vector_store' | 'document_parser';
 
 export const configApi = {
   /**
@@ -302,20 +394,21 @@ export const configApi = {
   async getAll(): Promise<Record<ConfigCategory, Record<string, ConfigItem>>> {
     try {
       // 并行获取各个分类的配置
-      const [neo4jResp, aiServiceResp, nl2cypherResp] = await Promise.all([
-        apiClient.get<ApiResponse<ConfigValueMap>>('/api/v1/admin/config/neo4j/all'),
-        apiClient.get<ApiResponse<ConfigValueMap>>('/api/v1/admin/config/ai-service/all'),
-        apiClient.get<ApiResponse<ConfigValueMap>>('/api/v1/admin/config/nl2cypher/all'),
+      const [neo4j, aiService, nl2cypher, retrieval, embedding, vectorStore, documentParser] = await Promise.all([
+        cachedGetData<ConfigValueMap>('/api/v1/admin/config/neo4j/all', undefined, { ttlMs: 3000 }),
+        cachedGetData<ConfigValueMap>('/api/v1/admin/config/ai-service/all', undefined, { ttlMs: 3000 }),
+        cachedGetData<ConfigValueMap>('/api/v1/admin/config/nl2cypher/all', undefined, { ttlMs: 3000 }),
+        cachedGetData<Record<string, ConfigItem>>('/api/v1/admin/config/retrieval', undefined, { ttlMs: 3000 }),
+        cachedGetData<Record<string, ConfigItem>>('/api/v1/admin/config/embedding', undefined, { ttlMs: 3000 }),
+        cachedGetData<Record<string, ConfigItem>>('/api/v1/admin/config/vector_store', undefined, { ttlMs: 3000 }),
+        cachedGetData<Record<string, ConfigItem>>('/api/v1/admin/config/document_parser', undefined, { ttlMs: 3000 }),
       ]);
-      const neo4j = extractApiData(neo4jResp);
-      const aiService = extractApiData(aiServiceResp);
-      const nl2cypher = extractApiData(nl2cypherResp);
 
       // 转换为 ConfigItem 格式
       const convertToConfigItems = (data: ConfigValueMap, category: string): Record<string, ConfigItem> => {
         const result: Record<string, ConfigItem> = {};
         for (const [key, value] of Object.entries(data)) {
-          const isSensitive = key.includes('password') || key.includes('key');
+          const isSensitive = isSensitiveConfigResponseKey(key);
           result[key] = {
             id: 0, // 从 /all 端点获取的数据没有 id
             key,
@@ -335,6 +428,10 @@ export const configApi = {
         neo4j: convertToConfigItems(neo4j || {}, 'neo4j'),
         ai_service: convertToConfigItems(aiService || {}, 'ai_service'),
         nl2cypher: convertToConfigItems(nl2cypher || {}, 'nl2cypher'),
+        retrieval: retrieval || {},
+        embedding: embedding || {},
+        vector_store: vectorStore || {},
+        document_parser: documentParser || {},
       };
     } catch (error) {
       handleApiError(error);
@@ -346,10 +443,9 @@ export const configApi = {
    */
   async getByCategory(category: ConfigCategory): Promise<Record<string, ConfigItem>> {
     try {
-      const response = await apiClient.get<ApiResponse<Record<string, ConfigItem>>>(
-        `/api/v1/admin/config/${category}`
-      );
-      return extractApiData(response);
+      return await cachedGetData<Record<string, ConfigItem>>(`/api/v1/admin/config/${category}`, undefined, {
+        ttlMs: 3000,
+      });
     } catch (error) {
       handleApiError(error);
     }
@@ -371,23 +467,16 @@ export const configApi = {
   },
 
   /**
-   * 从环境变量初始化配置
-   */
-  async initFromEnv(): Promise<void> {
-    try {
-      await apiClient.post('/api/v1/admin/config/init');
-    } catch (error) {
-      handleApiError(error);
-    }
-  },
-
-  /**
    * 测试连接
    */
-  async testConnection(type: 'neo4j' | 'openai' | 'ai_service' | 'model'): Promise<ConnectionTestResult> {
+  async testConnection(
+    type: 'neo4j' | 'openai' | 'ai_service' | 'model' | 'embedding' | 'vector_store' | 'document_parser',
+    payload?: ConnectionTestPayload
+  ): Promise<ConnectionTestResult> {
     try {
       const response = await apiClient.post<ApiResponse<ConnectionTestResult>>(
-        `/api/v1/admin/config/test/${type}`
+        `/api/v1/admin/config/test/${type}`,
+        payload || {}
       );
       return extractApiData(response);
     } catch (error) {
@@ -397,17 +486,16 @@ export const configApi = {
 
   async getLatestModelConnectionTest(): Promise<ConnectionTestResult | null> {
     try {
-      const response = await apiClient.get<ApiResponse<ConnectionTestResult | null>>(
-        '/api/v1/admin/config/test/model/latest'
-      );
-      return extractApiData(response);
+      return await cachedGetData<ConnectionTestResult | null>('/api/v1/admin/config/test/model/latest', undefined, {
+        ttlMs: 3000,
+      });
     } catch (error) {
       handleApiError(error);
     }
   },
 
   /**
-   * 获取可用的 OpenAI 模型列表
+   * 获取可用的 AI 服务模型列表
    */
   async getAvailableModels(params?: {
     provider?: string;
@@ -415,11 +503,11 @@ export const configApi = {
     model?: string;
   }): Promise<ModelCatalogResponse> {
     try {
-      const response = await apiClient.get<ApiResponse<ModelCatalogResponse | { models: string[] }>>(
-        '/api/v1/admin/config/openai/models',
-        { params }
+      const data = await cachedGetData<ModelCatalogResponse | { models: string[] }>(
+        '/api/v1/admin/config/ai-service/models',
+        { params },
+        { ttlMs: 5000 }
       );
-      const data = extractApiData(response);
       const fallbackModels = Array.isArray(data)
         ? data.filter((item): item is string => typeof item === 'string')
         : [];
@@ -429,6 +517,12 @@ export const configApi = {
           catalog: Array.isArray((data as ModelCatalogResponse).catalog)
             ? (data as ModelCatalogResponse).catalog
             : [],
+          source: typeof (data as ModelCatalogResponse).source === 'string'
+            ? (data as ModelCatalogResponse).source
+            : undefined,
+          source_message: typeof (data as ModelCatalogResponse).source_message === 'string'
+            ? (data as ModelCatalogResponse).source_message
+            : undefined,
           scenario_profiles:
             typeof (data as ModelCatalogResponse).scenario_profiles === 'object'
               ? (data as ModelCatalogResponse).scenario_profiles
@@ -453,10 +547,7 @@ export const monitorApi = {
    */
   async getStats(): Promise<SystemStats> {
     try {
-      const response = await apiClient.get<ApiResponse<SystemStats>>(
-        '/api/v1/admin/monitor/stats'
-      );
-      return extractApiData(response);
+      return await cachedGetData<SystemStats>('/api/v1/admin/monitor/stats');
     } catch (error) {
       handleApiError(error);
     }
@@ -467,10 +558,7 @@ export const monitorApi = {
    */
   async getHealth(): Promise<HealthStatus> {
     try {
-      const response = await apiClient.get<ApiResponse<HealthStatus>>(
-        '/api/v1/admin/monitor/health'
-      );
-      return extractApiData(response);
+      return await cachedGetData<HealthStatus>('/api/v1/admin/monitor/health');
     } catch (error) {
       handleApiError(error);
     }
@@ -478,11 +566,7 @@ export const monitorApi = {
 
   async getPerformance(params?: { window_seconds?: number }): Promise<PerformanceMetricsData> {
     try {
-      const response = await apiClient.get<ApiResponse<PerformanceMetricsData>>(
-        '/api/v1/admin/monitor/performance',
-        { params }
-      );
-      return extractApiData(response);
+      return await cachedGetData<PerformanceMetricsData>('/api/v1/admin/monitor/performance', { params });
     } catch (error) {
       handleApiError(error);
     }
@@ -490,11 +574,7 @@ export const monitorApi = {
 
   async getQAQuality(params?: { window_seconds?: number }): Promise<QAQualityMetrics> {
     try {
-      const response = await apiClient.get<ApiResponse<QAQualityMetrics>>(
-        '/api/v1/admin/monitor/qa',
-        { params }
-      );
-      return extractApiData(response);
+      return await cachedGetData<QAQualityMetrics>('/api/v1/admin/monitor/qa', { params });
     } catch (error) {
       handleApiError(error);
     }
@@ -502,11 +582,7 @@ export const monitorApi = {
 
   async getSloSnapshot(params?: { api_window_seconds?: number; job_window_minutes?: number }): Promise<SloSnapshot> {
     try {
-      const response = await apiClient.get<ApiResponse<SloSnapshot>>(
-        '/api/v1/admin/monitor/slo',
-        { params }
-      );
-      return extractApiData(response);
+      return await cachedGetData<SloSnapshot>('/api/v1/admin/monitor/slo', { params });
     } catch (error) {
       handleApiError(error);
     }
@@ -540,11 +616,7 @@ export const logApi = {
    */
   async getLogs(params: LogQueryParams): Promise<{ logs: LogItem[]; total: number }> {
     try {
-      const response = await apiClient.get<ApiResponse<PaginatedData<LogItem>>>(
-        '/api/v1/admin/logs',
-        { params }
-      );
-      const data = extractApiData(response);
+      const data = await cachedGetData<PaginatedData<LogItem>>('/api/v1/admin/logs', { params });
       return {
         logs: Array.isArray(data.items) ? data.items : [],
         total: Number(data.total || 0),
@@ -559,10 +631,7 @@ export const logApi = {
    */
   async getLogDetail(id: number): Promise<LogItem> {
     try {
-      const response = await apiClient.get<ApiResponse<LogItem>>(
-        `/api/v1/admin/logs/${id}`
-      );
-      return extractApiData(response);
+      return await cachedGetData<LogItem>(`/api/v1/admin/logs/${id}`);
     } catch (error) {
       handleApiError(error);
     }
@@ -573,10 +642,7 @@ export const logApi = {
    */
   async getStats(): Promise<LogStats> {
     try {
-      const response = await apiClient.get<ApiResponse<LogStats>>(
-        '/api/v1/admin/logs/stats/summary'
-      );
-      return extractApiData(response);
+      return await cachedGetData<LogStats>('/api/v1/admin/logs/stats/summary');
     } catch (error) {
       handleApiError(error);
     }
@@ -600,11 +666,11 @@ export const logApi = {
   /**
    * 清理旧日志
    */
-  async cleanup(days: number): Promise<{ deleted_count: number }> {
+  async cleanup(days: number, dryRun = false): Promise<{ deleted_count: number; days?: number; dry_run?: boolean; cutoff_at?: string }> {
     try {
-      const response = await apiClient.delete<ApiResponse<{ deleted_count: number }>>(
+      const response = await apiClient.delete<ApiResponse<{ deleted_count: number; days?: number; dry_run?: boolean; cutoff_at?: string }>>(
         '/api/v1/admin/logs/clean',
-        { params: { days } }
+        { params: { days, dry_run: dryRun } }
       );
       return extractApiData(response);
     } catch (error) {
@@ -624,11 +690,9 @@ export const profileApi = {
    */
   async getProfile(): Promise<ProfileInfo> {
     try {
-      const response = await apiClient.get<ApiResponse<ProfileInfo>>(
-        '/api/v1/admin/profile'
-      );
-      syncPreferredAdminHome(response.data.data?.preferred_home_path);
-      return response.data.data!;
+      const data = await cachedGetData<ProfileInfo>('/api/v1/admin/profile', undefined, { ttlMs: 3000 });
+      syncPreferredAdminHome(data?.preferred_home_path);
+      return data;
     } catch (error) {
       handleApiError(error);
     }
@@ -672,10 +736,7 @@ export const profileApi = {
 export const rbacApi = {
   async getRoles(): Promise<RoleItem[]> {
     try {
-      const response = await apiClient.get<ApiResponse<RoleItem[]>>(
-        '/api/v1/admin/rbac/roles'
-      );
-      return response.data.data || [];
+      return await cachedGetData<RoleItem[]>('/api/v1/admin/rbac/roles', undefined, { ttlMs: 5000 });
     } catch (error) {
       handleApiError(error);
     }
@@ -683,10 +744,7 @@ export const rbacApi = {
 
   async getPermissions(): Promise<PermissionItem[]> {
     try {
-      const response = await apiClient.get<ApiResponse<PermissionItem[]>>(
-        '/api/v1/admin/rbac/permissions'
-      );
-      return response.data.data || [];
+      return await cachedGetData<PermissionItem[]>('/api/v1/admin/rbac/permissions', undefined, { ttlMs: 5000 });
     } catch (error) {
       handleApiError(error);
     }
@@ -694,11 +752,7 @@ export const rbacApi = {
 
   async getBindings(params?: { user_id?: number }): Promise<BindingItem[]> {
     try {
-      const response = await apiClient.get<ApiResponse<BindingItem[]>>(
-        '/api/v1/admin/rbac/bindings',
-        { params }
-      );
-      return response.data.data || [];
+      return await cachedGetData<BindingItem[]>('/api/v1/admin/rbac/bindings', { params });
     } catch (error) {
       handleApiError(error);
     }
@@ -738,11 +792,7 @@ export const usersApi = {
     department?: string;
   }): Promise<PaginatedData<AdminUserItem>> {
     try {
-      const response = await apiClient.get<ApiResponse<PaginatedData<AdminUserItem>>>(
-        '/api/v1/admin/users',
-        { params }
-      );
-      return response.data.data!;
+      return await cachedGetData<PaginatedData<AdminUserItem>>('/api/v1/admin/users', { params });
     } catch (error) {
       handleApiError(error);
     }
@@ -882,8 +932,7 @@ export const jobsApi = {
 
   async getJobs(params?: JobQueryParams): Promise<PaginatedData<JobItem>> {
     try {
-      const response = await apiClient.get<ApiResponse<PaginatedData<JobItem>>>('/api/v1/admin/jobs', { params });
-      return extractApiData(response);
+      return await cachedGetData<PaginatedData<JobItem>>('/api/v1/admin/jobs', { params });
     } catch (error) {
       handleApiError(error);
     }
@@ -891,8 +940,7 @@ export const jobsApi = {
 
   async getJobById(jobId: number): Promise<JobItem> {
     try {
-      const response = await apiClient.get<ApiResponse<JobItem>>(`/api/v1/admin/jobs/${jobId}`);
-      return extractApiData(response);
+      return await cachedGetData<JobItem>(`/api/v1/admin/jobs/${jobId}`);
     } catch (error) {
       handleApiError(error);
     }
@@ -900,11 +948,7 @@ export const jobsApi = {
 
   async getJobLogs(jobId: number, params?: { page?: number; page_size?: number }): Promise<PaginatedData<JobLogItem>> {
     try {
-      const response = await apiClient.get<ApiResponse<PaginatedData<JobLogItem>>>(
-        `/api/v1/admin/jobs/${jobId}/logs`,
-        { params }
-      );
-      return extractApiData(response);
+      return await cachedGetData<PaginatedData<JobLogItem>>(`/api/v1/admin/jobs/${jobId}/logs`, { params });
     } catch (error) {
       handleApiError(error);
     }
@@ -936,11 +980,7 @@ export const jobsApi = {
 export const qaTracesApi = {
   async getTraces(params?: QATraceQueryParams): Promise<PaginatedData<QATraceItem>> {
     try {
-      const response = await apiClient.get<ApiResponse<PaginatedData<QATraceItem>>>(
-        '/api/v1/admin/qa-traces',
-        { params }
-      );
-      return extractApiData(response);
+      return await cachedGetData<PaginatedData<QATraceItem>>('/api/v1/admin/qa-traces', { params });
     } catch (error) {
       handleApiError(error);
     }
@@ -948,10 +988,7 @@ export const qaTracesApi = {
 
   async getTrace(traceIdOrPk: string | number): Promise<QATraceDetail> {
     try {
-      const response = await apiClient.get<ApiResponse<QATraceDetail>>(
-        `/api/v1/admin/qa-traces/${traceIdOrPk}`
-      );
-      return extractApiData(response);
+      return await cachedGetData<QATraceDetail>(`/api/v1/admin/qa-traces/${traceIdOrPk}`);
     } catch (error) {
       handleApiError(error);
     }
@@ -963,9 +1000,21 @@ export const qaTracesApi = {
     window_hours?: number;
   }): Promise<QACostSummary> {
     try {
-      const response = await apiClient.get<ApiResponse<QACostSummary>>(
-        '/api/v1/admin/qa-traces/cost-summary',
-        { params }
+      return await cachedGetData<QACostSummary>('/api/v1/admin/qa-traces/cost-summary', { params });
+    } catch (error) {
+      handleApiError(error);
+    }
+  },
+
+  async runRetrievalDiagnostics(payload: {
+    question: string;
+    top_k?: number;
+    modes?: string[];
+  }): Promise<RetrievalDiagnosticsResult> {
+    try {
+      const response = await apiClient.post<ApiResponse<RetrievalDiagnosticsResult>>(
+        '/api/v1/admin/qa/retrieval-diagnostics',
+        payload
       );
       return extractApiData(response);
     } catch (error) {

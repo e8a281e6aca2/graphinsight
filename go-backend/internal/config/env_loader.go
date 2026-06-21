@@ -22,8 +22,9 @@ var backendFallbackIgnoredKeys = map[string]struct{}{
 }
 
 var relativePathEnvKeys = map[string]struct{}{
-	"MEDIA_STORAGE_PATH":    {},
-	"DOCUMENT_STORAGE_PATH": {},
+	"MEDIA_STORAGE_PATH":           {},
+	"DOCUMENT_STORAGE_PATH":        {},
+	"PARSED_DOCUMENT_STORAGE_PATH": {},
 }
 
 func loadLocalEnv() {

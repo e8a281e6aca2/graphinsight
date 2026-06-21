@@ -11,13 +11,11 @@ import {
   Typography,
   Chip,
   Button,
-  CircularProgress,
   Alert,
   LinearProgress,
   Stack,
 } from '@mui/material';
 import { 
-  Refresh,
   NotificationsActive,
   Computer,
   Memory,
@@ -26,10 +24,12 @@ import {
 } from '@mui/icons-material';
 import { monitorApi } from '../../services/adminService';
 import type { AlertCheckResult, HealthStatus, SloSnapshot, SystemStats, PerformanceMetricsData, QAQualityMetrics } from '../../types/admin';
+import AdminRefreshButton from '../../components/Admin/AdminRefreshButton';
 import SystemResourceChart from '../../components/Admin/Charts/SystemResourceChart';
 import { useSystemMetrics } from '../../hooks/useSystemMetrics';
 import { usePageVisible } from '../../hooks/usePageVisible';
 import AdminLayout from '../../components/Admin/AdminLayout';
+import { LoadingState } from '../../components/Loading/AppleSpinner';
 import { getErrorMessage } from '../../utils/errorMessage';
 
 const API_WINDOW_SECONDS = 900;
@@ -185,9 +185,7 @@ const MonitorPage: React.FC = () => {
 
   const actionBar = (
     <Stack direction="row" spacing={1}>
-      <Button variant="outlined" startIcon={<Refresh />} onClick={loadData} disabled={loading}>
-        刷新
-      </Button>
+      <AdminRefreshButton onClick={loadData} loading={loading} />
       <Button
         variant="contained"
         startIcon={<NotificationsActive />}
@@ -209,9 +207,7 @@ const MonitorPage: React.FC = () => {
         )}
 
         {loading && !health && !stats && (
-          <Box sx={{ display: 'flex', justifyContent: 'center', p: 4 }}>
-            <CircularProgress />
-          </Box>
+          <LoadingState label="正在加载监控数据" minHeight={360} />
         )}
 
         <Stack spacing={3}>

@@ -47,8 +47,32 @@ services:
       retries: 10
       start_period: 30s
 
+  milvus:
+    image: milvusdb/milvus:v2.5.4
+    container_name: graphinsight-milvus
+    restart: unless-stopped
+    command: ["milvus", "run", "standalone"]
+    security_opt:
+      - seccomp:unconfined
+    ports:
+      - "${GRAPHINSIGHT_MILVUS_PORT:-19530}:19530"
+      - "${GRAPHINSIGHT_MILVUS_METRICS_PORT:-9003}:9091"
+    environment:
+      ETCD_USE_EMBED: "true"
+      ETCD_DATA_DIR: /var/lib/milvus/etcd
+      COMMON_STORAGETYPE: local
+    volumes:
+      - graphinsight_milvus_data:/var/lib/milvus
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9091/healthz >/dev/null 2>&1 || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+
 volumes:
   graphinsight_postgres_data:
   graphinsight_neo4j_data:
   graphinsight_neo4j_logs:
   graphinsight_neo4j_plugins:
+  graphinsight_milvus_data:

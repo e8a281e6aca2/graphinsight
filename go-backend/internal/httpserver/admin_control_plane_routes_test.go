@@ -3,8 +3,10 @@ package httpserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -1615,6 +1617,81 @@ func TestAdminQATracesCostSummaryNativeRouteUsesReadPermission(t *testing.T) {
 	}
 }
 
+func TestAdminRetrievalDiagnosticsRouteForwardsToPythonInternal(t *testing.T) {
+	t.Parallel()
+
+	var upstreamPath string
+	var upstreamHeader string
+	var upstreamPayload adminRetrievalDiagnosticsPayload
+	pythonWakeClient := newProxyClientForTest(t, func(w http.ResponseWriter, r *http.Request) {
+		upstreamPath = r.URL.Path
+		upstreamHeader = r.Header.Get("X-Go-Proxy")
+		if r.Method != http.MethodPost {
+			t.Fatalf("unexpected method: %s", r.Method)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&upstreamPayload); err != nil {
+			t.Fatalf("decode upstream payload: %v", err)
+		}
+		WriteJSON(w, http.StatusOK, "ok", map[string]interface{}{"accepted": true})
+	})
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	guard := newBusinessPermissionGuard(config.Config{RBACEnforceBusinessAPI: false}, logger)
+	mux := http.NewServeMux()
+	registerAdminControlPlaneRoutesWithContext(mux, config.Config{}, logger, nil, nil, newAPIMetrics(10), pythonWakeClient, nil, guard, &fakeAdminQATraceStore{})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/admin/qa/retrieval-diagnostics",
+		strings.NewReader(`{"question":"  hybrid search  ","top_k":30,"modes":["hybrid","bad","vector","hybrid"]}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if rec.Header().Get(routeOwnerHeader) != "go-control-plane" {
+		t.Fatalf("unexpected route owner: %s", rec.Header().Get(routeOwnerHeader))
+	}
+	if upstreamPath != "/api/internal/docqa/retrieval-diagnostics" {
+		t.Fatalf("unexpected upstream path: %s", upstreamPath)
+	}
+	if upstreamHeader != "graphinsight-go" {
+		t.Fatalf("expected go control header, got %q", upstreamHeader)
+	}
+	if upstreamPayload.Question != "hybrid search" || upstreamPayload.TopK != 20 {
+		t.Fatalf("unexpected upstream payload: %#v", upstreamPayload)
+	}
+	if len(upstreamPayload.Modes) != 2 || upstreamPayload.Modes[0] != "hybrid" || upstreamPayload.Modes[1] != "vector" {
+		t.Fatalf("unexpected modes: %#v", upstreamPayload.Modes)
+	}
+}
+
+func TestAdminRetrievalDiagnosticsRejectsBlankQuestionBeforeProxy(t *testing.T) {
+	t.Parallel()
+
+	pythonWakeClient := newProxyClientForTest(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("python client should not be called for invalid diagnostics payload")
+	})
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	guard := newBusinessPermissionGuard(config.Config{RBACEnforceBusinessAPI: false}, logger)
+	mux := http.NewServeMux()
+	registerAdminControlPlaneRoutesWithContext(mux, config.Config{}, logger, nil, nil, newAPIMetrics(10), pythonWakeClient, nil, guard, &fakeAdminQATraceStore{})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/qa/retrieval-diagnostics", strings.NewReader(`{"question":"   "}`))
+	req.Header.Set("Content-Type", "application/json")
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if rec.Header().Get(routeOwnerHeader) != "go-control-plane" {
+		t.Fatalf("unexpected route owner: %s", rec.Header().Get(routeOwnerHeader))
+	}
+}
+
 type fakeAdminQATraceStore struct {
 	listQuery    adminstore.QATraceListQuery
 	listResult   adminstore.QATraceListResult
@@ -1732,7 +1809,7 @@ func TestAdminConfigMutationNativeRoutesMarkOwnerAndSkipProxy(t *testing.T) {
 	}
 }
 
-func TestAdminConfigBatchAndInitNativeRoutesSkipProxy(t *testing.T) {
+func TestAdminConfigBatchNativeRouteSkipsProxyAndInitIsRetired(t *testing.T) {
 	t.Parallel()
 
 	pythonWakeClient := newProxyClientForTest(t, func(w http.ResponseWriter, r *http.Request) {
@@ -1744,7 +1821,6 @@ func TestAdminConfigBatchAndInitNativeRoutesSkipProxy(t *testing.T) {
 	guard := newBusinessPermissionGuard(config.Config{RBACEnforceBusinessAPI: false}, logger)
 	store := &fakeAdminConfigStore{
 		batchUpdatedCount: 1,
-		initCount:         11,
 	}
 	registerAdminControlPlaneRoutesWithContext(mux, config.Config{}, logger, nil, nil, newAPIMetrics(10), pythonWakeClient, nil, guard, store)
 
@@ -1765,14 +1841,11 @@ func TestAdminConfigBatchAndInitNativeRoutesSkipProxy(t *testing.T) {
 	initRec := httptest.NewRecorder()
 	initReq := httptest.NewRequest(http.MethodPost, "/api/v1/admin/config/init", nil)
 	mux.ServeHTTP(initRec, initReq)
-	if initRec.Code != http.StatusOK {
-		t.Fatalf("expected init 200, got %d", initRec.Code)
+	if initRec.Code != http.StatusNotFound {
+		t.Fatalf("expected retired init route to return 404, got %d body=%s", initRec.Code, initRec.Body.String())
 	}
 	if initRec.Header().Get(routeOwnerHeader) != "go-native" {
-		t.Fatalf("unexpected init route owner: %s", initRec.Header().Get(routeOwnerHeader))
-	}
-	if store.initCalled != 1 {
-		t.Fatalf("expected init called once, got %d", store.initCalled)
+		t.Fatalf("unexpected retired init route owner: %s", initRec.Header().Get(routeOwnerHeader))
 	}
 }
 
@@ -1824,6 +1897,234 @@ func TestAdminConfigNeo4jConnectionTestIsNative(t *testing.T) {
 	}
 	if !strings.Contains(data["message"].(string), "Neo4j 连接成功") {
 		t.Fatalf("unexpected message: %#v", data["message"])
+	}
+}
+
+func TestAdminConfigNeo4jConnectionTestUsesAdminDatabaseName(t *testing.T) {
+	originalProbe := adminNeo4jConnectionProbe
+	defer func() { adminNeo4jConnectionProbe = originalProbe }()
+	adminNeo4jConnectionProbe = func(ctx context.Context, uri string, user string, password string, database string) error {
+		if uri != "neo4j+s://example.databases.neo4j.io" || user != "aura-user" || password != "aura-password" || database != "aura-db" {
+			t.Fatalf("unexpected probe config uri=%q user=%q password=%q database=%q", uri, user, password, database)
+		}
+		return nil
+	}
+
+	mux := http.NewServeMux()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	guard := newGoDBPermissionGuardForTest(nil, 1)
+	registerAdminControlPlaneRoutesWithContext(mux, config.Config{
+		Neo4jURI:      "bolt://env-neo4j:7687",
+		Neo4jUser:     "env-user",
+		Neo4jPassword: "env-password",
+		Neo4jDatabase: "env-db",
+	}, logger, nil, nil, newAPIMetrics(10), nil, nil, guard, &fakeAdminConfigStore{
+		values: map[string]map[string]string{
+			"neo4j": {
+				"uri":      "neo4j+s://example.databases.neo4j.io",
+				"user":     "aura-user",
+				"password": "aura-password",
+				"database": "aura-db",
+			},
+		},
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/config/test/neo4j", strings.NewReader(`{}`))
+	req.Header.Set("Authorization", "Bearer "+newAdminAuthRequestToken(t))
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected neo4j test 200, got %d", rec.Code)
+	}
+
+	var resp APIResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	data, ok := resp.Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected object data, got %#v", resp.Data)
+	}
+	if data["success"] != true {
+		t.Fatalf("expected success=true, got %#v", data)
+	}
+}
+
+func TestAdminConfigNeo4jConnectionTestSavesPayloadOnlyAfterSuccess(t *testing.T) {
+	originalProbe := adminNeo4jConnectionProbe
+	defer func() { adminNeo4jConnectionProbe = originalProbe }()
+	adminNeo4jConnectionProbe = func(ctx context.Context, uri string, user string, password string, database string) error {
+		if uri != "neo4j+s://payload.databases.neo4j.io" || user != "payload-user" || password != "new-password" || database != "payload-db" {
+			t.Fatalf("unexpected probe config uri=%q user=%q password=%q database=%q", uri, user, password, database)
+		}
+		return nil
+	}
+
+	mux := http.NewServeMux()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	guard := newGoDBPermissionGuardForTest(nil, 1)
+	store := &fakeAdminConfigStore{
+		values: map[string]map[string]string{
+			"neo4j": {
+				"uri":      "bolt://saved:7687",
+				"user":     "saved-user",
+				"password": "saved-password",
+				"database": "saved-db",
+			},
+		},
+	}
+	registerAdminControlPlaneRoutesWithContext(mux, config.Config{}, logger, nil, nil, newAPIMetrics(10), nil, nil, guard, store)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/config/test/neo4j", strings.NewReader(`{
+		"uri":"neo4j+s://payload.databases.neo4j.io",
+		"user":"payload-user",
+		"password":"new-password",
+		"database":"payload-db"
+	}`))
+	req.Header.Set("Authorization", "Bearer "+newAdminAuthRequestToken(t))
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected neo4j test 200, got %d", rec.Code)
+	}
+
+	var resp APIResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	data, ok := resp.Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected object data, got %#v", resp.Data)
+	}
+	if data["success"] != true || data["saved"] != true {
+		t.Fatalf("expected success=true saved=true, got %#v", data)
+	}
+	if got := store.values["neo4j"]["uri"]; got != "neo4j+s://payload.databases.neo4j.io" {
+		t.Fatalf("expected saved uri payload value, got %q", got)
+	}
+	if got := store.values["neo4j"]["user"]; got != "payload-user" {
+		t.Fatalf("expected saved user payload value, got %q", got)
+	}
+	if got := store.values["neo4j"]["password"]; got != "new-password" {
+		t.Fatalf("expected saved password payload value, got %q", got)
+	}
+	if got := store.values["neo4j"]["database"]; got != "payload-db" {
+		t.Fatalf("expected saved database payload value, got %q", got)
+	}
+}
+
+func TestAdminConfigNeo4jConnectionTestDoesNotSavePayloadAfterFailure(t *testing.T) {
+	originalProbe := adminNeo4jConnectionProbe
+	defer func() { adminNeo4jConnectionProbe = originalProbe }()
+	adminNeo4jConnectionProbe = func(ctx context.Context, uri string, user string, password string, database string) error {
+		return errors.New("dial failed")
+	}
+
+	mux := http.NewServeMux()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	guard := newGoDBPermissionGuardForTest(nil, 1)
+	store := &fakeAdminConfigStore{
+		values: map[string]map[string]string{
+			"neo4j": {
+				"uri":      "bolt://saved:7687",
+				"user":     "saved-user",
+				"password": "saved-password",
+				"database": "saved-db",
+			},
+		},
+	}
+	registerAdminControlPlaneRoutesWithContext(mux, config.Config{}, logger, nil, nil, newAPIMetrics(10), nil, nil, guard, store)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/config/test/neo4j", strings.NewReader(`{
+		"uri":"neo4j+s://bad.databases.neo4j.io",
+		"user":"bad-user",
+		"password":"bad-password",
+		"database":"bad-db"
+	}`))
+	req.Header.Set("Authorization", "Bearer "+newAdminAuthRequestToken(t))
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected neo4j test 200, got %d", rec.Code)
+	}
+
+	var resp APIResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	data, ok := resp.Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected object data, got %#v", resp.Data)
+	}
+	if data["success"] != false || data["saved"] != false {
+		t.Fatalf("expected success=false saved=false, got %#v", data)
+	}
+	if got := store.values["neo4j"]["uri"]; got != "bolt://saved:7687" {
+		t.Fatalf("expected saved uri unchanged, got %q", got)
+	}
+	if got := store.values["neo4j"]["user"]; got != "saved-user" {
+		t.Fatalf("expected saved user unchanged, got %q", got)
+	}
+	if got := store.values["neo4j"]["password"]; got != "saved-password" {
+		t.Fatalf("expected saved password unchanged, got %q", got)
+	}
+	if got := store.values["neo4j"]["database"]; got != "saved-db" {
+		t.Fatalf("expected saved database unchanged, got %q", got)
+	}
+}
+
+func TestAdminConfigNeo4jConnectionTestExplainsDNSFailure(t *testing.T) {
+	originalProbe := adminNeo4jConnectionProbe
+	defer func() { adminNeo4jConnectionProbe = originalProbe }()
+	adminNeo4jConnectionProbe = func(ctx context.Context, uri string, user string, password string, database string) error {
+		return errors.New("lookup missing.databases.neo4j.io on 127.0.0.53:53: no such host")
+	}
+
+	mux := http.NewServeMux()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	guard := newGoDBPermissionGuardForTest(nil, 1)
+	store := &fakeAdminConfigStore{
+		values: map[string]map[string]string{
+			"neo4j": {
+				"uri":      "bolt://saved:7687",
+				"user":     "saved-user",
+				"password": "saved-password",
+				"database": "saved-db",
+			},
+		},
+	}
+	registerAdminControlPlaneRoutesWithContext(mux, config.Config{}, logger, nil, nil, newAPIMetrics(10), nil, nil, guard, store)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/config/test/neo4j", strings.NewReader(`{
+		"uri":"neo4j+s://missing.databases.neo4j.io",
+		"user":"aura-user",
+		"password":"aura-password",
+		"database":"aura-db"
+	}`))
+	req.Header.Set("Authorization", "Bearer "+newAdminAuthRequestToken(t))
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected neo4j test 200, got %d", rec.Code)
+	}
+
+	var resp APIResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	data, ok := resp.Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected object data, got %#v", resp.Data)
+	}
+	message, _ := data["message"].(string)
+	if data["success"] != false || data["saved"] != false {
+		t.Fatalf("expected success=false saved=false, got %#v", data)
+	}
+	if !strings.Contains(message, "地址无法解析") || !strings.Contains(message, "还没有验证到用户名或密码") {
+		t.Fatalf("expected dns-specific message, got %q", message)
+	}
+	if got := store.values["neo4j"]["uri"]; got != "bolt://saved:7687" {
+		t.Fatalf("expected saved uri unchanged, got %q", got)
 	}
 }
 
@@ -1926,6 +2227,127 @@ func TestAdminConfigAIServiceConnectionTestIsNative(t *testing.T) {
 	}
 }
 
+func TestAdminConfigEmbeddingConnectionTestIsNative(t *testing.T) {
+	t.Parallel()
+	pythonWakeClient := newProxyClientForTest(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("python wake client should not be called for native embedding config test route")
+	})
+	embeddingServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/embeddings" {
+			t.Fatalf("unexpected embedding endpoint path: %s", r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "Bearer sk-test-embedding" {
+			t.Fatalf("unexpected auth header: %s", r.Header.Get("Authorization"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"object":"list","data":[{"object":"embedding","index":0,"embedding":[0.1,0.2]}],"model":"text-embedding-3-small"}`))
+	}))
+	t.Cleanup(embeddingServer.Close)
+
+	mux := http.NewServeMux()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	guard := newGoDBPermissionGuardForTest(nil, 1)
+	registerAdminControlPlaneRoutesWithContext(mux, config.Config{}, logger, nil, nil, newAPIMetrics(10), pythonWakeClient, nil, guard, &fakeAdminConfigStore{
+		values: map[string]map[string]string{
+			"ai_service": {
+				"provider": "openai",
+				"enabled":  "true",
+				"api_key":  "sk-test-ai",
+			},
+			"embedding": {
+				"provider": "openai",
+				"enabled":  "true",
+				"api_key":  "sk-test-embedding",
+				"base_url": embeddingServer.URL,
+				"model":    "text-embedding-3-small",
+			},
+		},
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/config/test/embedding", strings.NewReader(`{}`))
+	req.Header.Set("Authorization", "Bearer "+newAdminAuthRequestToken(t))
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected embedding test 200, got %d", rec.Code)
+	}
+	if rec.Header().Get(routeOwnerHeader) != "go-native" {
+		t.Fatalf("unexpected embedding test route owner: %s", rec.Header().Get(routeOwnerHeader))
+	}
+
+	var resp APIResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	data, ok := resp.Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected object data, got %#v", resp.Data)
+	}
+	if data["success"] != true || data["model"] != "text-embedding-3-small" {
+		t.Fatalf("unexpected embedding test data: %#v", data)
+	}
+}
+
+func TestAdminConfigVectorStoreConnectionTestIsNative(t *testing.T) {
+	t.Parallel()
+	pythonWakeClient := newProxyClientForTest(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("python wake client should not be called for native vector store config test route")
+	})
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("start tcp listener: %v", err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		conn, acceptErr := listener.Accept()
+		if acceptErr == nil {
+			_ = conn.Close()
+		}
+	}()
+
+	mux := http.NewServeMux()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	guard := newGoDBPermissionGuardForTest(nil, 1)
+	registerAdminControlPlaneRoutesWithContext(mux, config.Config{}, logger, nil, nil, newAPIMetrics(10), pythonWakeClient, nil, guard, &fakeAdminConfigStore{
+		values: map[string]map[string]string{
+			"vector_store": {
+				"provider":   "milvus",
+				"enabled":    "true",
+				"uri":        "http://" + listener.Addr().String(),
+				"db_name":    "default",
+				"collection": "graphinsight_chunks",
+			},
+		},
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/config/test/vector_store", strings.NewReader(`{}`))
+	req.Header.Set("Authorization", "Bearer "+newAdminAuthRequestToken(t))
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected vector store test 200, got %d", rec.Code)
+	}
+	if rec.Header().Get(routeOwnerHeader) != "go-native" {
+		t.Fatalf("unexpected vector store test route owner: %s", rec.Header().Get(routeOwnerHeader))
+	}
+	<-done
+
+	var resp APIResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	data, ok := resp.Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected object data, got %#v", resp.Data)
+	}
+	if data["success"] != true || data["provider"] != "milvus" {
+		t.Fatalf("unexpected vector store test data: %#v", data)
+	}
+}
+
 func TestAdminConfigReadNativeRoutesMarkOwnerAndSkipProxy(t *testing.T) {
 	t.Parallel()
 
@@ -2022,7 +2444,7 @@ func TestAdminConfigReadNativeRoutesMarkOwnerAndSkipProxy(t *testing.T) {
 	}
 
 	modelsRec := httptest.NewRecorder()
-	modelsReq := httptest.NewRequest(http.MethodGet, "/api/v1/admin/config/openai/models", nil)
+	modelsReq := httptest.NewRequest(http.MethodGet, "/api/v1/admin/config/ai-service/models", nil)
 	mux.ServeHTTP(modelsRec, modelsReq)
 	if modelsRec.Code != http.StatusOK {
 		t.Fatalf("expected models 200, got %d", modelsRec.Code)
@@ -2100,7 +2522,7 @@ func TestAdminConfigReadNativeRouteUsesReadPermission(t *testing.T) {
 	})
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/config/openai/models", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/config/ai-service/models", nil)
 	req.Header.Set("Authorization", "Bearer "+newAdminAuthRequestToken(t))
 	mux.ServeHTTP(rec, req)
 
@@ -2115,11 +2537,11 @@ func TestAdminConfigReadNativeRouteUsesReadPermission(t *testing.T) {
 func TestBuildAdminModelCatalogResponseInfersReasoningCapabilities(t *testing.T) {
 	t.Parallel()
 
-	resp := buildAdminModelCatalogResponse(config.Config{}, map[string]string{
+	resp := buildAdminModelCatalogResponse(context.Background(), config.Config{}, map[string]string{
 		"provider":                        "openai_compatible",
 		"docqa_reasoning_profile":         "balanced",
 		"deep_research_reasoning_profile": "deep",
-	}, "deepseek-reasoner")
+	}, map[string][]string{"model": {"deepseek-reasoner"}})
 
 	if len(resp.Catalog) == 0 {
 		t.Fatal("expected non-empty catalog")
@@ -2274,6 +2696,39 @@ func TestAdminConfigTestReadPathReturnsGoOwned404(t *testing.T) {
 	}
 }
 
+func TestLegacyOpenAIConfigAliasesAreRemoved(t *testing.T) {
+	t.Parallel()
+
+	pythonWakeClient := newProxyClientForTest(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("python wake client should not be called for removed openai config alias")
+	})
+
+	mux := http.NewServeMux()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	guard := newBusinessPermissionGuard(config.Config{RBACEnforceBusinessAPI: false}, logger)
+	registerAdminControlPlaneRoutesWithContext(mux, config.Config{}, logger, nil, nil, newAPIMetrics(10), pythonWakeClient, nil, guard, &fakeAdminConfigStore{})
+
+	for _, tc := range []struct {
+		method string
+		path   string
+		body   string
+	}{
+		{method: http.MethodGet, path: "/api/v1/admin/config/openai/models"},
+		{method: http.MethodGet, path: "/api/v1/admin/config/openai/all"},
+		{method: http.MethodPost, path: "/api/v1/admin/config/test/openai", body: `{}`},
+	} {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("expected removed alias %s %s to return 404, got %d", tc.method, tc.path, rec.Code)
+		}
+		if rec.Header().Get(routeOwnerHeader) != "go-native" {
+			t.Fatalf("unexpected route owner for %s: %s", tc.path, rec.Header().Get(routeOwnerHeader))
+		}
+	}
+}
+
 type fakeAdminConfigStore struct {
 	listQuery         adminstore.ConfigListQuery
 	listResult        adminstore.ConfigListResult
@@ -2292,9 +2747,6 @@ type fakeAdminConfigStore struct {
 	batchReq          adminstore.ConfigBatchUpdateRequest
 	batchUpdatedCount int
 	batchErr          error
-	initCalled        int
-	initCount         int
-	initErr           error
 }
 
 func (s *fakeAdminConfigStore) ListConfigs(_ context.Context, query adminstore.ConfigListQuery) (adminstore.ConfigListResult, error) {
@@ -2343,6 +2795,15 @@ func (s *fakeAdminConfigStore) CreateConfig(_ context.Context, req adminstore.Co
 
 func (s *fakeAdminConfigStore) UpdateConfig(_ context.Context, req adminstore.ConfigMutationRequest) (adminstore.ConfigItem, error) {
 	s.updateReq = req
+	if s.updateErr == nil {
+		if s.values == nil {
+			s.values = map[string]map[string]string{}
+		}
+		if _, ok := s.values[req.Category]; !ok {
+			s.values[req.Category] = map[string]string{}
+		}
+		s.values[req.Category][req.Key] = req.Value
+	}
 	return s.updateResult, s.updateErr
 }
 
@@ -2354,11 +2815,6 @@ func (s *fakeAdminConfigStore) DeleteConfig(_ context.Context, req adminstore.Co
 func (s *fakeAdminConfigStore) BatchUpdateConfigs(_ context.Context, req adminstore.ConfigBatchUpdateRequest) (int, error) {
 	s.batchReq = req
 	return s.batchUpdatedCount, s.batchErr
-}
-
-func (s *fakeAdminConfigStore) InitConfigsFromEnv(_ context.Context, req adminstore.ConfigInitRequest) (int, error) {
-	s.initCalled++
-	return s.initCount, s.initErr
 }
 
 func TestAdminLogsListNativeRouteMarksOwnerAndSkipsProxy(t *testing.T) {

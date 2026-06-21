@@ -42,7 +42,7 @@ def main() -> int:
     lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
     _assert(len(lines) >= 2, f"unexpected output: {result.stdout!r}")
     before, after = lines[-2], lines[-1]
-    _assert(before == "bolt://127.0.0.1:7687", f"unexpected pre-admin NEO4J_URI: {before}")
+    _assert(before == "bolt://localhost:7687", f"unexpected pre-admin NEO4J_URI: {before}")
     _assert(after == before, f"admin.database should not clobber env override: before={before} after={after}")
     print("ADMIN_ENV_OVERRIDE_UNIT_OK")
     return 0

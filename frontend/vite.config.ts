@@ -10,6 +10,7 @@ export default defineConfig(({ mode }) => {
   const target = normalized && !['auto', 'same-origin'].includes(normalized)
     ? normalized
     : 'http://127.0.0.1:8081'
+  const lowMemBuild = process.env.VITE_LOW_MEM_BUILD === '1'
 
   return {
     plugins: [react()],
@@ -26,7 +27,9 @@ export default defineConfig(({ mode }) => {
       // 3D graph mode is intentionally isolated in an async vendor chunk.
       // Keep the warning threshold above that chunk while preserving manual split boundaries.
       chunkSizeWarningLimit: 1200,
+      sourcemap: false,
       rollupOptions: {
+        maxParallelFileOps: lowMemBuild ? 2 : undefined,
         output: {
           manualChunks(id) {
             if (!id.includes('node_modules')) {
@@ -46,9 +49,6 @@ export default defineConfig(({ mode }) => {
             }
             if (id.includes('recharts')) {
               return 'vendor-charts'
-            }
-            if (id.includes('react') || id.includes('react-dom') || id.includes('react-router-dom')) {
-              return 'vendor-react'
             }
             return 'vendor'
           },

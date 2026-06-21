@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 )
@@ -61,14 +60,6 @@ type ConfigBatchItem struct {
 
 type ConfigBatchUpdateRequest struct {
 	Items      []ConfigBatchItem
-	OperatorID *int
-	TenantID   *string
-	TraceID    *string
-	IPAddress  *string
-	UserAgent  *string
-}
-
-type ConfigInitRequest struct {
 	OperatorID *int
 	TenantID   *string
 	TraceID    *string
@@ -178,13 +169,34 @@ func (c *Client) ListConfigCategory(ctx context.Context, category string) (map[s
 }
 
 func (c *Client) GetConfigValueMap(ctx context.Context, category string) (map[string]string, error) {
-	items, err := c.ListConfigCategory(ctx, category)
-	if err != nil {
-		return nil, err
+	if c == nil || c.db == nil {
+		return nil, errors.New("admin store is not initialized")
 	}
+	category = strings.TrimSpace(category)
+	if category == "" {
+		return map[string]string{}, nil
+	}
+	rows, err := c.db.QueryContext(ctx, `
+		SELECT key, value
+		FROM admin_configs
+		WHERE category = $1
+	`, category)
+	if err != nil {
+		return nil, fmt.Errorf("query admin config values failed: %w", err)
+	}
+	defer rows.Close()
+
 	values := map[string]string{}
-	for key, item := range items {
-		values[key] = item.Value
+	for rows.Next() {
+		var key string
+		var value string
+		if err := rows.Scan(&key, &value); err != nil {
+			return nil, fmt.Errorf("scan admin config value failed: %w", err)
+		}
+		values[key] = value
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate admin config values failed: %w", err)
 	}
 	return values, nil
 }
@@ -419,52 +431,6 @@ func (c *Client) BatchUpdateConfigs(ctx context.Context, req ConfigBatchUpdateRe
 	return updatedCount, nil
 }
 
-func (c *Client) InitConfigsFromEnv(ctx context.Context, req ConfigInitRequest) (int, error) {
-	if c == nil || c.db == nil {
-		return 0, errors.New("admin store is not initialized")
-	}
-	tx, err := c.db.BeginTx(ctx, nil)
-	if err != nil {
-		return 0, fmt.Errorf("begin config init transaction failed: %w", err)
-	}
-	defer rollbackUnlessCommitted(tx)
-
-	items := defaultEnvConfigItems()
-	count := 0
-	for _, item := range items {
-		mutation := ConfigMutationRequest{
-			Category:    item.Category,
-			Key:         item.Key,
-			Value:       item.Value,
-			IsSensitive: boolPtr(isSensitiveConfigKeyName(item.Key)),
-			OperatorID:  req.OperatorID,
-			TenantID:    req.TenantID,
-			TraceID:     req.TraceID,
-			IPAddress:   req.IPAddress,
-			UserAgent:   req.UserAgent,
-		}
-		if _, err := upsertConfigInTransaction(ctx, tx, mutation); err != nil {
-			return 0, err
-		}
-		count++
-	}
-	if err := insertConfigAuditLog(ctx, tx, "init_config", 0, ConfigMutationRequest{
-		OperatorID: req.OperatorID,
-		TenantID:   req.TenantID,
-		TraceID:    req.TraceID,
-		IPAddress:  req.IPAddress,
-		UserAgent:  req.UserAgent,
-	}, map[string]interface{}{
-		"count": count,
-	}); err != nil {
-		return 0, err
-	}
-	if err := tx.Commit(); err != nil {
-		return 0, fmt.Errorf("commit config init transaction failed: %w", err)
-	}
-	return count, nil
-}
-
 type configRowScanner interface {
 	Scan(dest ...interface{}) error
 }
@@ -538,6 +504,10 @@ func normalizeConfigPagination(page int, pageSize int) (int, int) {
 func isSensitiveConfigKeyName(key string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(key))
 	if strings.HasSuffix(normalized, "_configured") {
+		return false
+	}
+	switch normalized {
+	case "max_tokens", "max_output_tokens", "context_tokens", "context_window":
 		return false
 	}
 	return strings.Contains(normalized, "password") ||
@@ -646,33 +616,6 @@ func insertConfigAuditLog(ctx context.Context, tx *sql.Tx, action string, config
 		return fmt.Errorf("insert config audit log failed: %w", err)
 	}
 	return nil
-}
-
-func defaultEnvConfigItems() []ConfigBatchItem {
-	return []ConfigBatchItem{
-		{Category: "neo4j", Key: "uri", Value: envString("NEO4J_URI", "bolt://localhost:7687")},
-		{Category: "neo4j", Key: "user", Value: envString("NEO4J_USER", envString("NEO4J_USERNAME", "neo4j"))},
-		{Category: "neo4j", Key: "password", Value: envString("NEO4J_PASSWORD", "password")},
-		{Category: "neo4j", Key: "database", Value: envString("NEO4J_DATABASE", "neo4j")},
-		{Category: "ai_service", Key: "provider", Value: envString("AI_SERVICE_PROVIDER", envString("OPENAI_PROVIDER", "openai"))},
-		{Category: "ai_service", Key: "enabled", Value: envString("AI_SERVICE_ENABLED", "true")},
-		{Category: "ai_service", Key: "api_key", Value: envString("AI_SERVICE_API_KEY", envString("OPENAI_API_KEY", ""))},
-		{Category: "ai_service", Key: "base_url", Value: envString("AI_SERVICE_BASE_URL", envString("OPENAI_BASE_URL", ""))},
-		{Category: "ai_service", Key: "model", Value: envString("AI_SERVICE_MODEL", envString("OPENAI_MODEL", "gpt-3.5-turbo"))},
-		{Category: "ai_service", Key: "docqa_reasoning_profile", Value: envString("AI_SERVICE_DOCQA_REASONING_PROFILE", "balanced")},
-		{Category: "ai_service", Key: "deep_research_reasoning_profile", Value: envString("AI_SERVICE_DEEP_RESEARCH_REASONING_PROFILE", "deep")},
-		{Category: "ai_service", Key: "model_probe_reasoning_profile", Value: envString("AI_SERVICE_MODEL_PROBE_REASONING_PROFILE", "fast")},
-		{Category: "ai_service", Key: "max_tokens", Value: envString("AI_SERVICE_MAX_TOKENS", envString("OPENAI_MAX_TOKENS", "2000"))},
-		{Category: "ai_service", Key: "temperature", Value: envString("AI_SERVICE_TEMPERATURE", envString("OPENAI_TEMPERATURE", "0.7"))},
-	}
-}
-
-func envString(key string, fallback string) string {
-	value := strings.TrimSpace(os.Getenv(key))
-	if value == "" {
-		return fallback
-	}
-	return value
 }
 
 func boolPtr(value bool) *bool {

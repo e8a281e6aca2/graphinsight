@@ -270,7 +270,7 @@ func TestBusinessGuardLocalJWTSoftModeAllowsValidAdminTokenWithoutPythonAuthz(t 
 	})
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/config/openai/models", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/config/ai-service/models", nil)
 	req.Header.Set("Authorization", "Bearer "+issueTestAdminJWT(t, "admin@example.com", "test-secret", time.Now().Add(time.Hour)))
 	h.ServeHTTP(rec, req)
 
@@ -301,7 +301,7 @@ func TestBusinessGuardLocalJWTSoftModeRejectsExpiredToken(t *testing.T) {
 	})
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/config/openai/models", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/config/ai-service/models", nil)
 	req.Header.Set("Authorization", "Bearer "+issueTestAdminJWT(t, "admin@example.com", "test-secret", time.Now().Add(-time.Minute)))
 	h.ServeHTTP(rec, req)
 
@@ -332,7 +332,7 @@ func TestBusinessGuardLocalJWTLegacyModeAliasStillWorks(t *testing.T) {
 	})
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/config/openai/models", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/config/ai-service/models", nil)
 	req.Header.Set("Authorization", "Bearer "+issueTestAdminJWT(t, "admin@example.com", "test-secret", time.Now().Add(time.Hour)))
 	h.ServeHTTP(rec, req)
 

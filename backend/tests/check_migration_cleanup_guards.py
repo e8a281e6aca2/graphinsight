@@ -21,6 +21,12 @@ def test_nl2cypher_status_uses_current_config_service() -> None:
         raise AssertionError("nl2cypher shared capability module must not depend on removed admin.config_service")
 
 
+def test_config_constants_do_not_restore_openai_category() -> None:
+    source = _source("core/constants.py")
+    if "OPENAI =" in source:
+        raise AssertionError("ConfigCategory must not restore retired OPENAI category; use AI_SERVICE")
+
+
 def test_public_compat_registry_uses_compat_route_package() -> None:
     source = _source("api/route_registry.py")
     if "api.compat_routes" in source:
@@ -230,6 +236,20 @@ def test_python_compatibility_helper_file_stays_removed() -> None:
         raise AssertionError("api/compatibility.py should stay removed after Python public compat retirement")
 
 
+def test_legacy_root_debug_helpers_stay_removed() -> None:
+    removed_files = (
+        "admin/schemas.py",
+        "check_logs_table.py",
+        "check_node.py",
+        "create_video_node.py",
+        "debug_node.py",
+        "init_admin_quick.py",
+    )
+    existing = [path for path in removed_files if (ROOT / path).exists()]
+    if existing:
+        raise AssertionError(f"legacy root debug/helper files should stay deleted, found: {existing}")
+
+
 def test_old_admin_legacy_archive_removed() -> None:
     legacy_dir = ROOT / "admin" / "_legacy_routes"
     if not legacy_dir.exists():
@@ -424,11 +444,13 @@ def test_unified_dev_defaults_do_not_regress_to_remote_or_python_public() -> Non
 
 def main() -> int:
     test_nl2cypher_status_uses_current_config_service()
+    test_config_constants_do_not_restore_openai_category()
     test_public_compat_registry_uses_compat_route_package()
     test_public_admin_compat_registry_uses_compat_route_package()
     test_admin_auth_and_jobs_public_routes_removed_from_python()
     test_admin_endpoint_modules_are_marked_public_retired()
     test_python_compatibility_helper_file_stays_removed()
+    test_legacy_root_debug_helpers_stay_removed()
     test_old_admin_legacy_archive_removed()
     test_removed_legacy_shim_files_do_not_return()
     test_go_business_route_registration_stays_explicit()

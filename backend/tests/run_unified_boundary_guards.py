@@ -31,6 +31,8 @@ CASES: tuple[GuardCase, ...] = (
     GuardCase("docqa_internal", "check_docqa_internal_route_unit.py", 60, "DocQA internal header contract"),
     GuardCase("nl2cypher_internal", "check_nl2cypher_internal_route_unit.py", 60, "NL2Cypher internal header contract"),
     GuardCase("runtime_config_boundary", "check_runtime_config_boundary_unit.py", 60, "Python runtime config boundary"),
+    GuardCase("document_parser", "check_document_parser_unit.py", 60, "Document parser adapters and fallback"),
+    GuardCase("retrieval_orchestrator", "check_retrieval_orchestrator_unit.py", 60, "DocQA hybrid retrieval orchestrator"),
     GuardCase("job_worker", "check_job_worker_unit.py", 60, "Python worker lease and wake behavior"),
     GuardCase("qa_cost", "check_qa_cost_summary_unit.py", 60, "QA cost aggregation unit check"),
     GuardCase("admin_env_override", "check_admin_env_override_unit.py", 60, "unified runtime env override guard"),

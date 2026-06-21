@@ -7,7 +7,6 @@ import { LayoutPanel } from './LayoutPanel';
 import { GroupingPanel } from './GroupingPanel';
 import { FilterPanel } from '../FilterPanel/FilterPanel';
 import { ToolBar } from './ToolBar';
-import { NL2CypherInput } from './NL2CypherInput';
 import type { LayoutConfig, RendererAPI } from '../../renderers/core/types';
 
 interface QueryPanelProps {
@@ -57,22 +56,6 @@ export function QueryPanel({ onLayoutChange, onGroupingChange, rendererRef, defa
       >
         {activeTab === 0 && (
           <Box sx={{ p: 2, display: 'flex', flexDirection: 'column', gap: 2 }}>
-            <NL2CypherInput
-              onCypherGenerated={(cypher) => {
-                console.log('[QueryPanel] AI 生成的 Cypher:', cypher);
-                if (cypherEditorRef.current) {
-                  cypherEditorRef.current.setValue(cypher);
-                }
-              }}
-              onExecute={(cypher) => {
-                console.log('[QueryPanel] 执行 Cypher:', cypher);
-                if (cypherEditorRef.current) {
-                  cypherEditorRef.current.setValue(cypher);
-                  cypherEditorRef.current.executeQuery();
-                }
-              }}
-            />
-
             <Box>
               <CypherEditor ref={cypherEditorRef} />
             </Box>

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
@@ -48,6 +49,27 @@ def main() -> int:
     data = body.get("data") or {}
     _assert(isinstance(data, dict), f"expected dict data, got {type(data)}")
     _assert("status" in data, f"expected status in data, got {data}")
+
+    diag_denied = client.post(
+        "/api/internal/docqa/retrieval-diagnostics",
+        json={"question": "hybrid search"},
+        headers={"X-Go-Orchestrator": "graphinsight-go", "X-Trace-Id": "trace-orchestrator-only"},
+    )
+    _assert(diag_denied.status_code == 403, f"expected 403 for orchestrator-only diagnostics, got {diag_denied.status_code}")
+
+    with patch(
+        "api.routes.doc_qa_internal.retrieval_orchestrator.diagnose",
+        return_value={"query": "hybrid search", "runs": {"keyword": {"items": []}}},
+    ) as diagnose:
+        diag_allowed = client.post(
+            "/api/internal/docqa/retrieval-diagnostics",
+            json={"question": "hybrid search", "top_k": 3, "modes": ["keyword"]},
+            headers={"X-Go-Proxy": "graphinsight-go"},
+        )
+    _assert(diag_allowed.status_code == 200, f"expected 200 for control-plane diagnostics, got {diag_allowed.status_code}")
+    diagnose.assert_called_once()
+    diag_body = diag_allowed.json()
+    _assert((diag_body.get("data") or {}).get("query") == "hybrid search", f"unexpected diagnostics body: {diag_body}")
     print("DOCQA_INTERNAL_ROUTE_UNIT_OK")
     return 0
 

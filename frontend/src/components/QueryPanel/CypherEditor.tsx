@@ -1,5 +1,5 @@
 import { useState, useRef, forwardRef, useImperativeHandle, useEffect } from 'react';
-import { Box, Button, Alert, CircularProgress, Paper, Chip, Typography } from '@mui/material';
+import { Box, Alert, Paper, Chip, Typography } from '@mui/material';
 import { PlayArrow as ExecuteIcon } from '@mui/icons-material';
 import Editor from '@monaco-editor/react';
 import type * as Monaco from 'monaco-editor';
@@ -8,6 +8,8 @@ import { useCypher } from '../../hooks/useCypher';
 import { getGraphSchema } from '../../services/graphService';
 import type { GraphSchemaSummary } from '../../types/api';
 import { getErrorMessage } from '../../utils/errorMessage';
+import { AppleSpinner } from '../Loading/AppleSpinner';
+import LoadingButton from '../Loading/LoadingButton';
 
 const DEFAULT_QUERY = `// 示例查询：查看当前图谱中的论文事实视图
 MATCH p=(a)-[:FACT_SOURCE|FACT_TARGET]-(f)-[:FACT_SOURCE|FACT_TARGET]-(b)
@@ -136,17 +138,18 @@ export const CypherEditor = forwardRef<CypherEditorRef>((_props, ref) => {
       </Paper>
 
       {/* 执行按钮 */}
-      <Button
+      <LoadingButton
         variant="contained"
         color="primary"
         size="large"
-        startIcon={isExecuting ? <CircularProgress size={20} /> : <ExecuteIcon />}
+        startIcon={<ExecuteIcon />}
+        loading={isExecuting}
         onClick={handleExecute}
         disabled={isExecuting}
         fullWidth
-      >
-        {isExecuting ? '执行中...' : '执行查询 (Ctrl+Enter)'}
-      </Button>
+        label="执行查询 (Ctrl+Enter)"
+        loadingLabel="执行中..."
+      />
 
       {/* 错误消息 */}
       {error && (
@@ -177,7 +180,7 @@ function SchemaSummary({
         sx={{ border: 1, borderColor: 'divider', borderRadius: 1, px: 1.5, py: 1 }}
       >
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-          <CircularProgress size={16} />
+          <AppleSpinner size={18} compact />
           <Typography variant="body2" color="text.secondary">
             正在探测图数据库结构...
           </Typography>

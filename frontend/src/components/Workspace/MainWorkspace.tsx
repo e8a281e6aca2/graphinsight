@@ -4,21 +4,12 @@ import { Article as ArticleIcon, Hub as HubIcon } from '@mui/icons-material';
 import { DocumentPanel } from './DocumentPanel';
 import { useGraphStore } from '../../store/graphStore';
 import type { RendererAPI } from '../../renderers/core/types';
+import { LoadingState } from '../Loading/AppleSpinner';
 
 const GraphCanvas = lazy(() => import('../GraphCanvas/GraphCanvas').then((mod) => ({ default: mod.GraphCanvas })));
 
 const WorkspaceLoading = ({ label }: { label: string }) => (
-  <Box
-    sx={{
-      height: '100%',
-      display: 'grid',
-      placeItems: 'center',
-      color: 'text.secondary',
-      bgcolor: 'background.default',
-    }}
-  >
-    {label}
-  </Box>
+  <LoadingState label={label} minHeight="100%" sx={{ bgcolor: 'background.default' }} />
 );
 
 interface MainWorkspaceProps {
@@ -52,13 +43,13 @@ export function MainWorkspace({ rendererRef, onGroupingUpdate }: MainWorkspacePr
           <Tab
             value="document"
             icon={<ArticleIcon sx={{ fontSize: 18 }} />}
-            label="文档"
+            label="引用证据"
             iconPosition="start"
           />
           <Tab
             value="graph"
             icon={<HubIcon sx={{ fontSize: 18 }} />}
-            label="图谱"
+            label="关系图谱"
             iconPosition="start"
           />
         </Tabs>
@@ -88,7 +79,7 @@ export function MainWorkspace({ rendererRef, onGroupingUpdate }: MainWorkspacePr
           }}
         >
           {activeTab === 'graph' && (
-            <Suspense fallback={<WorkspaceLoading label="正在加载图谱画布" />}>
+            <Suspense fallback={<WorkspaceLoading label="正在加载关系图谱" />}>
               <GraphCanvas rendererRef={rendererRef} onGroupingUpdate={onGroupingUpdate} />
             </Suspense>
           )}

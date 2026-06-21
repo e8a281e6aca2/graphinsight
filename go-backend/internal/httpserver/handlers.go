@@ -499,6 +499,7 @@ func registerAdminControlPlaneRoutesWithContext(
 
 	mux.HandleFunc("/api/v1/admin/qa-traces", buildAdminQATracesNativeHandler(logger, guard, asAdminQATraceStore(adminStore)))
 	mux.HandleFunc("/api/v1/admin/qa-traces/", buildAdminQATracesNativeHandler(logger, guard, asAdminQATraceStore(adminStore)))
+	mux.HandleFunc("/api/v1/admin/qa/retrieval-diagnostics", buildAdminRetrievalDiagnosticsHandler(logger, guard, pythonWakeClient))
 
 	mux.HandleFunc("/api/v1/admin/config", buildAdminConfigHandler(cfg, logger, graphSvc, graphInitErr, guard, asAdminConfigStore(adminStore), modelConnectionSnapshots))
 	mux.HandleFunc("/api/v1/admin/config/", buildAdminConfigHandler(cfg, logger, graphSvc, graphInitErr, guard, asAdminConfigStore(adminStore), modelConnectionSnapshots))
@@ -625,7 +626,7 @@ func buildAdminConfigHandler(
 					testConnectionHandler(w, r)
 					return
 				}
-				if (r.URL.Path == "/api/v1/admin/config/batch" || r.URL.Path == "/api/v1/admin/config/init") && r.Method == http.MethodPost {
+				if r.URL.Path == "/api/v1/admin/config/batch" && r.Method == http.MethodPost {
 					mutationHandler(w, r)
 					return
 				}

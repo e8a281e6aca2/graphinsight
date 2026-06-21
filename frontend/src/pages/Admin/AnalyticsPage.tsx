@@ -9,13 +9,10 @@ import {
   Card,
   CardContent,
   Typography,
-  Button,
-  CircularProgress,
   Alert,
   Stack,
 } from '@mui/material';
 import { 
-  Refresh,
   Analytics as AnalyticsIcon,
 } from '@mui/icons-material';
 import { logApi } from '../../services/adminService';
@@ -23,6 +20,8 @@ import OperationTypeChart from '../../components/Admin/Charts/OperationTypeChart
 import LogStatsChart from '../../components/Admin/Charts/LogStatsChart';
 import type { LogStats } from '../../types/admin';
 import AdminLayout from '../../components/Admin/AdminLayout';
+import AdminRefreshButton from '../../components/Admin/AdminRefreshButton';
+import { LoadingState } from '../../components/Loading/AppleSpinner';
 import { getErrorMessage } from '../../utils/errorMessage';
 
 type OperationStat = {
@@ -66,9 +65,7 @@ const AnalyticsPage: React.FC = () => {
   };
 
   const actionBar = (
-    <Button variant="outlined" startIcon={<Refresh />} onClick={loadData} disabled={loading}>
-      刷新
-    </Button>
+    <AdminRefreshButton onClick={loadData} loading={loading} />
   );
 
   return (
@@ -81,9 +78,7 @@ const AnalyticsPage: React.FC = () => {
         )}
 
         {loading && !logStats ? (
-          <Box sx={{ display: 'flex', justifyContent: 'center', p: 4 }}>
-            <CircularProgress />
-          </Box>
+          <LoadingState label="正在加载分析数据" minHeight={360} />
         ) : (
           <Stack spacing={3}>
             {/* 页面标题 */}

@@ -6,7 +6,6 @@ import {
   Card,
   CardContent,
   TextField,
-  Button,
   Typography,
   Alert,
   Link,
@@ -15,6 +14,7 @@ import {
 import { useNavigate } from 'react-router-dom';
 import { authApi } from '../../services/adminService';
 import AdminAuthLayout from '../../components/Admin/AdminAuthLayout';
+import AdminLoadingButton from '../../components/Admin/AdminLoadingButton';
 import { getErrorMessage } from '../../utils/errorMessage';
 import { getPreferredAdminHome } from '../../utils/adminAuth';
 
@@ -78,16 +78,17 @@ const LoginPage: React.FC = () => {
                 onChange={(e) => setPassword(e.target.value)}
                 required
               />
-              <Button
+              <AdminLoadingButton
                 fullWidth
                 type="submit"
                 variant="contained"
                 size="large"
+                loading={loading}
                 disabled={loading}
                 sx={{ py: 1.2 }}
-              >
-                {loading ? '登录中...' : '登录控制台'}
-              </Button>
+                label="登录控制台"
+                loadingLabel="登录中..."
+              />
               <Typography variant="body2" color="text.secondary" align="center">
                 还没有账号？{' '}
                 <Link component="button" variant="body2" onClick={() => navigate('/admin/register')}>

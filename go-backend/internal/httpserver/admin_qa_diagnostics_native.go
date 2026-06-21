@@ -1,0 +1,123 @@
+package httpserver
+
+import (
+	"bytes"
+	"encoding/json"
+	"io"
+	"log/slog"
+	"net/http"
+	"strings"
+
+	"graphinsight/go-backend/internal/proxy"
+)
+
+type adminRetrievalDiagnosticsPayload struct {
+	Question string   `json:"question"`
+	TopK     int      `json:"top_k,omitempty"`
+	Modes    []string `json:"modes,omitempty"`
+}
+
+func buildAdminRetrievalDiagnosticsHandler(logger *slog.Logger, guard businessPermissionGuard, pythonClient *proxy.Client) http.HandlerFunc {
+	return withRouteOwner("go-control-plane", guard.wrap("qa:ask", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			WriteJSON(w, http.StatusMethodNotAllowed, "Method not allowed", nil)
+			return
+		}
+		if pythonClient == nil {
+			WriteJSON(w, http.StatusServiceUnavailable, "上游服务不可用", map[string]interface{}{
+				"error_code": "UPSTREAM_UNAVAILABLE",
+				"upstream":   "python-backend",
+			})
+			return
+		}
+
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			WriteJSON(w, http.StatusBadRequest, "无效请求体", map[string]interface{}{"error_code": "INVALID_REQUEST"})
+			return
+		}
+		var payload adminRetrievalDiagnosticsPayload
+		if err := json.NewDecoder(bytes.NewReader(body)).Decode(&payload); err != nil {
+			WriteJSON(w, http.StatusBadRequest, "请求体错误", map[string]interface{}{"error_code": "INVALID_BODY"})
+			return
+		}
+		payload.Question = strings.TrimSpace(payload.Question)
+		if payload.Question == "" {
+			WriteJSON(w, http.StatusBadRequest, "问题不能为空", map[string]interface{}{"error_code": "INVALID_BODY"})
+			return
+		}
+		if len(payload.Question) > 2000 {
+			WriteJSON(w, http.StatusBadRequest, "问题长度超过限制", map[string]interface{}{"error_code": "INVALID_BODY"})
+			return
+		}
+		if payload.TopK <= 0 {
+			payload.TopK = 5
+		}
+		if payload.TopK > 20 {
+			payload.TopK = 20
+		}
+		payload.Modes = normalizeRetrievalDiagnosticModes(payload.Modes)
+		forwardBody, err := json.Marshal(payload)
+		if err != nil {
+			WriteJSON(w, http.StatusInternalServerError, "构造诊断请求失败", map[string]interface{}{"error_code": "INTERNAL_ERROR"})
+			return
+		}
+
+		upstreamReq, err := http.NewRequestWithContext(
+			r.Context(),
+			http.MethodPost,
+			"/api/internal/docqa/retrieval-diagnostics",
+			bytes.NewReader(forwardBody),
+		)
+		if err != nil {
+			WriteJSON(w, http.StatusInternalServerError, "构造诊断请求失败", map[string]interface{}{"error_code": "INTERNAL_ERROR"})
+			return
+		}
+		for key, values := range r.Header {
+			upstreamReq.Header.Del(key)
+			for _, value := range values {
+				upstreamReq.Header.Add(key, value)
+			}
+		}
+		upstreamReq.Header.Set("Content-Type", "application/json; charset=utf-8")
+		upstreamReq.Header.Set("Accept", "application/json")
+
+		resp, err := pythonClient.Capture(upstreamReq)
+		if err != nil {
+			logger.Error("retrieval diagnostics upstream request failed", "error", err.Error())
+			WriteJSON(w, http.StatusBadGateway, "上游请求失败", map[string]interface{}{
+				"error_code": "UPSTREAM_REQUEST_FAILED",
+				"upstream":   "python-backend",
+				"message":    err.Error(),
+			})
+			return
+		}
+		resp.WriteTo(w)
+	}))
+}
+
+func normalizeRetrievalDiagnosticModes(values []string) []string {
+	allowed := map[string]struct{}{
+		"keyword":      {},
+		"vector":       {},
+		"hybrid":       {},
+		"graph_hybrid": {},
+	}
+	result := make([]string, 0, 4)
+	seen := map[string]struct{}{}
+	for _, value := range values {
+		mode := strings.ToLower(strings.TrimSpace(value))
+		if _, ok := allowed[mode]; !ok {
+			continue
+		}
+		if _, ok := seen[mode]; ok {
+			continue
+		}
+		seen[mode] = struct{}{}
+		result = append(result, mode)
+	}
+	if len(result) == 0 {
+		return []string{"keyword", "vector", "hybrid", "graph_hybrid"}
+	}
+	return result
+}

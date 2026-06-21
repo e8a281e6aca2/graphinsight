@@ -250,6 +250,12 @@
 - [x] `MODEL-001` 已继续打通到建图执行链：`graph_extract` 与 `graph_extract_complex` 默认档位现已可在后台配置，并由 Go 注入任务 payload、Python worker 传递到实体/关系抽取执行层。
 - [x] 定向回归通过：`go test ./internal/graph ./internal/httpserver/...`、`backend/.venv/bin/python backend/tests/check_unified_route_mounts_unit.py`、`backend/.venv/bin/python backend/tests/check_docqa_internal_route_unit.py`、`backend/.venv/bin/python backend/tests/check_nl2cypher_internal_route_unit.py`。
 
+## 最新联调记录（2026-06-21）
+
+- [x] `RAG-001` 上游解析质量治理已完成阶段 A/B 基础落地：新增文档解析器抽象、原生解析器兼容迁移、MinerU HTTP sidecar adapter、任务级 `parser_provider` 灰度参数、失败回退 native，以及 `Document/Chunk/Milvus` parser metadata 写入。
+- [x] 后台配置中心已新增 `document_parser` 配置分类与“文档解析 / MinerU”表单分区，Go 控制面新增 `POST /api/v1/admin/config/test/document_parser`，支持 native 可用性检查和 MinerU `/health` 探测。
+- [ ] 结构化 chunk、知识库治理解析状态展示、任务解析阶段展示与 QA trace parser metadata 展示尚未完成，不能标记为最终交付闭环。
+
 ## 阶段状态快照（2026-04-27）
 
 - [x] 阶段 0 已完成：接口分层、统一响应、`trace_id`、发布模板。

@@ -104,6 +104,23 @@
 
 当前统一后端实现中，以上创建接口由 Go 控制面直接创建 `pending` 任务记录并写入审计日志；具体建图、清库、重建索引执行仍属于 Python 能力层/后续 worker。Go 在创建成功后会 best-effort 调用 Python 内部 `POST /api/internal/jobs/wake` 以提前唤醒 worker，失败时仍由 Python 轮询兜底。Python 侧唤醒入口已迁入内部能力命名空间，不再依赖 `/api/v1/admin/jobs/*` 兼容路径。
 
+`build_graph` 任务 payload 当前支持：
+
+```json
+{
+  "source": "documents",
+  "force": false,
+  "doc_ids": ["optional_doc_id"],
+  "complex_extraction": false,
+  "reasoning_profile": "fast",
+  "parser_provider": "native"
+}
+```
+
+`parser_provider` 可取 `native` 或 `mineru`。未传入时使用运行期配置 `document_parser.provider`；传入 `mineru` 时由 Python worker 调用 MinerU HTTP sidecar，失败时按 `document_parser.fallback_provider` 回退。
+
+文档解析产物会写入 `PARSED_DOCUMENT_STORAGE_PATH/{doc_id}/`，默认位置为 `backend/parsed_documents/{doc_id}/`。目录内包含 `manifest.json`、`content.md`、`blocks.json`、`chunks.jsonl`，MinerU 场景还会保存原始 `raw.json` 或 `raw.txt`；Neo4j `Document.parsed_artifact_path` 记录该目录，便于从任务、问答质量问题反查解析结果。
+
 ### 4.2 任务查询
 
 1. `GET /api/v1/admin/jobs`
@@ -124,27 +141,37 @@
 1. `POST /api/docqa`
 2. `POST /api/docqa/deep-research`
 3. `GET /api/docqa/health?probe_llm=true|false`
-4. `GET /api/v1/admin/config/openai/models`
+4. `GET /api/v1/admin/config/ai-service/models`
 5. `POST /api/v1/admin/config/test/model`
-6. `GET /api/v1/admin/config/test/model/latest`
-7. `GET /api/v1/admin/monitor/qa`
-8. `GET /api/v1/admin/qa-traces`
-9. `GET /api/v1/admin/qa-traces/{trace_id_or_pk}`
+6. `POST /api/v1/admin/config/test/embedding`
+7. `POST /api/v1/admin/config/test/vector_store`
+8. `POST /api/v1/admin/config/test/document_parser`
+9. `GET /api/v1/admin/config/test/model/latest`
+10. `GET /api/v1/admin/monitor/qa`
+11. `GET /api/v1/admin/qa-traces`
+12. `GET /api/v1/admin/qa-traces/{trace_id_or_pk}`
+13. `POST /api/v1/admin/qa/retrieval-diagnostics`
 
 当前统一后端实现中，Go 对外保留 `/api/docqa*` 与 `/api/nl2cypher*`，但上游目标分别切换为 Python 内部能力入口 `/api/internal/docqa*` 与 `/api/internal/nl2cypher*`。其中 `GET /api/nl2cypher/examples` 与 `GET /api/nl2cypher/status` 已改为 Go 原生提供；`GET /api/docqa/health` 由 Go 校验 `probe_llm` 查询参数后编排到 Python 内部健康诊断能力；`POST /api/nl2cypher`、`POST /api/docqa` 与 `POST /api/docqa/deep-research` 仍由 Go 编排到 Python capability plane 执行推理/问答，但请求体 JSON 及必填字段非空校验已前移到 Go 入口，并由 Go 写入业务审计日志。这样外部权限、基础契约与外部审计收口在 Go，Python 只保留能力执行、QA trace 和必要的运行时逻辑。
 
 当前已落地 / 后续扩展约定：
 
-1. 模型集合返回项建议补充：`provider`、`label`、`supports_reasoning`、`supported_profiles`、`default_profile`
+1. 模型集合返回项当前包含：`provider`、`label`、`supports_reasoning`、`supported_profiles`、`default_profile`、`context_window`、`max_output_tokens`、`suggested_max_tokens`、`token_limit_source`
 2. `POST /api/docqa` 与 `POST /api/docqa/deep-research` 当前已支持可选请求字段 `reasoning_profile`
 3. `reasoning_profile` 统一取值：`fast`、`balanced`、`deep`
 4. 当前默认策略：`docqa=balanced`，`deep_research=deep`，`graph_extract=fast`，`graph_extract_complex=balanced`
-5. `GET /api/v1/admin/config/openai/models` 当前兼容返回 `models[]`，并新增 `catalog[]` 与 `scenario_profiles`，用于承载模型目录元信息和场景默认档位
+5. `GET /api/v1/admin/config/ai-service/models` 当前返回 `models[]`、`catalog[]` 与 `scenario_profiles`，用于承载模型目录元信息、场景默认档位和 token 上限提示；配置中心的问答模型和嵌入模型选择均复用该模型目录接口，嵌入模型默认传入 AI 服务网关地址，只有独立供应商时才需要单独配置 `embedding.base_url`。历史 `/config/openai/models` 已移除。
 6. `POST /api/docqa` 与 `POST /api/docqa/deep-research` 在请求未显式传入 `reasoning_profile` 时，当前会由 Go 外部入口按统一场景策略自动补齐默认档位后再编排到 Python internal capability
 7. `POST /api/v1/admin/config/test/model` 当前会在测试结果快照中记录 `model_probe` 场景采用的默认档位，但不会把该统一档位直接透传成供应商私有探测参数
-8. `POST /api/graph/build` 当前已支持可选请求字段 `reasoning_profile` 与 `complex_extraction`；未显式传入 `reasoning_profile` 时，Go 会按 `graph_extract / graph_extract_complex` 场景自动补齐默认档位，再交由 Python worker 执行
-9. `GET /api/v1/admin/qa-traces` 列表项当前已返回轻量 `reasoning_profile` 字段，便于后台直接筛查运行档位
-10. 不对外返回原始思维链，只返回最终答案、引用和运行元信息
+8. `POST /api/v1/admin/config/test/embedding` 当前使用 OpenAI-compatible `/embeddings` 探测嵌入模型连通性，`embedding.api_key/base_url` 为空时复用 `ai_service` 配置
+9. `POST /api/v1/admin/config/test/vector_store` 当前对 Milvus 做轻量 TCP 连通性探测，用于验证本地或远程向量库地址可达
+10. `POST /api/v1/admin/config/test/document_parser` 当前读取 `document_parser` 配置分类；`provider=native` 返回内置解析器可用，`provider=mineru` 会探测 `{base_url}/health` 并返回 MinerU version/status、`file_field`、`parse_mode`、`endpoint_path` 等运行信息
+11. `POST /api/graph/build` 当前已支持可选请求字段 `reasoning_profile`、`complex_extraction` 与 `parser_provider`；未显式传入 `reasoning_profile` 时，Go 会按 `graph_extract / graph_extract_complex` 场景自动补齐默认档位，再交由 Python worker 执行；`parser_provider=mineru` 用于单次建图灰度调用 MinerU sidecar
+12. `GET /api/v1/admin/qa-traces` 列表项当前已返回轻量 `reasoning_profile` 字段，便于后台直接筛查运行档位
+13. `POST /api/v1/admin/qa/retrieval-diagnostics` 当前由 Go 控制面校验 `qa:ask` 权限后转发到 Python internal capability，可对同一问题分别运行 `keyword/vector/hybrid/graph_hybrid` 检索模式，返回各模式轻量命中、orchestrator trace、skip reason、summary 与检索健康信息，用于判断全文、向量和图谱扩展召回是否实际生效；`summary` 包含每种模式命中数、耗时、来源计数、跳过来源、最佳命中模式、最慢模式和建议动作
+14. `POST /api/docqa` 当前支持可选 `conversation_history`，每轮包含 `role=user|assistant` 与 `content`，最多保留 8 轮；该历史只用于代词、指代和省略问题的检索改写与回答上下文，不作为事实证据来源
+15. `POST /api/docqa` 返回的 `citations[].snippet` 当前会根据本轮 question/answer 聚焦到更相关的证据窗口，避免前端展示固定 chunk 开头造成引用证据滞后
+16. 不对外返回原始思维链，只返回最终答案、引用和运行元信息
 
 ## 6. 监控与审计
 

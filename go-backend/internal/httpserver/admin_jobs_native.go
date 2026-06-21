@@ -246,6 +246,7 @@ type publicGraphBuildPayload struct {
 	DocIDs            []string `json:"doc_ids"`
 	ComplexExtraction bool     `json:"complex_extraction,omitempty"`
 	ReasoningProfile  string   `json:"reasoning_profile,omitempty"`
+	ParserProvider    string   `json:"parser_provider,omitempty"`
 }
 
 func buildAdminJobCreateRequest(r *http.Request, jobType string, payload adminJobCreatePayload) adminstore.JobCreateRequest {
@@ -403,6 +404,9 @@ func buildPublicGraphBuildJobCreateRequest(r *http.Request, payload publicGraphB
 	}
 	if profile := strings.TrimSpace(payload.ReasoningProfile); profile != "" {
 		jobPayload["reasoning_profile"] = profile
+	}
+	if parserProvider := strings.TrimSpace(payload.ParserProvider); parserProvider != "" {
+		jobPayload["parser_provider"] = parserProvider
 	}
 	if note := trimOptionalString(payload.Note); note != nil {
 		jobPayload["note"] = *note

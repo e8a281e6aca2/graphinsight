@@ -66,6 +66,8 @@ dist-ssr/
 # Media files (user uploaded content)
 backend/media/*
 !backend/media/README.md
+backend/parsed_documents/*
+!backend/parsed_documents/README.md
 go-backend/documents/
 
 # Runtime/test artifacts
@@ -84,12 +86,15 @@ Thumbs.db
 desktop.ini
 docs/*
 !docs/BACKEND_BOUNDARY_FINAL.md
+!docs/CONFIG_CENTER_RUNTIME_AUDIT.md
+!docs/DOCUMENT_PARSER_MINERU_INTEGRATION_PLAN.md
 !docs/ENTERPRISE_BACKEND_API_SPEC.md
 !docs/ENTERPRISE_IMPLEMENTATION_BACKLOG.md
 !docs/ENTERPRISE_OPERATIONS_RUNBOOK.md
 !docs/ENTERPRISE_PRE_RELEASE_SMOKE_CHECKLIST.md
 !docs/ENTERPRISE_ROADMAP_CHECKLIST.md
 !docs/GO_PYTHON_MIGRATION_STATUS.md
+!docs/KNOWLEDGE_DISCOVERY_PIPELINE_DESIGN.md
 docs/study/
 .claude/
 .codex/

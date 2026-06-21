@@ -117,6 +117,8 @@ interface GraphStore {
   setHighlightAll: (value: boolean) => void;
   recentUploadedDocIds: string[];
   setRecentUploadedDocIds: (docIds: string[]) => void;
+  documentRefreshKey: number;
+  requestDocumentRefresh: () => void;
 
   // 自动推理链
   autoPaths: GraphPathInfo[];
@@ -186,6 +188,7 @@ export const useGraphStore = create<GraphStore>()(
       selectedCitation: null,
       highlightAll: false,
       recentUploadedDocIds: [],
+      documentRefreshKey: 0,
       autoPaths: [],
       lastQueryStats: null,
       nodeTypeStyles: {},
@@ -257,6 +260,8 @@ export const useGraphStore = create<GraphStore>()(
       setSelectedCitation: (citation) => set({ selectedCitation: citation }),
       setHighlightAll: (value) => set({ highlightAll: value }),
       setRecentUploadedDocIds: (docIds) => set({ recentUploadedDocIds: docIds }),
+      requestDocumentRefresh: () =>
+        set((state) => ({ documentRefreshKey: state.documentRefreshKey + 1 })),
 
       setAutoPaths: (paths) => set({ autoPaths: paths }),
 

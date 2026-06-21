@@ -13,6 +13,8 @@ from services.document_graph_service import DocumentGraphService
 from services.model_runtime_policy import apply_reasoning_profile, normalize_reasoning_profile
 from services.openai_client_factory import build_openai_client
 from services.neo4j_service import get_neo4j_service
+from services.retrieval_orchestrator import retrieval_orchestrator
+from services.runtime_config import get_ai_runtime_config
 
 logger = get_logger()
 settings = get_settings()
@@ -36,20 +38,62 @@ class DocQAService:
                 timeout=30.0,
             )
 
-    def answer(self, question: str, top_k: int, reasoning_profile: Optional[str] = None) -> Dict[str, Any]:
-        citations = self._retrieve_chunks(question, top_k)
+    def _refresh_runtime_config(self) -> None:
+        config = get_ai_runtime_config()
+        enabled = bool(config.get("enabled", True))
+        api_key = str(config.get("api_key") or "").strip()
+        base_url = str(config.get("base_url") or settings.llm_base_url or "").strip()
+        model = str(config.get("model") or settings.llm_qa_model or settings.llm_model or "").strip()
+        temperature = float(config.get("temperature") or settings.llm_qa_temperature)
+        max_tokens = int(config.get("max_tokens") or settings.llm_qa_max_tokens)
+        signature = (enabled, api_key, base_url, model, temperature, max_tokens)
+        if getattr(self, "_runtime_signature", None) == signature:
+            return
+
+        self.enabled = enabled and bool(api_key) and bool(model)
+        self.model = model
+        self.temperature = temperature
+        self.max_tokens = max_tokens
+        self._client = None
+        if self.enabled:
+            self._client = build_openai_client(
+                api_key=api_key,
+                base_url=base_url or None,
+                timeout=30.0,
+            )
+        self._runtime_base_url = base_url or "default"
+        self._runtime_signature = signature
+
+    def _base_url_label(self) -> str:
+        return str(getattr(self, "_runtime_base_url", None) or settings.llm_base_url or "default")
+
+    def answer(
+        self,
+        question: str,
+        top_k: int,
+        reasoning_profile: Optional[str] = None,
+        conversation_history: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        self._refresh_runtime_config()
+        history = self._normalize_conversation_history(conversation_history)
+        retrieval_query = self._contextual_retrieval_query(question, history)
+        retrieval_result = retrieval_orchestrator.retrieve(retrieval_query, top_k)
+        citations = retrieval_result["items"]
         active_profile = normalize_reasoning_profile(reasoning_profile, "balanced")
         trace = {
             "retrieval": {
                 "query": question,
+                "contextual_query": retrieval_query,
                 "top_k": top_k,
                 "count": len(citations),
+                "conversation_turns": len(history),
                 "chunks": self._snapshot_citations(citations),
+                "orchestrator": retrieval_result.get("trace", {}),
             },
             "generation": {
                 "mode": "not_started",
                 "model": self.model,
-                "base_url": settings.llm_base_url or "default",
+                "base_url": self._base_url_label(),
                 "reasoning_profile": active_profile,
             },
         }
@@ -77,17 +121,19 @@ class DocQAService:
 
         prompt = (
             "你是文档问答助手，只能使用提供的 SOURCE 内容回答问题。"
+            "对话历史只用于理解代词、指代和省略问题，不能作为事实来源。"
             "请给出简洁、结构化的回答。若信息不足，说明需要补充文档。"
             "输出 JSON 格式：{\"answer\":\"...\",\"used_chunk_ids\":[\"...\"]}"
         )
+        conversation_context = self._format_conversation_context(history)
 
         try:
+            user_content = f"问题：{question}\n\n上下文：\n" + "\n\n".join(context_blocks)
+            if conversation_context:
+                user_content = f"对话历史：\n{conversation_context}\n\n{user_content}"
             messages = [
                 {"role": "system", "content": prompt},
-                {
-                    "role": "user",
-                    "content": f"问题：{question}\n\n上下文：\n" + "\n\n".join(context_blocks),
-                },
+                {"role": "user", "content": user_content},
             ]
             parsed = self._request_llm_json(messages, reasoning_profile=active_profile)
             usage = parsed.get("_usage") if isinstance(parsed, dict) else None
@@ -96,16 +142,18 @@ class DocQAService:
             trace["generation"] = {
                 "mode": "llm_success",
                 "model": self.model,
-                "base_url": settings.llm_base_url or "default",
+                "base_url": self._base_url_label(),
                 "reasoning_profile": active_profile,
                 "used_chunk_ids": used_ids,
                 "context_chunk_ids": [str(item.get("id")) for item in citations[: self.max_context]],
                 "usage": usage,
+                "conversation_turns": len(history),
             }
             if used_ids:
                 filtered = [c for c in citations if c["id"] in set(used_ids)]
                 if filtered:
                     citations = filtered
+            self._focus_citation_snippets(citations, question, answer)
             trace["response"] = {
                 "answer_preview": answer[:800],
                 "citation_ids": [str(item.get("id")) for item in citations],
@@ -117,17 +165,19 @@ class DocQAService:
                 context={
                     "error": str(exc),
                     "model": self.model,
-                    "base_url": settings.llm_base_url or "default",
+                    "base_url": self._base_url_label(),
                     "reasoning_profile": active_profile,
                 },
             )
             answer = self._fallback_answer(question, citations)
+            self._focus_citation_snippets(citations, question, answer)
             trace["generation"] = {
                 "mode": "fallback_llm_error",
                 "model": self.model,
-                "base_url": settings.llm_base_url or "default",
+                "base_url": self._base_url_label(),
                 "reasoning_profile": active_profile,
                 "error": str(exc),
+                "conversation_turns": len(history),
             }
             trace["response"] = {
                 "answer_preview": answer[:800],
@@ -147,6 +197,7 @@ class DocQAService:
         reasoning_profile: Optional[str] = None,
     ) -> Dict[str, Any]:
         """深度调研：问题拆解 + 多轮检索 + 结构化报告。"""
+        self._refresh_runtime_config()
         normalized_question = (question or "").strip()
         if not normalized_question:
             return {
@@ -180,7 +231,8 @@ class DocQAService:
         total_retrieved = 0
 
         for sub_q in sub_questions:
-            hits = self._retrieve_chunks(sub_q, top_k)
+            retrieval_result = retrieval_orchestrator.retrieve(sub_q, top_k)
+            hits = retrieval_result["items"]
             total_retrieved += len(hits)
             used_ids: List[str] = []
             for hit in hits:
@@ -210,6 +262,7 @@ class DocQAService:
                     "sub_question": sub_q,
                     "hit_count": len(hits),
                     "chunk_ids": used_ids,
+                    "retrieval_trace": retrieval_result.get("trace", {}),
                 }
             )
 
@@ -236,7 +289,7 @@ class DocQAService:
                 "generation": {
                     "mode": "skipped_no_citations",
                     "model": self.model,
-                    "base_url": settings.llm_base_url or "default",
+                    "base_url": self._base_url_label(),
                 },
             }
             return {
@@ -291,7 +344,7 @@ class DocQAService:
             "generation": {
                 "mode": "not_started",
                 "model": self.model,
-                "base_url": settings.llm_base_url or "default",
+                "base_url": self._base_url_label(),
                 "reasoning_profile": active_profile,
             },
             "evidence_stats": evidence_stats,
@@ -349,7 +402,7 @@ class DocQAService:
             trace["generation"] = {
                 "mode": "llm_success",
                 "model": self.model,
-                "base_url": settings.llm_base_url or "default",
+                "base_url": self._base_url_label(),
                 "reasoning_profile": active_profile,
                 "used_chunk_ids": used_ids,
                 "sub_questions": sub_questions,
@@ -410,7 +463,7 @@ class DocQAService:
                 context={
                     "error": str(exc),
                     "model": self.model,
-                    "base_url": settings.llm_base_url or "default",
+                    "base_url": self._base_url_label(),
                     "reasoning_profile": active_profile,
                 },
             )
@@ -418,7 +471,7 @@ class DocQAService:
             trace["generation"] = {
                 "mode": "fallback_llm_error",
                 "model": self.model,
-                "base_url": settings.llm_base_url or "default",
+                "base_url": self._base_url_label(),
                 "reasoning_profile": active_profile,
                 "error": str(exc),
             }
@@ -447,13 +500,15 @@ class DocQAService:
             }
 
     def diagnose(self, probe_llm: bool = False) -> Dict[str, Any]:
+        self._refresh_runtime_config()
         service = get_neo4j_service()
         result: Dict[str, Any] = {
             "llm_enabled": self.enabled,
             "llm_model": self.model,
-            "llm_base_url": settings.llm_base_url or "default",
+            "llm_base_url": self._base_url_label(),
             "probe_llm": probe_llm,
             "neo4j": {"ok": False},
+            "retrieval_engine": retrieval_orchestrator.health(),
             "documents": {"count": 0},
             "chunks": {"count": 0},
             "entities": {"count": 0},
@@ -750,6 +805,115 @@ class DocQAService:
             return "已检索到相关文档，但当前无法生成完整回答，请稍后重试。"
         return "根据已检索片段，可先参考：\n- " + "\n- ".join(snippets)
 
+    @staticmethod
+    def _normalize_conversation_history(history: Optional[List[Dict[str, Any]]]) -> List[Dict[str, str]]:
+        normalized: List[Dict[str, str]] = []
+        for item in (history or [])[-8:]:
+            role = str(item.get("role") or "").strip().lower()
+            content = re.sub(r"\s+", " ", str(item.get("content") or "")).strip()
+            if role not in {"user", "assistant"} or not content:
+                continue
+            normalized.append({"role": role, "content": content[:800]})
+        return normalized
+
+    def _contextual_retrieval_query(self, question: str, history: List[Dict[str, str]]) -> str:
+        if not history:
+            return question
+        recent = " ".join(item["content"] for item in history[-4:])
+        terms = self._extract_evidence_terms(f"{question} {recent}", limit=18)
+        if not terms:
+            return question
+        return f"{question} " + " ".join(terms)
+
+    @staticmethod
+    def _format_conversation_context(history: List[Dict[str, str]]) -> str:
+        lines = []
+        for item in history[-6:]:
+            label = "用户" if item["role"] == "user" else "助手"
+            lines.append(f"{label}: {item['content'][:500]}")
+        return "\n".join(lines)
+
+    def _focus_citation_snippets(self, citations: List[Dict[str, Any]], question: str, answer: str) -> None:
+        terms = self._extract_evidence_terms(f"{question} {answer}", limit=24)
+        if not terms:
+            return
+        for item in citations:
+            text = str(item.get("text") or item.get("snippet") or "")
+            focused = self._best_evidence_window(text, terms)
+            if focused:
+                item["snippet"] = focused
+
+    @staticmethod
+    def _extract_evidence_terms(text: str, limit: int = 20) -> List[str]:
+        stopwords = {
+            "他们", "它们", "这些", "那些", "这个", "那个", "哪里", "什么", "怎么", "如何",
+            "请问", "一下", "回答", "根据", "文档", "引用", "证据", "问题", "认为", "可以",
+            "工作", "单位呢", "他们的", "中的", "以及", "进行", "当前",
+        }
+        tokens = re.findall(r"[\u4e00-\u9fff]{2,24}|[A-Za-z0-9][A-Za-z0-9_.%/-]{1,40}", text or "")
+        terms: List[str] = []
+        seen = set()
+
+        def add_term(candidate: str) -> bool:
+            cleaned_candidate = candidate.strip(" ，。；：:,.!?！？（）()[]【】")
+            if len(cleaned_candidate) < 2 or cleaned_candidate in stopwords:
+                return False
+            key = cleaned_candidate.lower()
+            if key in seen:
+                return False
+            seen.add(key)
+            terms.append(cleaned_candidate)
+            return len(terms) >= limit
+
+        for token in tokens:
+            cleaned = token.strip(" ，。；：:,.!?！？（）()[]【】")
+            if len(cleaned) < 2 or cleaned in stopwords:
+                continue
+            if re.search(r"[\u4e00-\u9fff]", cleaned) and len(cleaned) >= 8:
+                segments = re.split(r"(?:工作单位|单位|作者|分别为|包括|属于|来自|位于|地址|是|为|在|和|与)", cleaned)
+                for segment in segments:
+                    if add_term(segment):
+                        break
+                if len(terms) >= limit:
+                    break
+            if add_term(cleaned):
+                break
+        return terms
+
+    @staticmethod
+    def _best_evidence_window(text: str, terms: List[str], max_len: int = 260) -> str:
+        cleaned = re.sub(r"\s+", " ", text or "").strip()
+        if not cleaned:
+            return ""
+        compact_terms = [re.sub(r"\s+", "", term).lower() for term in terms if term]
+        if not compact_terms:
+            return cleaned[:max_len]
+
+        candidates: List[str] = []
+        candidates.extend(item.strip() for item in re.split(r"(?<=[。！？!?；;])\s*", cleaned) if item.strip())
+        for term in terms:
+            index = cleaned.find(term)
+            if index < 0:
+                index = re.sub(r"\s+", "", cleaned).lower().find(re.sub(r"\s+", "", term).lower())
+                if index < 0:
+                    continue
+            start = max(0, index - 90)
+            end = min(len(cleaned), index + max_len - 60)
+            candidates.append(cleaned[start:end].strip())
+
+        if not candidates:
+            return cleaned[:max_len]
+
+        def score(candidate: str) -> tuple[int, int]:
+            compact = re.sub(r"\s+", "", candidate).lower()
+            hits = sum(1 for term in compact_terms if term in compact)
+            return hits, -len(candidate)
+
+        best = max(candidates, key=score)
+        if len(best) <= max_len:
+            return best
+        return best[:max_len].rstrip() + "..."
+
     def _fallback_deep_report(self, question: str, sub_questions: List[str], citations: List[Dict[str, Any]]) -> str:
         top_facts = []
         for idx, item in enumerate(citations[:6], start=1):
@@ -846,6 +1010,8 @@ class DocQAService:
                     "doc_id": item.get("doc_id"),
                     "entity_names": item.get("entity_names") or [],
                     "retrieval_score": item.get("retrieval_score"),
+                    "retrieval_sources": item.get("retrieval_sources") or [],
+                    "retrieval_ranks": item.get("retrieval_ranks") or {},
                     "confidence": item.get("confidence"),
                     "snippet": text[:240],
                 }

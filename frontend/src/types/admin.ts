@@ -103,7 +103,7 @@ export interface ChangePasswordRequest {
 /**
  * 配置分类类型
  */
-export type ConfigCategory = 'neo4j' | 'ai_service' | 'nl2cypher';
+export type ConfigCategory = 'neo4j' | 'ai_service' | 'nl2cypher' | 'retrieval' | 'embedding' | 'vector_store' | 'document_parser';
 
 /**
  * 配置项
@@ -202,6 +202,7 @@ export interface ConnectionTestCheck {
 export interface ConnectionTestResult {
   success: boolean;
   message: string;
+  saved?: boolean;
   provider?: string | null;
   model?: string | null;
   base_url?: string | null;
@@ -219,11 +220,17 @@ export interface ModelCatalogItem {
   supports_reasoning: boolean;
   supported_profiles: Array<'fast' | 'balanced' | 'deep' | string>;
   default_profile: 'fast' | 'balanced' | 'deep' | string;
+  context_window?: number;
+  max_output_tokens?: number;
+  suggested_max_tokens?: number;
+  token_limit_source?: string;
 }
 
 export interface ModelCatalogResponse {
   models: string[];
   catalog: ModelCatalogItem[];
+  source?: 'remote' | 'configured' | 'current' | string;
+  source_message?: string;
   scenario_profiles?: {
     docqa?: 'fast' | 'balanced' | 'deep' | string;
     deep_research?: 'fast' | 'balanced' | 'deep' | string;
@@ -337,6 +344,31 @@ export interface QATraceDetail extends QATraceItem {
   retrieval_snapshot?: unknown;
   generation_snapshot?: unknown;
   response_snapshot?: unknown;
+}
+
+export interface RetrievalDiagnosticsModeSummary {
+  hit_count: number;
+  duration_ms: number;
+  source_counts: Record<string, number>;
+  skipped_sources: string[];
+}
+
+export interface RetrievalDiagnosticsResult {
+  query: string;
+  top_k: number;
+  modes: string[];
+  runs: Record<string, {
+    items: Array<Record<string, unknown>>;
+    trace: Record<string, unknown>;
+  }>;
+  summary?: {
+    modes?: Record<string, RetrievalDiagnosticsModeSummary>;
+    best_mode?: string;
+    slowest_mode?: string;
+    skipped_sources?: Record<string, string[]>;
+    recommendations?: string[];
+  };
+  health?: Record<string, unknown>;
 }
 
 export interface QATraceGenerationSnapshot {
@@ -703,6 +735,7 @@ export interface JobItem {
   kb_id?: string;
   payload: Record<string, unknown>;
   result?: Record<string, unknown>;
+  progress?: number;
   error_message?: string;
   retry_count: number;
   max_retries: number;

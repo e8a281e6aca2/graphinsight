@@ -6,14 +6,22 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import shutil
+from dataclasses import asdict
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from config import get_settings
 from core import get_logger
+from services.document_parser import DocumentParserManager, ParsedDocument
+from services.knowledge_discovery.chunking import StructuredChunk, StructuredChunker
+from services.knowledge_discovery.extraction import evidence_validator
+from services.knowledge_discovery.normalization import normalize_entity_name, normalize_entity_values
 from services.neo4j_service import get_neo4j_service
 from services.llm_entity_extractor import llm_entity_extractor
 from services.llm_relation_extractor import llm_relation_extractor
+from services.retrieval_orchestrator import retrieval_orchestrator
 
 logger = get_logger()
 settings = get_settings()
@@ -74,6 +82,46 @@ STAGE_KEYWORDS = {
     "成熟期",
 }
 
+SCHEMA_RELATION_LABELS = {
+    "防治对象",
+    "平均防效",
+    "病情指数",
+    "产量",
+    "增产率",
+    "使用剂量",
+    "发生阶段",
+    "地点",
+    "属于",
+    "影响",
+    "高发期",
+    "表格主题",
+    "同段提及",
+}
+
+RULE_RELATION_KEYWORDS = {
+    "属于",
+    "隶属",
+    "位于",
+    "包括",
+    "包含",
+    "使用",
+    "采用",
+    "导致",
+    "影响",
+    "合作",
+    "生产",
+    "采购",
+    "批准",
+    "发布",
+    "制定",
+    "实施",
+    "支持",
+    "关联",
+    "相关",
+}
+
+MIN_DEFAULT_RELATION_CONFIDENCE = 0.3
+
 class DocumentGraphService:
     def __init__(self) -> None:
         self.neo4j = None
@@ -91,6 +139,7 @@ class DocumentGraphService:
         doc_ids: Optional[List[str]] = None,
         reasoning_profile: Optional[str] = None,
         complex_extraction: bool = False,
+        parser_provider: Optional[str] = None,
     ) -> Dict[str, object]:
         if self.neo4j is None:
             self.neo4j = get_neo4j_service()
@@ -129,6 +178,7 @@ class DocumentGraphService:
                 "doc_ids_count": len(doc_ids or []),
                 "reasoning_profile": reasoning_profile or "",
                 "complex_extraction": complex_extraction,
+                "parser_provider": parser_provider or "",
             },
         )
 
@@ -139,6 +189,7 @@ class DocumentGraphService:
                 apoc_available = self._check_apoc_available(session)
             if force and not doc_ids:
                 cleanup = self._clear_graph_data(session)
+                self._clear_parsed_document_artifacts()
                 logger.info("强制重建前清理旧文档图谱", context=cleanup)
 
         total_documents = len(documents)
@@ -146,51 +197,139 @@ class DocumentGraphService:
         chunk_count = 0
         entity_count = 0
         relation_count = 0
+        vector_indexed = 0
+        vector_failures: List[str] = []
         skipped_documents = 0
         entity_names: set[str] = set()
         failures: List[Dict[str, str]] = []
+        parse_warnings: List[Dict[str, str]] = []
         use_dynamic_relations = settings.llm_relation_dynamic_type and apoc_available
         dynamic_relation_failed_logged = False
+        parser_manager = DocumentParserManager()
+        structured_chunker = StructuredChunker()
 
         for doc in documents:
             try:
-                text, error = self._read_text(doc)
-                if error:
-                    failures.append({"file": doc.name, "reason": error})
+                parsed = parser_manager.parse(doc, provider_override=parser_provider)
+                text = parsed.text
+                for warning in parsed.warnings[:5]:
+                    parse_warnings.append({"file": doc.name, "warning": warning})
                 if not text.strip():
-                    if not error:
-                        failures.append({"file": doc.name, "reason": "empty_text"})
-                    logger.warning("文档解析为空，已跳过", context={"file": str(doc)})
+                    reason = parsed.warnings[0] if parsed.warnings else "empty_text"
+                    failures.append({"file": doc.name, "reason": reason})
+                    logger.warning(
+                        "文档解析为空，已跳过",
+                        context={"file": str(doc), "parser_provider": parsed.parser_provider},
+                    )
                     continue
 
                 doc_id = self._make_doc_id(doc)
                 content_hash = hashlib.sha1(text.encode("utf-8", errors="ignore")).hexdigest()
 
-                chunks = self._chunk_text(text)
+                structured_chunks = structured_chunker.chunk(parsed, doc_id=doc_id)
+                if not structured_chunks:
+                    structured_chunks = [
+                        StructuredChunk(text=chunk, block_type="paragraph", source_location=f"Chunk {idx}")
+                        for idx, chunk in enumerate(self._chunk_text(text))
+                    ]
                 chunk_payload = []
-                for idx, chunk in enumerate(chunks):
-                    entities = self._extract_entities(chunk, reasoning_profile=reasoning_profile)
+                llm_chunk_budget = max(settings.llm_graph_extract_max_llm_chunks, 0)
+                llm_chunks_used = 0
+                for idx, structured_chunk in enumerate(structured_chunks):
+                    chunk = structured_chunk.text
+                    parser_metadata = self._chunk_parser_metadata(parsed, idx, structured_chunk)
+                    use_llm_extraction = (
+                        structured_chunk.block_type != "table"
+                        and llm_chunks_used < llm_chunk_budget
+                    )
+                    if use_llm_extraction:
+                        llm_chunks_used += 1
+                    entities = self._merge_entities(
+                        self._extract_entities(
+                            chunk,
+                            reasoning_profile=reasoning_profile,
+                            use_llm=use_llm_extraction,
+                        ),
+                        self._entities_from_structured_chunk(structured_chunk),
+                    )
                     relation_profile = reasoning_profile
                     if complex_extraction and not relation_profile:
                         relation_profile = "balanced"
-                    relations = self._extract_relations(chunk, entities, reasoning_profile=relation_profile)
+                    semantic_relations = self._extract_relations(
+                        chunk,
+                        entities,
+                        reasoning_profile=relation_profile,
+                        use_llm=use_llm_extraction,
+                    )
+                    table_relations = self._normalize_relations(
+                        self._extract_table_relations(structured_chunk),
+                        max_relations=max(settings.llm_max_relations * 16, 128),
+                    )
+                    relations = self._merge_relations(
+                        table_relations,
+                        semantic_relations,
+                        max_relations=(
+                            len(table_relations) + settings.llm_max_relations
+                            if table_relations
+                            else settings.llm_max_relations
+                        ),
+                    )
                     entity_names.update(entities)
                     chunk_payload.append(
                         {
                             "chunk_id": f"{doc_id}-{idx:03d}",
+                            "doc_id": doc_id,
                             "index": idx,
                             "text": chunk,
+                            "title": doc.name,
+                            "location": structured_chunk.caption or f"Chunk {idx}",
+                            **parser_metadata,
+                            "caption": structured_chunk.caption,
+                            "neighbor_before": structured_chunk.neighbor_before,
+                            "neighbor_after": structured_chunk.neighbor_after,
+                            "table_columns": structured_chunk.table_columns,
+                            "table_rows_json": json.dumps(structured_chunk.table_rows, ensure_ascii=False)[:4096],
                             "entities": entities,
                             "relations": relations,
                         }
                     )
+                parsed_artifact_path = self._write_parsed_document_artifacts(
+                    doc=doc,
+                    doc_id=doc_id,
+                    parsed=parsed,
+                    content_hash=content_hash,
+                    chunks=chunk_payload,
+                    structured_chunks=structured_chunks,
+                )
 
                 with self.neo4j.session() as session:
                     existing = session.run(
-                        "MATCH (d:Document {doc_id: $doc_id}) RETURN d.hash AS hash",
+                        """
+                        MATCH (d:Document {doc_id: $doc_id})
+                        RETURN d.hash AS hash, d.parser_provider AS parser_provider
+                        """,
                         {"doc_id": doc_id},
                     ).single()
-                    if existing and existing.get("hash") == content_hash and not force:
+                    if (
+                        existing
+                        and existing.get("hash") == content_hash
+                        and existing.get("parser_provider") == parsed.parser_provider
+                        and not force
+                    ):
+                        session.run(
+                            """
+                            MATCH (d:Document {doc_id: $doc_id})
+                            SET d.parser_version = $parser_version,
+                                d.parse_mode = $parse_mode,
+                                d.parsed_artifact_path = $parsed_artifact_path
+                            """,
+                            {
+                                "doc_id": doc_id,
+                                "parser_version": parsed.parser_version,
+                                "parse_mode": parsed.parse_mode,
+                                "parsed_artifact_path": str(parsed_artifact_path),
+                            },
+                        )
                         skipped_documents += 1
                         logger.info("文档未变更，跳过", context={"doc": doc.name})
                         continue
@@ -203,6 +342,10 @@ class DocumentGraphService:
                             d.ext = $ext,
                             d.size = $size,
                             d.hash = $hash,
+                            d.parser_provider = $parser_provider,
+                            d.parser_version = $parser_version,
+                            d.parse_mode = $parse_mode,
+                            d.parsed_artifact_path = $parsed_artifact_path,
                             d.updated_at = timestamp(),
                             d.source = 'document_ingest'
                         """,
@@ -213,6 +356,10 @@ class DocumentGraphService:
                             "ext": doc.suffix.lower(),
                             "size": doc.stat().st_size,
                             "hash": content_hash,
+                            "parser_provider": parsed.parser_provider,
+                            "parser_version": parsed.parser_version,
+                            "parse_mode": parsed.parse_mode,
+                            "parsed_artifact_path": str(parsed_artifact_path),
                         },
                     )
 
@@ -232,6 +379,7 @@ class DocumentGraphService:
                         """,
                         {"doc_id": doc_id},
                     )
+                    self._cleanup_orphan_entities(session)
 
                     for batch in self._batch(chunk_payload, 50):
                         session.run(
@@ -241,6 +389,19 @@ class DocumentGraphService:
                             SET ch.text = c.text,
                                 ch.index = c.index,
                                 ch.doc_id = $doc_id,
+                                ch.parser_provider = c.parser_provider,
+                                ch.parser_version = c.parser_version,
+                                ch.parse_mode = c.parse_mode,
+                                ch.block_type = c.block_type,
+                                ch.heading_path = c.heading_path,
+                                ch.page_start = c.page_start,
+                                ch.page_end = c.page_end,
+                                ch.source_location = c.source_location,
+                                ch.caption = c.caption,
+                                ch.neighbor_before = c.neighbor_before,
+                                ch.neighbor_after = c.neighbor_after,
+                                ch.table_columns = c.table_columns,
+                                ch.table_rows_json = c.table_rows_json,
                                 ch.source = 'document_ingest'
                             WITH ch, c
                             MATCH (d:Document {doc_id: $doc_id})
@@ -284,7 +445,9 @@ class DocumentGraphService:
                                         doc_id: $doc_id,
                                         chunk_id: c.chunk_id,
                                         source: 'document_ingest',
-                                        confidence: rel.confidence
+                                        confidence: rel.confidence,
+                                        evidence: rel.evidence,
+                                        relation_type: rel.relation_type
                                       },
                                       t
                                     ) YIELD rel AS r
@@ -319,7 +482,9 @@ class DocumentGraphService:
                                 ON CREATE SET t.source = 'document_ingest'
                                 MERGE (s)-[r:RELATION {label: rel.label, doc_id: $doc_id, chunk_id: c.chunk_id}]->(t)
                                 SET r.source = 'document_ingest',
-                                    r.confidence = coalesce(rel.confidence, r.confidence)
+                                    r.confidence = coalesce(rel.confidence, r.confidence),
+                                    r.evidence = coalesce(rel.evidence, r.evidence),
+                                    r.relation_type = coalesce(rel.relation_type, r.relation_type)
                                 """,
                                 {
                                     "doc_id": doc_id,
@@ -330,6 +495,9 @@ class DocumentGraphService:
                 doc_count += 1
                 chunk_count += len(chunk_payload)
                 relation_count += sum(len(item.get("relations", [])) for item in chunk_payload)
+                vector_result = retrieval_orchestrator.index_chunks(chunk_payload)
+                vector_indexed += int(vector_result.get("indexed") or 0)
+                vector_failures.extend([str(item) for item in (vector_result.get("failures") or [])])
             except Exception as exc:  # noqa: BLE001
                 logger.error(
                     "文档建图失败",
@@ -344,13 +512,17 @@ class DocumentGraphService:
             "chunks": chunk_count,
             "entities": entity_count,
             "relations": relation_count,
+            "vector_indexed": vector_indexed,
+            "vector_failures": vector_failures[:10],
             "total_documents": total_documents,
             "skipped_documents": skipped_documents,
             "failures": failures,
+            "parse_warnings": parse_warnings[:20],
             "scope": "selected_documents" if doc_ids else "all_documents",
             "target_doc_ids": doc_ids or [],
             "reasoning_profile": reasoning_profile or "",
             "complex_extraction": complex_extraction,
+            "parser_provider": parser_provider or "",
         }
 
     def delete_document_graph(self, doc_id: str) -> Dict[str, int]:
@@ -403,6 +575,8 @@ class DocumentGraphService:
                 )
 
             orphan_entities = self._cleanup_orphan_entities(session)
+        retrieval_orchestrator.delete_doc(doc_id)
+        self._delete_parsed_document_artifacts(doc_id)
 
         return {
             "documents": doc_count,
@@ -416,7 +590,10 @@ class DocumentGraphService:
             self.neo4j = get_neo4j_service()
         self.neo4j.ensure_connected()
         with self.neo4j.session() as session:
-            return self._clear_graph_data(session)
+            stats = self._clear_graph_data(session)
+        retrieval_orchestrator.clear()
+        self._clear_parsed_document_artifacts()
+        return stats
 
     def preview_delete_document_graph(self, doc_id: str) -> Dict[str, int]:
         if self.neo4j is None:
@@ -657,54 +834,151 @@ class DocumentGraphService:
                 files.append(path)
         return files
 
-    def _read_text(self, path: Path) -> tuple[str, str | None]:
-        ext = path.suffix.lower()
-        if ext in {".txt", ".md", ".markdown", ".csv", ".log"}:
-            return path.read_text(encoding="utf-8", errors="ignore"), None
-        if ext == ".json":
-            try:
-                content = json.loads(path.read_text(encoding="utf-8", errors="ignore"))
-                return json.dumps(content, ensure_ascii=False, indent=2), None
-            except Exception:
-                return path.read_text(encoding="utf-8", errors="ignore"), None
-        if ext == ".docx":
-            try:
-                import docx  # type: ignore
-            except Exception:
-                logger.warning("缺少 python-docx，无法解析 docx", context={"file": str(path)})
-                return "", "missing_python_docx"
-            doc = docx.Document(str(path))
-            return "\n".join([p.text for p in doc.paragraphs if p.text]), None
-        if ext == ".pdf":
-            # 优先使用更稳的解析器，失败再回退 pypdf
-            try:
-                import pdfplumber  # type: ignore
+    def _write_parsed_document_artifacts(
+        self,
+        *,
+        doc: Path,
+        doc_id: str,
+        parsed: ParsedDocument,
+        content_hash: str,
+        chunks: List[Dict[str, Any]],
+        structured_chunks: Optional[List[StructuredChunk]] = None,
+    ) -> Path:
+        root = Path(settings.parsed_document_storage_path).resolve()
+        target_dir = root / doc_id
+        tmp_dir = root / f".{doc_id}.tmp"
+        root.mkdir(parents=True, exist_ok=True)
+        if tmp_dir.exists():
+            shutil.rmtree(tmp_dir)
+        tmp_dir.mkdir(parents=True, exist_ok=True)
 
-                with pdfplumber.open(str(path)) as pdf:
-                    pages = [(page.extract_text() or "") for page in pdf.pages]
-                return "\n".join(pages), None
-            except Exception as exc:
-                logger.warning(
-                    "pdfplumber 解析失败，回退 pypdf",
-                    context={"file": str(path), "error": str(exc)},
-                )
+        raw_output_path = self._write_raw_parser_payload(tmp_dir, parsed.raw_payload)
+        parsed.raw_output_path = raw_output_path.name if raw_output_path else ""
 
-            try:
-                from pypdf import PdfReader  # type: ignore
-            except Exception:
-                logger.warning("缺少 pypdf，无法解析 pdf", context={"file": str(path)})
-                return "", "missing_pypdf"
-            try:
-                reader = PdfReader(str(path))
-                pages = []
-                for page in reader.pages:
-                    text = page.extract_text() or ""
-                    pages.append(text)
-                return "\n".join(pages), None
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("PDF 解析失败，已跳过", context={"file": str(path), "error": str(exc)})
-                return "", f"pdf_parse_error: {exc}"
-        return "", "unsupported_file"
+        content_path = tmp_dir / "content.md"
+        content_path.write_text(parsed.text, encoding="utf-8")
+
+        blocks_path = tmp_dir / "blocks.json"
+        blocks_path.write_text(
+            json.dumps([asdict(block) for block in parsed.blocks], ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+        chunks_path = tmp_dir / "chunks.jsonl"
+        with chunks_path.open("w", encoding="utf-8") as file_obj:
+            for item in chunks:
+                safe_item = {
+                    key: value
+                    for key, value in item.items()
+                    if key not in {"entities", "relations"}
+                }
+                file_obj.write(json.dumps(safe_item, ensure_ascii=False) + "\n")
+
+        structured_chunks_path = tmp_dir / "structured_chunks.jsonl"
+        with structured_chunks_path.open("w", encoding="utf-8") as file_obj:
+            for item in structured_chunks or []:
+                file_obj.write(json.dumps(item.to_dict(), ensure_ascii=False) + "\n")
+
+        manifest = {
+            "doc_id": doc_id,
+            "file_name": doc.name,
+            "source_file": str(doc),
+            "source_ext": doc.suffix.lower(),
+            "source_size": doc.stat().st_size,
+            "source_mtime": int(doc.stat().st_mtime),
+            "content_hash": content_hash,
+            "parser_provider": parsed.parser_provider,
+            "parser_version": parsed.parser_version,
+            "parse_mode": parsed.parse_mode,
+            "raw_output_path": parsed.raw_output_path,
+            "content_path": "content.md",
+            "blocks_path": "blocks.json",
+            "chunks_path": "chunks.jsonl",
+            "structured_chunks_path": "structured_chunks.jsonl",
+            "text_chars": len(parsed.text),
+            "block_count": len(parsed.blocks),
+            "chunk_count": len(chunks),
+            "structured_chunk_count": len(structured_chunks or []),
+            "chunker_mode": "structured" if structured_chunks else "legacy",
+            "warnings": parsed.warnings[:20],
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        (tmp_dir / "manifest.json").write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+        if target_dir.exists():
+            shutil.rmtree(target_dir)
+        tmp_dir.replace(target_dir)
+        return target_dir
+
+    @staticmethod
+    def _write_raw_parser_payload(target_dir: Path, payload: Any) -> Optional[Path]:
+        if payload is None:
+            return None
+        if isinstance(payload, (dict, list)):
+            raw_path = target_dir / "raw.json"
+            raw_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            return raw_path
+        raw_path = target_dir / "raw.txt"
+        raw_path.write_text(str(payload), encoding="utf-8")
+        return raw_path
+
+    @staticmethod
+    def _delete_parsed_document_artifacts(doc_id: str) -> None:
+        clean_doc_id = str(doc_id or "").strip()
+        if not clean_doc_id:
+            return
+        target_dir = Path(settings.parsed_document_storage_path).resolve() / clean_doc_id
+        if target_dir.exists():
+            shutil.rmtree(target_dir)
+
+    @staticmethod
+    def _clear_parsed_document_artifacts() -> None:
+        root = Path(settings.parsed_document_storage_path).resolve()
+        if not root.exists():
+            return
+        for path in root.iterdir():
+            if path.name == "README.md":
+                continue
+            if path.is_dir():
+                shutil.rmtree(path)
+            else:
+                path.unlink()
+
+    @staticmethod
+    def _chunk_parser_metadata(
+        parsed: ParsedDocument,
+        index: int,
+        structured_chunk: Optional[StructuredChunk] = None,
+    ) -> Dict[str, object]:
+        block = parsed.blocks[index] if index < len(parsed.blocks) else None
+        page_start, page_end = parsed.page_range()
+        heading_path = structured_chunk.heading_path if structured_chunk else (block.heading_path if block else [])
+        source_location = (
+            structured_chunk.source_location
+            if structured_chunk and structured_chunk.source_location
+            else block.source_location if block and block.source_location else f"Chunk {index}"
+        )
+        return {
+            "parser_provider": parsed.parser_provider,
+            "parser_version": parsed.parser_version,
+            "parse_mode": parsed.parse_mode,
+            "block_type": structured_chunk.block_type if structured_chunk else (block.block_type if block else "text"),
+            "heading_path": heading_path,
+            "page_start": (
+                structured_chunk.page_start
+                if structured_chunk and structured_chunk.page_start is not None
+                else block.page_start if block and block.page_start is not None else page_start
+            ),
+            "page_end": (
+                structured_chunk.page_end
+                if structured_chunk and structured_chunk.page_end is not None
+                else block.page_end if block and block.page_end is not None else page_end
+            ),
+            "source_location": source_location,
+        }
 
     def _chunk_text(self, text: str, max_chars: int = 800, overlap: int = 120) -> List[str]:
         cleaned = re.sub(r"\s+", " ", text).strip()
@@ -729,15 +1003,105 @@ class DocumentGraphService:
             start = next_start
         return chunks
 
+    @staticmethod
+    def _merge_entities(*groups: List[str]) -> List[str]:
+        merged: List[str] = []
+        seen = set()
+        for group in groups:
+            for entity in normalize_entity_values(group, max_items=128):
+                key = re.sub(r"\s+", "", entity).lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                merged.append(entity)
+        return merged[: max(settings.llm_max_entities, 64)]
+
+    def _entities_from_structured_chunk(self, chunk: StructuredChunk) -> List[str]:
+        candidates: List[object] = []
+        if chunk.block_type == "table" and chunk.table_rows and chunk.table_columns:
+            subject_column = chunk.table_columns[0]
+            for row in chunk.table_rows:
+                candidates.append(row.get(subject_column))
+                for column, value in row.items():
+                    if column == subject_column:
+                        continue
+                    if str(value or "").strip():
+                        candidates.append(f"{column}: {value}")
+        topic = self._infer_table_topic(chunk)
+        if topic:
+            candidates.append(topic)
+        return normalize_entity_values(candidates, max_items=64)
+
+    def _extract_table_relations(self, chunk: StructuredChunk) -> List[Dict[str, object]]:
+        if chunk.block_type != "table" or not chunk.table_rows or not chunk.table_columns:
+            return []
+
+        subject_column = chunk.table_columns[0]
+        topic = self._infer_table_topic(chunk)
+        relations: List[Dict[str, object]] = []
+        evidence_prefix = chunk.caption or "表格"
+
+        for row in chunk.table_rows:
+            source = normalize_entity_name(row.get(subject_column))
+            if not source:
+                continue
+            row_evidence = "；".join(
+                f"{column}={value}" for column, value in row.items() if str(value or "").strip()
+            )
+            if topic and source != topic:
+                relations.append(
+                    {
+                        "source": source,
+                        "target": topic,
+                        "label": "表格主题",
+                        "confidence": 0.72,
+                        "evidence": f"{evidence_prefix}：{row_evidence}",
+                    }
+                )
+            for column in chunk.table_columns[1:]:
+                value = str(row.get(column) or "").strip()
+                if not value:
+                    continue
+                target = normalize_entity_name(f"{column}: {value}")
+                if not target:
+                    continue
+                relations.append(
+                    {
+                        "source": source,
+                        "target": target,
+                        "label": column,
+                        "confidence": 0.86,
+                        "evidence": f"{evidence_prefix}：{row_evidence}",
+                    }
+                )
+        return relations
+
+    @staticmethod
+    def _infer_table_topic(chunk: StructuredChunk) -> str:
+        text = " ".join([chunk.caption or "", " ".join(chunk.heading_path), chunk.neighbor_before or ""])
+        compact = re.sub(r"\s+", "", text)
+        disease_match = re.search(r"[\u4e00-\u9fff]{1,12}病", compact)
+        if disease_match:
+            topic = disease_match.group(0)
+            for marker in ("防治", "处理", "对", "及"):
+                if marker in topic:
+                    topic = topic.split(marker)[-1]
+            return normalize_entity_name(topic)
+        title_match = re.search(r"(?:关于|针对|处理|防治|分析)([\u4e00-\u9fffA-Za-z0-9%/ .-]{2,24})", text)
+        if title_match:
+            return normalize_entity_name(title_match.group(1))
+        return ""
+
     def _extract_entities(
         self,
         text: str,
         max_entities: int = 12,
         reasoning_profile: Optional[str] = None,
+        use_llm: bool = True,
     ) -> List[str]:
-        llm_entities = llm_entity_extractor.extract(text, reasoning_profile=reasoning_profile)
+        llm_entities = llm_entity_extractor.extract(text, reasoning_profile=reasoning_profile) if use_llm else []
         if llm_entities:
-            return llm_entities[:max_entities]
+            return normalize_entity_values(llm_entities, max_items=max_entities)
 
         tokens = re.findall(r"[\u4e00-\u9fff]{2,6}|[A-Za-z][A-Za-z0-9_-]{2,}", text)
         freq: Dict[str, int] = {}
@@ -748,17 +1112,30 @@ class DocumentGraphService:
             freq[lower] = freq.get(lower, 0) + 1
         ranked = sorted(freq.items(), key=lambda item: item[1], reverse=True)
         result = [token for token, _ in ranked[:max_entities]]
-        return result
+        return normalize_entity_values(result, max_items=max_entities)
 
     def _extract_relations(
         self,
         text: str,
         entities: List[str],
         reasoning_profile: Optional[str] = None,
+        use_llm: bool = True,
     ) -> List[Dict[str, object]]:
         if len(entities) < 2:
             return []
-        relations = llm_relation_extractor.extract(text, entities, reasoning_profile=reasoning_profile)
+        llm_relations = (
+            llm_relation_extractor.extract(text, entities, reasoning_profile=reasoning_profile)
+            if use_llm
+            else []
+        )
+        relations = [
+            item
+            for item in (
+                evidence_validator.validate_relation(rel, text, require_evidence=True)
+                for rel in llm_relations
+            )
+            if item
+        ]
         stage_relations = self._extract_stage_relations(text, entities)
         if stage_relations:
             relations = (relations or []) + stage_relations
@@ -767,18 +1144,54 @@ class DocumentGraphService:
             relations = self._extract_relations_by_rules(text, entities)
         return self._normalize_relations(relations)
 
-    def _normalize_relations(self, relations: List[Dict[str, object]]) -> List[Dict[str, object]]:
+    @staticmethod
+    def _merge_relations(
+        *groups: List[Dict[str, object]],
+        max_relations: Optional[int] = None,
+    ) -> List[Dict[str, object]]:
+        merged: List[Dict[str, object]] = []
+        seen = set()
+        for group in groups:
+            for rel in group:
+                source = normalize_entity_name(rel.get("source") or "")
+                target = normalize_entity_name(rel.get("target") or "")
+                rel_type = str(rel.get("rel_type") or rel.get("relation_type") or rel.get("label") or "").strip()
+                key = (source.lower(), target.lower(), rel_type.lower())
+                if not source or not target or not rel_type or key in seen:
+                    continue
+                seen.add(key)
+                merged.append(rel)
+                if max_relations is not None and len(merged) >= max_relations:
+                    return merged
+        return merged
+
+    def _normalize_relations(
+        self,
+        relations: List[Dict[str, object]],
+        *,
+        max_relations: Optional[int] = None,
+    ) -> List[Dict[str, object]]:
         normalized: List[Dict[str, object]] = []
         seen = set()
+        limit = max_relations if max_relations is not None else settings.llm_max_relations
         for rel in relations:
-            source = str(rel.get("source") or "").strip()
-            target = str(rel.get("target") or "").strip()
+            source = normalize_entity_name(rel.get("source") or "")
+            target = normalize_entity_name(rel.get("target") or "")
             label = str(rel.get("label") or rel.get("relation") or rel.get("type") or "").strip()
             if not source or not target or not label:
                 continue
             if source == target:
                 continue
             rel_type = self._normalize_relation_type(label)
+            confidence = rel.get("confidence")
+            if isinstance(confidence, (int, float)) and float(confidence) < MIN_DEFAULT_RELATION_CONFIDENCE:
+                continue
+            if (
+                label not in SCHEMA_RELATION_LABELS
+                and label not in RULE_RELATION_KEYWORDS
+                and (not isinstance(confidence, (int, float)) or float(confidence) < 0.8)
+            ):
+                continue
             key = (source.lower(), target.lower(), rel_type)
             if key in seen:
                 continue
@@ -788,12 +1201,15 @@ class DocumentGraphService:
                 "target": target,
                 "label": label,
                 "rel_type": rel_type,
+                "relation_type": label,
             }
-            confidence = rel.get("confidence")
             if isinstance(confidence, (int, float)):
                 item["confidence"] = float(confidence)
+            evidence = str(rel.get("evidence") or "").strip()
+            if evidence:
+                item["evidence"] = evidence[:1000]
             normalized.append(item)
-            if len(normalized) >= settings.llm_max_relations:
+            if len(normalized) >= limit:
                 break
         return normalized
 
@@ -834,6 +1250,7 @@ class DocumentGraphService:
                         "target": right_entity,
                         "label": label,
                         "confidence": 0.45 if label != "同段提及" else 0.25,
+                        "evidence": self._relation_evidence_from_positions(text, left_start, right_end),
                     }
                 )
 
@@ -858,6 +1275,7 @@ class DocumentGraphService:
                     "target": deduped_entities[i + 1],
                     "label": "同段提及",
                     "confidence": 0.2,
+                    "evidence": evidence_validator.find_evidence(text, [deduped_entities[i], deduped_entities[i + 1]]),
                 }
             )
             if len(fallback) >= settings.llm_max_relations:
@@ -865,41 +1283,22 @@ class DocumentGraphService:
         return fallback
 
     @staticmethod
+    def _relation_evidence_from_positions(text: str, start: int, end: int, limit: int = 240) -> str:
+        cleaned = text or ""
+        left = max(0, start - 60)
+        right = min(len(cleaned), end + 60)
+        snippet = re.sub(r"\s+", " ", cleaned[left:right]).strip()
+        return snippet[:limit]
+
+    @staticmethod
     def _infer_relation_label(window: str) -> str:
         compact = re.sub(r"\s+", "", window or "")
         if not compact:
             return "同段提及"
 
-        keywords = [
-            "属于",
-            "隶属",
-            "位于",
-            "包括",
-            "包含",
-            "使用",
-            "采用",
-            "导致",
-            "影响",
-            "合作",
-            "生产",
-            "采购",
-            "批准",
-            "发布",
-            "制定",
-            "实施",
-            "支持",
-            "关联",
-            "相关",
-        ]
-        for keyword in keywords:
+        for keyword in RULE_RELATION_KEYWORDS:
             if keyword in compact:
                 return keyword
-
-        phrase_match = re.search(r"[A-Za-z\u4e00-\u9fff]{2,8}", compact)
-        if phrase_match:
-            phrase = phrase_match.group(0)
-            if phrase.lower() not in STOPWORDS:
-                return phrase
         return "同段提及"
 
     def _extract_stage_relations(self, text: str, entities: List[str]) -> List[Dict[str, object]]:
@@ -935,6 +1334,7 @@ class DocumentGraphService:
                         "target": stage,
                         "label": "高发期",
                         "confidence": 0.75,
+                        "evidence": evidence_validator.find_evidence(text, [disease, stage]),
                     }
                 )
 

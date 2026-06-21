@@ -18,6 +18,11 @@ export interface DocQaResponse {
 
 export type ReasoningProfile = 'fast' | 'balanced' | 'deep';
 
+export interface DocQaConversationTurn {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
 export interface DocDeepResearchResponse {
   question: string;
   summary: string;
@@ -40,12 +45,18 @@ export interface DocDeepResearchResponse {
   };
 }
 
-export async function askDocQa(question: string, topK = 2, reasoningProfile: ReasoningProfile = 'balanced') {
+export async function askDocQa(
+  question: string,
+  topK = 2,
+  reasoningProfile: ReasoningProfile = 'balanced',
+  conversationHistory: DocQaConversationTurn[] = []
+) {
   const response = await api.post('/api/docqa', {
     question,
     top_k: topK,
     require_citation: true,
     reasoning_profile: reasoningProfile,
+    conversation_history: conversationHistory,
   });
   return response.data?.data as DocQaResponse;
 }

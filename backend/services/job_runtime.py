@@ -66,6 +66,7 @@ def execute_build_graph(*, job_id: int, payload: Dict[str, Any]) -> Dict[str, An
     note = payload.get("note")
     doc_ids = [str(item).strip() for item in (payload.get("doc_ids") or []) if str(item).strip()]
     complex_extraction = _to_bool(payload.get("complex_extraction"), False)
+    parser_provider = str(payload.get("parser_provider") or "").strip().lower()
     explicit_profile = str(payload.get("reasoning_profile") or "").strip().lower()
     default_profile = "balanced" if complex_extraction else "fast"
     reasoning_profile = explicit_profile or default_profile
@@ -81,6 +82,7 @@ def execute_build_graph(*, job_id: int, payload: Dict[str, Any]) -> Dict[str, An
             doc_ids=doc_ids or None,
             reasoning_profile=reasoning_profile,
             complex_extraction=complex_extraction,
+            parser_provider=parser_provider or None,
         )
     except Exception:
         try:
@@ -119,6 +121,7 @@ def execute_build_graph(*, job_id: int, payload: Dict[str, Any]) -> Dict[str, An
         "doc_ids": doc_ids,
         "reasoning_profile": reasoning_profile,
         "complex_extraction": complex_extraction,
+        "parser_provider": parser_provider,
         "stats": stats,
         "failures": failures,
     }

@@ -1,10 +1,17 @@
 """Internal capability routes for DocQA."""
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Request
+from typing import List
+
+from fastapi import APIRouter, Depends, Request, status
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from api.internal_access import operator_id_from_headers, require_go_capability_request
+from api.internal_access import (
+    is_go_control_plane_request,
+    operator_id_from_headers,
+    require_go_capability_request,
+)
 from api.routes.doc_qa import (
     DeepResearchRequest,
     DocQARequest,
@@ -12,9 +19,21 @@ from api.routes.doc_qa import (
     handle_doc_qa,
     handle_doc_qa_health,
 )
+from core import error_response, success_response
+from services.retrieval_orchestrator import retrieval_orchestrator
 from services.runtime_db import get_runtime_db
 
 internal_router = APIRouter()
+
+
+class RetrievalDiagnosticsRequest(BaseModel):
+    question: str = Field(..., min_length=1, max_length=2000)
+    top_k: int = Field(default=5, ge=1, le=20)
+    modes: List[str] = Field(
+        default_factory=lambda: ["keyword", "vector", "hybrid", "graph_hybrid"],
+        min_length=1,
+        max_length=4,
+    )
 
 
 @internal_router.post("/internal/docqa", summary="内部文档问答能力入口")
@@ -60,3 +79,22 @@ async def internal_doc_qa_health(
     if denied is not None:
         return denied
     return handle_doc_qa_health(probe_llm=probe_llm, request=request, internal=True)
+
+
+@internal_router.post("/internal/docqa/retrieval-diagnostics", summary="内部检索诊断能力入口")
+async def internal_doc_qa_retrieval_diagnostics(
+    payload: RetrievalDiagnosticsRequest,
+    request: Request,
+):
+    if not is_go_control_plane_request(request):
+        return error_response(
+            message="禁止访问",
+            code=status.HTTP_403_FORBIDDEN,
+            error_code="FORBIDDEN",
+        )
+    data = retrieval_orchestrator.diagnose(
+        question=payload.question,
+        top_k=payload.top_k,
+        modes=payload.modes,
+    )
+    return success_response(data=data, message="ok")

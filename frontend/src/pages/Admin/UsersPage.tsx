@@ -4,7 +4,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   Alert,
-  Box,
   Button,
   Card,
   CardContent,
@@ -27,10 +26,12 @@ import {
   TableRow,
   TextField,
   Typography,
-  CircularProgress,
 } from '@mui/material';
-import { Add, Delete, Download, Edit, LockReset, PersonOff, Refresh, Search } from '@mui/icons-material';
+import { Add, Delete, Download, Edit, LockReset, PersonOff, Search } from '@mui/icons-material';
 import AdminLayout from '../../components/Admin/AdminLayout';
+import AdminRefreshButton from '../../components/Admin/AdminRefreshButton';
+import AdminLoadingButton from '../../components/Admin/AdminLoadingButton';
+import { LoadingState } from '../../components/Loading/AppleSpinner';
 import { usersApi } from '../../services/adminService';
 import type {
   AdminUserBatchDeleteResult,
@@ -456,15 +457,19 @@ const UsersPage: React.FC = () => {
           批量删除({selectedIds.length})
         </Button>
       )}
-      <Button variant="outlined" startIcon={<Download />} onClick={() => void handleExportCsv()} disabled={exporting}>
-        {exporting ? '导出中...' : '导出 CSV'}
-      </Button>
+      <AdminLoadingButton
+        variant="outlined"
+        startIcon={<Download />}
+        loading={exporting}
+        onClick={() => void handleExportCsv()}
+        disabled={exporting}
+        label="导出 CSV"
+        loadingLabel="导出中..."
+      />
       <Button variant="contained" startIcon={<Add />} onClick={() => setCreateOpen(true)}>
         新增用户
       </Button>
-      <Button variant="outlined" startIcon={<Refresh />} onClick={loadUsers} disabled={loading}>
-        刷新
-      </Button>
+      <AdminRefreshButton onClick={loadUsers} loading={loading} />
     </Stack>
   );
 
@@ -543,9 +548,7 @@ const UsersPage: React.FC = () => {
         <Card>
           <CardContent>
             {loading && items.length === 0 ? (
-              <Box sx={{ display: 'flex', justifyContent: 'center', p: 4 }}>
-                <CircularProgress />
-              </Box>
+              <LoadingState label="正在加载用户" minHeight={280} />
             ) : (
               <>
                 <Table>
@@ -709,9 +712,14 @@ const UsersPage: React.FC = () => {
           <Button onClick={() => setCreateOpen(false)} disabled={createSubmitting}>
             取消
           </Button>
-          <Button variant="contained" onClick={() => void handleCreateUser()} disabled={createSubmitting}>
-            创建
-          </Button>
+          <AdminLoadingButton
+            variant="contained"
+            loading={createSubmitting}
+            onClick={() => void handleCreateUser()}
+            disabled={createSubmitting}
+            label="创建"
+            loadingLabel="创建中..."
+          />
         </DialogActions>
       </Dialog>
 
@@ -757,9 +765,14 @@ const UsersPage: React.FC = () => {
           >
             取消
           </Button>
-          <Button variant="contained" onClick={() => void handleResetPassword()} disabled={resetSubmitting}>
-            确认重置
-          </Button>
+          <AdminLoadingButton
+            variant="contained"
+            loading={resetSubmitting}
+            onClick={() => void handleResetPassword()}
+            disabled={resetSubmitting}
+            label="确认重置"
+            loadingLabel="重置中..."
+          />
         </DialogActions>
       </Dialog>
 
@@ -796,9 +809,15 @@ const UsersPage: React.FC = () => {
           >
             取消
           </Button>
-          <Button variant="contained" color="error" onClick={() => void handleConfirmDeleteUser()} disabled={deleteSubmitting}>
-            确认删除
-          </Button>
+          <AdminLoadingButton
+            variant="contained"
+            color="error"
+            loading={deleteSubmitting}
+            onClick={() => void handleConfirmDeleteUser()}
+            disabled={deleteSubmitting}
+            label="确认删除"
+            loadingLabel="删除中..."
+          />
         </DialogActions>
       </Dialog>
 
@@ -835,9 +854,15 @@ const UsersPage: React.FC = () => {
           >
             取消
           </Button>
-          <Button variant="contained" color="error" onClick={() => void handleConfirmBatchDelete()} disabled={batchDeleteSubmitting}>
-            确认批量删除
-          </Button>
+          <AdminLoadingButton
+            variant="contained"
+            color="error"
+            loading={batchDeleteSubmitting}
+            onClick={() => void handleConfirmBatchDelete()}
+            disabled={batchDeleteSubmitting}
+            label="确认批量删除"
+            loadingLabel="删除中..."
+          />
         </DialogActions>
       </Dialog>
 
@@ -883,9 +908,14 @@ const UsersPage: React.FC = () => {
           >
             取消
           </Button>
-          <Button variant="contained" onClick={() => void handleConfirmBatchReset()} disabled={batchResetSubmitting}>
-            确认批量重置
-          </Button>
+          <AdminLoadingButton
+            variant="contained"
+            loading={batchResetSubmitting}
+            onClick={() => void handleConfirmBatchReset()}
+            disabled={batchResetSubmitting}
+            label="确认批量重置"
+            loadingLabel="重置中..."
+          />
         </DialogActions>
       </Dialog>
 
@@ -926,9 +956,14 @@ const UsersPage: React.FC = () => {
           <Button onClick={() => setEditTarget(null)} disabled={editSubmitting}>
             取消
           </Button>
-          <Button variant="contained" onClick={() => void handleUpdateUser()} disabled={editSubmitting}>
-            保存
-          </Button>
+          <AdminLoadingButton
+            variant="contained"
+            loading={editSubmitting}
+            onClick={() => void handleUpdateUser()}
+            disabled={editSubmitting}
+            label="保存"
+            loadingLabel="保存中..."
+          />
         </DialogActions>
       </Dialog>
 

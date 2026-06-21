@@ -10,6 +10,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"graphinsight/go-backend/internal/adminstore"
 	"graphinsight/go-backend/internal/config"
@@ -17,18 +18,31 @@ import (
 )
 
 type adminModelCatalogItem struct {
-	Provider          string   `json:"provider"`
-	Model             string   `json:"model"`
-	Label             string   `json:"label"`
-	Enabled           bool     `json:"enabled"`
-	SupportsReasoning bool     `json:"supports_reasoning"`
-	SupportedProfiles []string `json:"supported_profiles"`
-	DefaultProfile    string   `json:"default_profile"`
+	Provider           string   `json:"provider"`
+	Model              string   `json:"model"`
+	Label              string   `json:"label"`
+	Enabled            bool     `json:"enabled"`
+	SupportsReasoning  bool     `json:"supports_reasoning"`
+	SupportedProfiles  []string `json:"supported_profiles"`
+	DefaultProfile     string   `json:"default_profile"`
+	ContextWindow      int      `json:"context_window,omitempty"`
+	MaxOutputTokens    int      `json:"max_output_tokens,omitempty"`
+	SuggestedMaxTokens int      `json:"suggested_max_tokens,omitempty"`
+	TokenLimitSource   string   `json:"token_limit_source,omitempty"`
+}
+
+type adminModelTokenLimit struct {
+	ContextWindow      int
+	MaxOutputTokens    int
+	SuggestedMaxTokens int
+	Source             string
 }
 
 type adminModelCatalogResponse struct {
 	Models           []string                `json:"models"`
 	Catalog          []adminModelCatalogItem `json:"catalog"`
+	Source           string                  `json:"source"`
+	SourceMessage    string                  `json:"source_message,omitempty"`
 	ScenarioProfiles map[string]string       `json:"scenario_profiles"`
 }
 
@@ -41,7 +55,6 @@ type adminConfigStore interface {
 	UpdateConfig(ctx context.Context, req adminstore.ConfigMutationRequest) (adminstore.ConfigItem, error)
 	DeleteConfig(ctx context.Context, req adminstore.ConfigMutationRequest) error
 	BatchUpdateConfigs(ctx context.Context, req adminstore.ConfigBatchUpdateRequest) (int, error)
-	InitConfigsFromEnv(ctx context.Context, req adminstore.ConfigInitRequest) (int, error)
 }
 
 func asAdminConfigStore(store interface{}) adminConfigStore {
@@ -104,7 +117,7 @@ func buildAdminConfigReadNativeHandler(cfg config.Config, logger *slog.Logger, g
 				runtimeInfo = graphSvc.RuntimeConnectionInfo()
 			}
 			WriteJSON(w, http.StatusOK, "获取成功", buildAdminNeo4jConfigSnapshotWithRuntime(cfg, values, runtimeInfo))
-		case "/api/v1/admin/config/ai-service/all", "/api/v1/admin/config/openai/all":
+		case "/api/v1/admin/config/ai-service/all":
 			values, err := safeConfigValues(r.Context(), configStore, "ai_service")
 			if err != nil {
 				logger.Error("get ai service configs failed", "error", err.Error())
@@ -120,14 +133,14 @@ func buildAdminConfigReadNativeHandler(cfg config.Config, logger *slog.Logger, g
 				return
 			}
 			WriteJSON(w, http.StatusOK, "获取成功", buildAdminNL2CypherConfigSnapshot(values))
-		case "/api/v1/admin/config/openai/models":
+		case "/api/v1/admin/config/ai-service/models":
 			values, err := safeConfigValues(r.Context(), configStore, "ai_service")
 			if err != nil {
 				logger.Error("get ai service values for model catalog failed", "error", err.Error())
 				WriteJSON(w, http.StatusServiceUnavailable, "获取模型目录失败", map[string]string{"error_code": "ADMIN_STORE_UNAVAILABLE"})
 				return
 			}
-			WriteJSON(w, http.StatusOK, "获取成功", buildAdminModelCatalogResponse(cfg, values, strings.TrimSpace(r.URL.Query().Get("model"))))
+			WriteJSON(w, http.StatusOK, "获取成功", buildAdminModelCatalogResponse(r.Context(), cfg, values, r.URL.Query()))
 		default:
 			if strings.HasPrefix(r.URL.Path, "/api/v1/admin/config/") {
 				handleAdminConfigReadSubpath(w, r, logger, configStore)
@@ -169,16 +182,6 @@ func buildAdminConfigMutationNativeHandler(logger *slog.Logger, guard businessPe
 			WriteJSON(w, http.StatusOK, fmt.Sprintf("批量更新成功，更新了 %d 个配置", updatedCount), map[string]int{
 				"updated_count": updatedCount,
 				"total":         len(payload.Configs),
-			})
-		case r.URL.Path == "/api/v1/admin/config/init" && r.Method == http.MethodPost:
-			initializedCount, err := configStore.InitConfigsFromEnv(r.Context(), buildConfigInitRequest(r))
-			if err != nil {
-				logger.Error("init admin configs from env failed", "error", err.Error())
-				WriteJSON(w, http.StatusServiceUnavailable, "初始化配置失败", map[string]string{"error_code": "ADMIN_STORE_UNAVAILABLE"})
-				return
-			}
-			WriteJSON(w, http.StatusOK, fmt.Sprintf("成功初始化 %d 个配置项", initializedCount), map[string]int{
-				"initialized_count": initializedCount,
 			})
 		case r.URL.Path == "/api/v1/admin/config" && r.Method == http.MethodPost:
 			var payload adminConfigCreatePayload
@@ -343,16 +346,6 @@ func buildConfigBatchUpdateRequest(r *http.Request, items []adminstore.ConfigBat
 	}
 }
 
-func buildConfigInitRequest(r *http.Request) adminstore.ConfigInitRequest {
-	return adminstore.ConfigInitRequest{
-		OperatorID: optionalIntHeader(r, "x-auth-user-id"),
-		TenantID:   optionalStringHeader(r, "x-scope-tenant-id"),
-		TraceID:    optionalStringHeader(r, traceHeader),
-		IPAddress:  optionalString(firstRemoteAddr(r)),
-		UserAgent:  optionalString(r.UserAgent()),
-	}
-}
-
 func optionalIntHeader(r *http.Request, key string) *int {
 	raw := strings.TrimSpace(r.Header.Get(key))
 	if raw == "" {
@@ -424,16 +417,15 @@ func buildAdminNeo4jConfigSnapshotWithRuntime(cfg config.Config, values map[stri
 func buildAdminAIServiceConfigSnapshot(cfg config.Config, values map[string]string) map[string]interface{} {
 	provider := firstNonEmptyString(values["provider"], cfg.AIProvider, os.Getenv("AI_SERVICE_PROVIDER"), os.Getenv("OPENAI_PROVIDER"), "openai")
 	model := firstNonEmptyString(values["model"], cfg.AIModel, os.Getenv("AI_SERVICE_MODEL"), os.Getenv("OPENAI_MODEL"), "gpt-3.5-turbo")
-	apiKeyConfigured := strings.TrimSpace(cfg.AIAPIKey) != ""
-	if _, exists := values["api_key"]; exists {
-		apiKeyConfigured = strings.TrimSpace(values["api_key"]) != "" && strings.TrimSpace(values["api_key"]) != "your-api-key-here"
-	}
+	apiKey := firstNonEmptyString(values["api_key"], cfg.AIAPIKey)
+	apiKeyConfigured := strings.TrimSpace(apiKey) != "" && strings.TrimSpace(apiKey) != "your-api-key-here"
 	return map[string]interface{}{
 		"provider":                        provider,
 		"enabled":                         configBool(values, "enabled", envBool("AI_SERVICE_ENABLED", true)),
 		"base_url":                        firstNonEmptyString(values["base_url"], os.Getenv("AI_SERVICE_BASE_URL"), os.Getenv("OPENAI_BASE_URL")),
 		"api_key":                         "",
 		"api_key_configured":              apiKeyConfigured,
+		"api_key_preview":                 maskSecretPreview(apiKey),
 		"model":                           model,
 		"docqa_reasoning_profile":         firstNonEmptyString(values["docqa_reasoning_profile"], os.Getenv("AI_SERVICE_DOCQA_REASONING_PROFILE"), "balanced"),
 		"deep_research_reasoning_profile": firstNonEmptyString(values["deep_research_reasoning_profile"], os.Getenv("AI_SERVICE_DEEP_RESEARCH_REASONING_PROFILE"), "deep"),
@@ -453,47 +445,60 @@ func buildAdminNL2CypherConfigSnapshot(values map[string]string) map[string]inte
 	}
 }
 
-func buildAdminAvailableModels(cfg config.Config, currentOverride string) []string {
-	models := []string{
-		"gpt-4o-mini",
-		"gpt-4o",
-		"gpt-3.5-turbo",
-		"qwen-turbo",
-		"qwen-plus",
-		"deepseek-chat",
+func buildAdminAvailableModels(cfg config.Config, currentOverride string, probedModels []string) []string {
+	models := mergeUniqueStrings(probedModels)
+	if len(models) == 0 {
+		models = mergeUniqueStrings(
+			parseModelListEnv("AI_SERVICE_AVAILABLE_MODELS"),
+			parseModelListEnv("OPENAI_AVAILABLE_MODELS"),
+			parseModelListEnv("LLM_AVAILABLE_MODELS"),
+		)
 	}
 	current := firstNonEmptyString(currentOverride, cfg.AIModel)
 	if current == "" {
 		return models
 	}
-	for _, model := range models {
-		if model == current {
-			return models
-		}
-	}
-	return append([]string{current}, models...)
+	return mergeUniqueStrings([]string{current}, models)
 }
 
-func buildAdminModelCatalogResponse(cfg config.Config, values map[string]string, currentOverride string) adminModelCatalogResponse {
+func buildAdminModelCatalogResponse(ctx context.Context, cfg config.Config, values map[string]string, query map[string][]string) adminModelCatalogResponse {
 	provider := firstNonEmptyString(values["provider"], cfg.AIProvider, os.Getenv("AI_SERVICE_PROVIDER"), os.Getenv("OPENAI_PROVIDER"), "openai")
 	defaultProfile := firstNonEmptyString(values["docqa_reasoning_profile"], os.Getenv("AI_SERVICE_DOCQA_REASONING_PROFILE"), "balanced")
-	models := buildAdminAvailableModels(cfg, currentOverride)
+	baseURL := firstNonEmptyString(firstQueryValue(query, "base_url"), values["base_url"], os.Getenv("AI_SERVICE_BASE_URL"), os.Getenv("OPENAI_BASE_URL"))
+	apiKey := firstNonEmptyString(values["api_key"], cfg.AIAPIKey)
+	currentModel := firstNonEmptyString(firstQueryValue(query, "model"), values["model"], os.Getenv("AI_SERVICE_MODEL"), os.Getenv("LLM_QA_MODEL"), os.Getenv("LLM_MODEL"), os.Getenv("OPENAI_MODEL"))
+	queryProvider := firstNonEmptyString(firstQueryValue(query, "provider"), provider)
+	probedModels, probedLimits, sourceMessage := fetchAdminAvailableModels(ctx, queryProvider, baseURL, apiKey)
+	source := "current"
+	if len(probedModels) > 0 {
+		source = "remote"
+	} else if len(parseModelListEnv("AI_SERVICE_AVAILABLE_MODELS")) > 0 || len(parseModelListEnv("OPENAI_AVAILABLE_MODELS")) > 0 || len(parseModelListEnv("LLM_AVAILABLE_MODELS")) > 0 {
+		source = "configured"
+	}
+	models := buildAdminAvailableModels(cfg, currentModel, probedModels)
 	catalog := make([]adminModelCatalogItem, 0, len(models))
 	for _, model := range models {
 		supportsReasoning, supportedProfiles := inferReasoningProfiles(model)
+		tokenLimit := mergeModelTokenLimit(probedLimits[strings.ToLower(model)], inferModelTokenLimit(model))
 		catalog = append(catalog, adminModelCatalogItem{
-			Provider:          provider,
-			Model:             model,
-			Label:             humanizeModelLabel(model),
-			Enabled:           true,
-			SupportsReasoning: supportsReasoning,
-			SupportedProfiles: supportedProfiles,
-			DefaultProfile:    defaultProfile,
+			Provider:           queryProvider,
+			Model:              model,
+			Label:              humanizeModelLabel(model),
+			Enabled:            true,
+			SupportsReasoning:  supportsReasoning,
+			SupportedProfiles:  supportedProfiles,
+			DefaultProfile:     defaultProfile,
+			ContextWindow:      tokenLimit.ContextWindow,
+			MaxOutputTokens:    tokenLimit.MaxOutputTokens,
+			SuggestedMaxTokens: tokenLimit.SuggestedMaxTokens,
+			TokenLimitSource:   tokenLimit.Source,
 		})
 	}
 	return adminModelCatalogResponse{
-		Models:  models,
-		Catalog: catalog,
+		Models:        models,
+		Catalog:       catalog,
+		Source:        source,
+		SourceMessage: sourceMessage,
 		ScenarioProfiles: map[string]string{
 			"docqa":                 defaultProfile,
 			"deep_research":         firstNonEmptyString(values["deep_research_reasoning_profile"], os.Getenv("AI_SERVICE_DEEP_RESEARCH_REASONING_PROFILE"), "deep"),
@@ -525,6 +530,267 @@ func humanizeModelLabel(model string) string {
 	return strings.Join(parts, " ")
 }
 
+func firstQueryValue(query map[string][]string, key string) string {
+	if query == nil {
+		return ""
+	}
+	values := query[key]
+	if len(values) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(values[0])
+}
+
+func fetchAdminAvailableModels(ctx context.Context, provider string, baseURL string, apiKey string) ([]string, map[string]adminModelTokenLimit, string) {
+	if strings.TrimSpace(apiKey) == "" || strings.TrimSpace(apiKey) == "your-api-key-here" {
+		return nil, nil, "API Key 未配置，仅显示当前模型或手动候选"
+	}
+	if provider == "claude" {
+		return nil, nil, "Claude 暂未提供统一模型列表接口，仅显示当前模型或手动候选"
+	}
+	urls := buildModelsURLs(baseURL)
+	if len(urls) == 0 {
+		return nil, nil, "未配置模型列表地址"
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
+	defer cancel()
+	client := &http.Client{Timeout: 12 * time.Second}
+	for _, url := range urls {
+		req, err := http.NewRequestWithContext(probeCtx, http.MethodGet, url, nil)
+		if err != nil {
+			continue
+		}
+		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(apiKey))
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := client.Do(req)
+		if err != nil {
+			continue
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			continue
+		}
+		var payload map[string]interface{}
+		if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+			continue
+		}
+		models, limits := parseModelCatalog(payload)
+		if len(models) > 0 {
+			return models, limits, fmt.Sprintf("来自 %s", url)
+		}
+	}
+	return nil, nil, "未能从服务商模型接口解析到模型，仅显示当前模型或手动候选"
+}
+
+func buildModelsURLs(baseURL string) []string {
+	normalized := strings.TrimSpace(strings.TrimRight(baseURL, "/"))
+	if normalized == "" {
+		return []string{"https://api.openai.com/v1/models"}
+	}
+	if strings.HasSuffix(normalized, "/models") {
+		return []string{normalized}
+	}
+	candidates := make([]string, 0, 2)
+	if strings.HasSuffix(normalized, "/v1") || strings.Contains(normalized, "/v1/") {
+		candidates = append(candidates, normalized+"/models")
+	} else {
+		candidates = append(candidates, normalized+"/v1/models", normalized+"/models")
+	}
+	return mergeUniqueStrings(candidates)
+}
+
+func parseModelCatalog(payload map[string]interface{}) ([]string, map[string]adminModelTokenLimit) {
+	if payload == nil {
+		return nil, nil
+	}
+	models := make([]string, 0)
+	limits := map[string]adminModelTokenLimit{}
+	if data, ok := payload["data"].([]interface{}); ok {
+		for _, item := range data {
+			if objectValue, ok := item.(map[string]interface{}); ok {
+				if id, ok := objectValue["id"].(string); ok {
+					models = append(models, id)
+					if limit := parseModelTokenLimit(objectValue, "remote"); hasModelTokenLimit(limit) {
+						limits[strings.ToLower(id)] = limit
+					}
+				}
+			}
+		}
+	}
+	if rawModels, ok := payload["models"].([]interface{}); ok {
+		for _, item := range rawModels {
+			if id, ok := item.(string); ok {
+				models = append(models, id)
+			} else if objectValue, ok := item.(map[string]interface{}); ok {
+				if id, ok := objectValue["id"].(string); ok {
+					models = append(models, id)
+					if limit := parseModelTokenLimit(objectValue, "remote"); hasModelTokenLimit(limit) {
+						limits[strings.ToLower(id)] = limit
+					}
+				}
+			}
+		}
+	}
+	return mergeUniqueStrings(models), limits
+}
+
+func parseModelTokenLimit(payload map[string]interface{}, source string) adminModelTokenLimit {
+	contextWindow := firstPositiveModelInt(payload,
+		"context_window",
+		"context_length",
+		"max_context_tokens",
+		"input_token_limit",
+		"max_input_tokens",
+	)
+	maxOutput := firstPositiveModelInt(payload,
+		"max_output_tokens",
+		"output_token_limit",
+		"max_completion_tokens",
+		"max_response_tokens",
+	)
+	suggested := maxOutput
+	if suggested == 0 && contextWindow > 0 {
+		suggested = minInt(contextWindow/4, 8192)
+	}
+	if suggested > 0 {
+		suggested = maxInt(suggested, 512)
+	}
+	return adminModelTokenLimit{
+		ContextWindow:      contextWindow,
+		MaxOutputTokens:    maxOutput,
+		SuggestedMaxTokens: suggested,
+		Source:             source,
+	}
+}
+
+func firstPositiveModelInt(payload map[string]interface{}, keys ...string) int {
+	for _, key := range keys {
+		if value := modelInt(payload[key]); value > 0 {
+			return value
+		}
+	}
+	return 0
+}
+
+func modelInt(value interface{}) int {
+	switch typed := value.(type) {
+	case int:
+		return typed
+	case int64:
+		return int(typed)
+	case float64:
+		return int(typed)
+	case json.Number:
+		parsed, _ := strconv.Atoi(typed.String())
+		return parsed
+	case string:
+		parsed, _ := strconv.Atoi(strings.TrimSpace(typed))
+		return parsed
+	default:
+		return 0
+	}
+}
+
+func hasModelTokenLimit(limit adminModelTokenLimit) bool {
+	return limit.ContextWindow > 0 || limit.MaxOutputTokens > 0 || limit.SuggestedMaxTokens > 0
+}
+
+func mergeModelTokenLimit(primary adminModelTokenLimit, fallback adminModelTokenLimit) adminModelTokenLimit {
+	merged := fallback
+	if primary.ContextWindow > 0 {
+		merged.ContextWindow = primary.ContextWindow
+	}
+	if primary.MaxOutputTokens > 0 {
+		merged.MaxOutputTokens = primary.MaxOutputTokens
+	}
+	if primary.SuggestedMaxTokens > 0 {
+		merged.SuggestedMaxTokens = primary.SuggestedMaxTokens
+	}
+	if primary.Source != "" && hasModelTokenLimit(primary) {
+		merged.Source = primary.Source
+	}
+	return merged
+}
+
+func inferModelTokenLimit(model string) adminModelTokenLimit {
+	lower := strings.ToLower(strings.TrimSpace(model))
+	if lower == "" || strings.Contains(lower, "embedding") || strings.Contains(lower, "text-embedding") {
+		return adminModelTokenLimit{}
+	}
+	limit := adminModelTokenLimit{SuggestedMaxTokens: 4096, Source: "heuristic"}
+	switch {
+	case strings.Contains(lower, "gpt-5"),
+		strings.Contains(lower, "gpt-4.1"),
+		strings.Contains(lower, "gpt-4o"),
+		strings.Contains(lower, "qwen"),
+		strings.Contains(lower, "deepseek"),
+		strings.Contains(lower, "glm-4"):
+		limit.ContextWindow = 128000
+		limit.SuggestedMaxTokens = 8192
+	case strings.Contains(lower, "gpt-4"):
+		limit.ContextWindow = 128000
+		limit.SuggestedMaxTokens = 4096
+	}
+	return limit
+}
+
+func parseModelListEnv(key string) []string {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return nil
+	}
+	parts := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == ';' || r == '\n' || r == '\t'
+	})
+	models := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if model := strings.TrimSpace(part); model != "" {
+			models = append(models, model)
+		}
+	}
+	return models
+}
+
+func maskSecretPreview(secret string) string {
+	trimmed := strings.TrimSpace(secret)
+	if trimmed == "" || trimmed == "your-api-key-here" {
+		return ""
+	}
+	runes := []rune(trimmed)
+	if len(runes) <= 8 {
+		return "已配置"
+	}
+	prefixLen := 3
+	if len(runes) < prefixLen {
+		prefixLen = len(runes)
+	}
+	suffixLen := 4
+	if len(runes) < prefixLen+suffixLen {
+		suffixLen = len(runes) - prefixLen
+	}
+	return string(runes[:prefixLen]) + "..." + string(runes[len(runes)-suffixLen:])
+}
+
+func mergeUniqueStrings(groups ...[]string) []string {
+	seen := make(map[string]struct{})
+	result := make([]string, 0)
+	for _, group := range groups {
+		for _, item := range group {
+			trimmed := strings.TrimSpace(item)
+			if trimmed == "" {
+				continue
+			}
+			key := strings.ToLower(trimmed)
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			seen[key] = struct{}{}
+			result = append(result, trimmed)
+		}
+	}
+	return result
+}
+
 func inferReasoningProfiles(model string) (bool, []string) {
 	lower := strings.ToLower(strings.TrimSpace(model))
 	switch {
@@ -532,7 +798,7 @@ func inferReasoningProfiles(model string) (bool, []string) {
 		return false, []string{"balanced"}
 	case strings.Contains(lower, "reasoner"), strings.Contains(lower, "r1"), strings.Contains(lower, "o1"), strings.Contains(lower, "o3"), strings.Contains(lower, "thinking"):
 		return true, []string{"fast", "balanced", "deep"}
-	case strings.Contains(lower, "gpt-4"), strings.Contains(lower, "qwen-plus"), strings.Contains(lower, "deepseek"), strings.Contains(lower, "glm-4"):
+	case strings.Contains(lower, "gpt-5"), strings.Contains(lower, "gpt-4"), strings.Contains(lower, "qwen-plus"), strings.Contains(lower, "qwen-max"), strings.Contains(lower, "deepseek"), strings.Contains(lower, "glm-4"):
 		return true, []string{"fast", "balanced", "deep"}
 	default:
 		return false, []string{"balanced"}
@@ -558,8 +824,12 @@ func safeConfigValues(ctx context.Context, configStore adminConfigStore, categor
 
 func normalizeAdminConfigCategory(category string) string {
 	switch category {
-	case "ai-service", "openai":
+	case "ai-service":
 		return "ai_service"
+	case "vector-store":
+		return "vector_store"
+	case "document-parser":
+		return "document_parser"
 	default:
 		return category
 	}
@@ -567,7 +837,7 @@ func normalizeAdminConfigCategory(category string) string {
 
 func isAdminConfigCategory(value string) bool {
 	switch value {
-	case "neo4j", "ai_service", "ai-service", "openai", "nl2cypher":
+	case "neo4j", "ai_service", "ai-service", "nl2cypher", "retrieval", "embedding", "vector_store", "vector-store", "document_parser", "document-parser":
 		return true
 	default:
 		return false

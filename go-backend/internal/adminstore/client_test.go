@@ -423,6 +423,11 @@ func TestSensitiveConfigKeyName(t *testing.T) {
 	if isSensitiveConfigKeyName("model") {
 		t.Fatalf("model should not be sensitive")
 	}
+	for _, key := range []string{"max_tokens", "max_output_tokens", "context_window"} {
+		if isSensitiveConfigKeyName(key) {
+			t.Fatalf("token limit config should not be sensitive: %s", key)
+		}
+	}
 }
 
 func TestNormalizeConfigPagination(t *testing.T) {

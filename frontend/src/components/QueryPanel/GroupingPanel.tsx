@@ -35,12 +35,13 @@ import {
 } from '@mui/icons-material';
 import { useGraphStore } from '../../store/graphStore';
 import type { NodeGroup } from '../../store/graphStore';
-import { 
-  detectCommunitiesByConnectivity, 
-  detectCommunitiesByDegree, 
+import {
+  detectCommunitiesByConnectivity,
+  detectCommunitiesByDegree,
   recommendDetectionAlgorithm,
-  type DetectionResult 
+  type DetectionResult
 } from '../../utils/communityDetection';
+import LoadingButton from '../Loading/LoadingButton';
 
 interface GroupingPanelProps {
   onGroupingChange?: () => void;
@@ -297,16 +298,17 @@ export function GroupingPanel({ onGroupingChange }: GroupingPanelProps) {
         </Typography>
         
         <Box sx={{ display: 'flex', gap: 1, mb: 2 }}>
-          <Button
+          <LoadingButton
             variant="contained"
             size="small"
             startIcon={<AnalyticsIcon />}
+            loading={isDetecting}
             onClick={() => handleCommunityDetection()}
             disabled={isDetecting || !graphData?.nodes || graphData.nodes.length < 3}
+            label="自动检测"
+            loadingLabel="检测中..."
             sx={{ flex: 1 }}
-          >
-            {isDetecting ? '检测中...' : '自动检测'}
-          </Button>
+          />
           
           <Button
             variant="outlined"

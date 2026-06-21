@@ -64,8 +64,8 @@ class ConfigBatchUpdate(BaseModel):
         json_schema_extra = {
             "example": {
                 "configs": [
-                    {"category": "openai", "key": "api_key", "value": "sk-xxx"},
-                    {"category": "openai", "key": "model", "value": "gpt-4"}
+                    {"category": "ai_service", "key": "api_key", "value": "sk-xxx"},
+                    {"category": "ai_service", "key": "model", "value": "gpt-4"}
                 ]
             }
         }

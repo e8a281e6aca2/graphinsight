@@ -9,7 +9,6 @@ import {
   Card,
   CardContent,
   Chip,
-  CircularProgress,
   Container,
   Dialog,
   DialogActions,
@@ -18,6 +17,7 @@ import {
   Drawer,
   FormControlLabel,
   IconButton,
+  LinearProgress,
   MenuItem,
   Switch,
   Stack,
@@ -31,10 +31,13 @@ import {
   TextField,
   Typography,
 } from '@mui/material';
-import { Close, Refresh, RestartAlt, StopCircle } from '@mui/icons-material';
+import { Close, RestartAlt, StopCircle } from '@mui/icons-material';
+import { useSearchParams } from 'react-router-dom';
 import { jobsApi } from '../../services/adminService';
 import type { JobItem, JobLogItem, JobStatus, JobType } from '../../types/admin';
 import AdminLayout from '../../components/Admin/AdminLayout';
+import AdminRefreshButton from '../../components/Admin/AdminRefreshButton';
+import { LoadingState } from '../../components/Loading/AppleSpinner';
 import { usePageVisible } from '../../hooks/usePageVisible';
 import { getErrorMessage } from '../../utils/errorMessage';
 
@@ -66,6 +69,47 @@ const statusChipColor = (status: JobStatus): 'default' | 'primary' | 'success' |
   return 'default';
 };
 
+const readNumericValue = (value: unknown): number | null => {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string' && value.trim() !== '') {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return null;
+};
+
+const getJobProgress = (job: JobItem): number => {
+  const direct = readNumericValue(job.progress);
+  const resultProgress =
+    job.result && typeof job.result === 'object'
+      ? readNumericValue((job.result as Record<string, unknown>).progress)
+      : null;
+  const runtime =
+    job.result && typeof job.result === 'object'
+      ? (job.result as Record<string, unknown>).runtime
+      : null;
+  const runtimeProgress =
+    runtime && typeof runtime === 'object'
+      ? readNumericValue((runtime as Record<string, unknown>).progress)
+      : null;
+  const raw = direct ?? resultProgress ?? runtimeProgress;
+  if (raw !== null) return Math.max(0, Math.min(100, raw <= 1 ? raw * 100 : raw));
+  if (job.status === 'succeeded') return 100;
+  if (job.status === 'failed' || job.status === 'cancelled') return 100;
+  if (job.status === 'running') return 45;
+  if (job.status === 'pending') return 8;
+  return 0;
+};
+
+const getJobProgressLabel = (job: JobItem) => {
+  if (job.status === 'pending') return '排队中';
+  if (job.status === 'running') return '执行中';
+  if (job.status === 'succeeded') return '已完成';
+  if (job.status === 'failed') return '失败';
+  if (job.status === 'cancelled') return '已取消';
+  return job.status;
+};
+
 const formatDate = (value?: string) => {
   if (!value) return '-';
   const date = new Date(value);
@@ -75,6 +119,7 @@ const formatDate = (value?: string) => {
 
 const JobsPage: React.FC = () => {
   const pageVisible = usePageVisible();
+  const [searchParams] = useSearchParams();
   const [jobs, setJobs] = useState<JobItem[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(0);
@@ -94,6 +139,19 @@ const JobsPage: React.FC = () => {
   const [clearKbDialogOpen, setClearKbDialogOpen] = useState(false);
   const [clearKbConfirmText, setClearKbConfirmText] = useState('');
   const [clearKbPurgeGraph, setClearKbPurgeGraph] = useState(true);
+
+  useEffect(() => {
+    const nextType = searchParams.get('job_type') || '';
+    const nextStatus = searchParams.get('status') || '';
+    if (jobTypeOptions.some((item) => item.value === nextType)) {
+      setJobType(nextType as JobTypeFilter);
+      setPage(0);
+    }
+    if (jobStatusOptions.some((item) => item.value === nextStatus)) {
+      setJobStatus(nextStatus as JobStatusFilter);
+      setPage(0);
+    }
+  }, [searchParams]);
 
   const hasRunningJobs = useMemo(
     () => jobs.some((item) => item.status === 'pending' || item.status === 'running'),
@@ -272,9 +330,7 @@ const JobsPage: React.FC = () => {
       >
         新建重建索引
       </Button>
-      <Button variant="outlined" startIcon={<Refresh />} onClick={() => void loadJobs()} disabled={loading}>
-        刷新
-      </Button>
+      <AdminRefreshButton onClick={() => void loadJobs()} loading={loading} />
     </Stack>
   );
 
@@ -370,9 +426,7 @@ const JobsPage: React.FC = () => {
         <Card>
           <CardContent>
             {loading && jobs.length === 0 ? (
-              <Box sx={{ display: 'flex', justifyContent: 'center', py: 6 }}>
-                <CircularProgress />
-              </Box>
+              <LoadingState label="正在加载任务" minHeight={280} />
             ) : (
               <>
                 <TableContainer>
@@ -382,6 +436,7 @@ const JobsPage: React.FC = () => {
                         <TableCell>ID</TableCell>
                         <TableCell>类型</TableCell>
                         <TableCell>状态</TableCell>
+                        <TableCell>进度</TableCell>
                         <TableCell>作用域</TableCell>
                         <TableCell>重试</TableCell>
                         <TableCell>创建时间</TableCell>
@@ -392,7 +447,7 @@ const JobsPage: React.FC = () => {
                     <TableBody>
                       {jobs.length === 0 ? (
                         <TableRow>
-                          <TableCell colSpan={8} align="center">
+                          <TableCell colSpan={9} align="center">
                             <Typography color="text.secondary">暂无任务</Typography>
                           </TableCell>
                         </TableRow>
@@ -403,12 +458,21 @@ const JobsPage: React.FC = () => {
                             item.retry_count < item.max_retries;
                           const canCancel = item.status === 'pending' || item.status === 'running';
                           const busy = operatingJobId === item.id;
+                          const progress = getJobProgress(item);
                           return (
                             <TableRow key={item.id} hover>
                               <TableCell>#{item.id}</TableCell>
                               <TableCell>{item.job_type}</TableCell>
                               <TableCell>
                                 <Chip label={item.status} color={statusChipColor(item.status)} size="small" />
+                              </TableCell>
+                              <TableCell sx={{ minWidth: 150 }}>
+                                <Stack spacing={0.5}>
+                                  <LinearProgress variant="determinate" value={progress} />
+                                  <Typography variant="caption" color="text.secondary">
+                                    {getJobProgressLabel(item)} · {Math.round(progress)}%
+                                  </Typography>
+                                </Stack>
                               </TableCell>
                               <TableCell>
                                 <Typography variant="body2" noWrap sx={{ maxWidth: 220 }}>
@@ -500,6 +564,15 @@ const JobsPage: React.FC = () => {
             <Typography variant="body2">任务 ID: #{selectedJob.id}</Typography>
             <Typography variant="body2">类型: {selectedJob.job_type}</Typography>
             <Typography variant="body2">状态: {selectedJob.status}</Typography>
+            <Box>
+              <Stack direction="row" justifyContent="space-between" sx={{ mb: 0.5 }}>
+                <Typography variant="body2">执行进度</Typography>
+                <Typography variant="body2" color="text.secondary">
+                  {getJobProgressLabel(selectedJob)} · {Math.round(getJobProgress(selectedJob))}%
+                </Typography>
+              </Stack>
+              <LinearProgress variant="determinate" value={getJobProgress(selectedJob)} />
+            </Box>
             <Typography variant="body2">Trace ID: {selectedJob.trace_id || '-'}</Typography>
             <Typography variant="body2">创建时间: {formatDate(selectedJob.created_at)}</Typography>
             <Typography variant="body2">开始时间: {formatDate(selectedJob.started_at)}</Typography>

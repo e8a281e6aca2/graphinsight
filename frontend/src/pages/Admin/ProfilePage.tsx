@@ -11,7 +11,6 @@ import {
   Button,
   Typography,
   Alert,
-  CircularProgress,
   Avatar,
   Divider,
   ToggleButton,
@@ -28,6 +27,8 @@ import { profileApi } from '../../services/adminService';
 import type { ProfileInfo } from '../../types/admin';
 import PasswordDialog from '../../components/Admin/PasswordDialog';
 import AdminLayout from '../../components/Admin/AdminLayout';
+import AdminLoadingButton from '../../components/Admin/AdminLoadingButton';
+import { LoadingState } from '../../components/Loading/AppleSpinner';
 import { getErrorMessage } from '../../utils/errorMessage';
 import { clearAdminSession, getPreferredAdminHome, type AdminHomePath } from '../../utils/adminAuth';
 
@@ -121,16 +122,22 @@ const ProfilePage: React.FC = () => {
 
   if (loading) {
     return (
-      <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '100vh' }}>
-        <CircularProgress />
-      </Box>
+      <AdminLayout title="个人设置" subtitle="账号资料、安全与偏好">
+        <LoadingState label="正在加载个人资料" minHeight={420} />
+      </AdminLayout>
     );
   }
 
   const actionBar = (
-    <Button variant="outlined" startIcon={<SaveIcon />} onClick={handleSave} disabled={saving}>
-      保存资料
-    </Button>
+    <AdminLoadingButton
+      variant="outlined"
+      startIcon={<SaveIcon />}
+      loading={saving}
+      onClick={handleSave}
+      disabled={saving}
+      label="保存资料"
+      loadingLabel="保存中..."
+    />
   );
 
   return (
@@ -262,14 +269,15 @@ const ProfilePage: React.FC = () => {
             </Box>
 
             <Box sx={{ mt: 3, display: 'flex', justifyContent: 'flex-end' }}>
-              <Button
+              <AdminLoadingButton
                 variant="contained"
                 startIcon={<SaveIcon />}
+                loading={saving}
                 onClick={handleSave}
                 disabled={saving}
-              >
-                {saving ? '保存中...' : '保存修改'}
-              </Button>
+                label="保存修改"
+                loadingLabel="保存中..."
+              />
             </Box>
           </CardContent>
         </Card>

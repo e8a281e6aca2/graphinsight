@@ -3,7 +3,6 @@ import {
   Box,
   TextField,
   Button,
-  CircularProgress,
   Alert,
   Chip,
   Typography,
@@ -20,6 +19,7 @@ import {
 } from '@mui/icons-material';
 import { buildApiUrl } from '../../utils/apiBase';
 import { getErrorMessage } from '../../utils/errorMessage';
+import LoadingButton from '../Loading/LoadingButton';
 
 interface NL2CypherInputProps {
   onCypherGenerated: (cypher: string) => void;
@@ -128,15 +128,16 @@ export function NL2CypherInput({ onCypherGenerated, onExecute }: NL2CypherInputP
           multiline
           maxRows={3}
         />
-        <Button
+        <LoadingButton
           variant="contained"
-          startIcon={loading ? <CircularProgress size={20} color="inherit" /> : <AIIcon />}
+          startIcon={<AIIcon />}
+          loading={loading}
           onClick={handleGenerate}
           disabled={loading || !input.trim()}
+          label="生成"
+          loadingLabel="生成中..."
           sx={{ minWidth: 100 }}
-        >
-          {loading ? '生成中' : '生成'}
-        </Button>
+        />
       </Box>
 
       {/* 示例 */}

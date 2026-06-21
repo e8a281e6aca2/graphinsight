@@ -9,10 +9,9 @@ import {
   Card,
   CardContent,
   Typography,
-  Button,
   Chip,
-  CircularProgress,
   Alert,
+  Button,
   LinearProgress,
   Stack,
 } from '@mui/material';
@@ -21,9 +20,12 @@ import {
   Storage as StorageIcon,
   Speed as SpeedIcon,
   Security as SecurityIcon,
-  Refresh as RefreshIcon,
   Computer as ComputerIcon,
   Memory as MemoryIcon,
+  Folder as FolderIcon,
+  WorkHistory as WorkHistoryIcon,
+  ManageSearch as ManageSearchIcon,
+  MonitorHeart as MonitorHeartIcon,
 } from '@mui/icons-material';
 import { useNavigate } from 'react-router-dom';
 import { monitorApi, logApi } from '../../services/adminService';
@@ -33,6 +35,7 @@ import LogStatsChart from '../../components/Admin/Charts/LogStatsChart';
 import { useSystemMetrics } from '../../hooks/useSystemMetrics';
 import { usePageVisible } from '../../hooks/usePageVisible';
 import AdminLayout from '../../components/Admin/AdminLayout';
+import { LoadingState } from '../../components/Loading/AppleSpinner';
 import { getErrorMessage } from '../../utils/errorMessage';
 
 const DashboardPage: React.FC = () => {
@@ -139,25 +142,35 @@ const DashboardPage: React.FC = () => {
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
   };
 
-  const actionBar = (
-    <Stack direction="row" spacing={1}>
-      <Button variant="outlined" onClick={() => navigate('/admin/config')}>
-        配置中心
-      </Button>
-      <Button variant="outlined" onClick={() => navigate('/admin/rbac')}>
-        权限管理
-      </Button>
-      <Button variant="outlined" onClick={() => navigate('/admin/analytics')}>
-        数据分析
-      </Button>
-      <Button variant="contained" startIcon={<RefreshIcon />} onClick={() => void fetchStats()} disabled={loading}>
-        刷新
-      </Button>
-    </Stack>
-  );
+  const operationEntrypoints = [
+    {
+      title: '治理知识库',
+      description: '查看文档、回收站和高风险清理结果',
+      icon: <FolderIcon />,
+      path: '/admin/knowledge-base',
+    },
+    {
+      title: '跟踪任务',
+      description: '处理建图、清库、重建索引和失败重试',
+      icon: <WorkHistoryIcon />,
+      path: '/admin/jobs',
+    },
+    {
+      title: '诊断问答',
+      description: '检查引用、检索、模型响应和成本',
+      icon: <ManageSearchIcon />,
+      path: '/admin/qa-traces',
+    },
+    {
+      title: '查看监控',
+      description: '定位健康、SLO、告警和服务状态',
+      icon: <MonitorHeartIcon />,
+      path: '/admin/monitor',
+    },
+  ];
 
   return (
-    <AdminLayout title="系统仪表板" subtitle="关键指标与服务健康概览" actions={actionBar}>
+    <AdminLayout title="运营总览" subtitle="知识库、问答、任务与系统状态的控制台入口">
       <Container maxWidth="lg" sx={{ pb: 4 }}>
         {error && (
           <Alert severity="error" sx={{ mb: 3 }}>
@@ -166,16 +179,32 @@ const DashboardPage: React.FC = () => {
         )}
 
         {loading && !systemStats && !healthStatus ? (
-          <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', p: 4 }}>
-            <CircularProgress />
-            <Typography variant="body2" color="text.secondary" sx={{ mt: 2 }}>
-              正在加载数据...
-            </Typography>
-          </Box>
+          <LoadingState label="正在加载数据" minHeight={360} />
         ) : null}
         
         {/* 始终显示内容区域,即使在加载中 */}
         <Stack spacing={3} sx={{ display: (loading && !systemStats && !healthStatus) ? 'none' : 'flex' }}>
+            <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: 'repeat(4, 1fr)' }, gap: 2 }}>
+              {operationEntrypoints.map((item) => (
+                <Card key={item.path} sx={{ height: '100%' }}>
+                  <CardContent sx={{ height: '100%', display: 'flex', flexDirection: 'column', gap: 1.5 }}>
+                    <Box sx={{ color: 'primary.main', display: 'flex' }}>{item.icon}</Box>
+                    <Box sx={{ flex: 1 }}>
+                      <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
+                        {item.title}
+                      </Typography>
+                      <Typography variant="body2" color="text.secondary">
+                        {item.description}
+                      </Typography>
+                    </Box>
+                    <Button variant="outlined" size="small" onClick={() => navigate(item.path)}>
+                      打开
+                    </Button>
+                  </CardContent>
+                </Card>
+              ))}
+            </Box>
+
             {/* 系统健康状态 */}
             <Card>
               <CardContent>

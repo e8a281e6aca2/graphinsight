@@ -1,6 +1,7 @@
 """Runtime config helpers for Python capability and worker layers."""
 from __future__ import annotations
 
+import os
 from typing import Any, Dict
 
 from config import get_settings
@@ -53,15 +54,23 @@ def _to_float(value: Any, default: float) -> float:
         return default
 
 
+def _first_non_empty(*values: Any) -> str:
+    for value in values:
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
+
+
 def get_ai_runtime_config() -> Dict[str, Any]:
     loaded = _load_category("ai_service")
-    api_key = loaded.get("api_key", settings.openai_api_key)
+    api_key = _first_non_empty(loaded.get("api_key"), settings.llm_api_key, settings.openai_api_key)
     return {
-        "provider": loaded.get("provider", "openai"),
+        "provider": _first_non_empty(loaded.get("provider"), os.getenv("AI_SERVICE_PROVIDER"), "openai"),
         "enabled": _to_bool(loaded.get("enabled"), True),
-        "base_url": loaded.get("base_url", ""),
+        "base_url": _first_non_empty(loaded.get("base_url"), settings.llm_base_url, os.getenv("OPENAI_BASE_URL")),
         "api_key": api_key,
-        "model": loaded.get("model", settings.openai_model),
+        "model": _first_non_empty(loaded.get("model"), settings.llm_qa_model, settings.llm_model, settings.openai_model),
         "temperature": _to_float(loaded.get("temperature"), settings.openai_temperature),
         "max_tokens": _to_int(loaded.get("max_tokens"), settings.openai_max_tokens),
         "docqa_reasoning_profile": loaded.get("docqa_reasoning_profile", "balanced"),
@@ -69,6 +78,66 @@ def get_ai_runtime_config() -> Dict[str, Any]:
         "model_probe_reasoning_profile": loaded.get("model_probe_reasoning_profile", "fast"),
         "graph_extract_reasoning_profile": loaded.get("graph_extract_reasoning_profile", "fast"),
         "graph_extract_complex_reasoning_profile": loaded.get("graph_extract_complex_reasoning_profile", "balanced"),
+    }
+
+
+def get_retrieval_runtime_config() -> Dict[str, Any]:
+    loaded = _load_category("retrieval")
+    return {
+        "mode": str(loaded.get("mode", settings.docqa_retrieval_mode) or "keyword").strip().lower(),
+        "rrf_k": _to_int(loaded.get("rrf_k"), settings.docqa_retrieval_rrf_k),
+        "candidate_multiplier": _to_int(
+            loaded.get("candidate_multiplier"),
+            settings.docqa_retrieval_candidate_multiplier,
+        ),
+        "graph_enabled": _to_bool(loaded.get("graph_enabled"), settings.docqa_retrieval_graph_enabled),
+        "rerank_enabled": _to_bool(loaded.get("rerank_enabled"), False),
+    }
+
+
+def get_embedding_runtime_config() -> Dict[str, Any]:
+    ai_config = get_ai_runtime_config()
+    loaded = _load_category("embedding")
+    return {
+        "enabled": _to_bool(loaded.get("enabled"), settings.embedding_enabled),
+        "provider": _first_non_empty(loaded.get("provider"), ai_config.get("provider"), "openai"),
+        "base_url": _first_non_empty(loaded.get("base_url"), ai_config.get("base_url"), settings.llm_base_url),
+        "api_key": _first_non_empty(loaded.get("api_key"), ai_config.get("api_key"), settings.llm_api_key),
+        "model": _first_non_empty(loaded.get("model"), settings.embedding_model),
+        "dimension": _to_int(loaded.get("dimension"), settings.embedding_dimension),
+        "batch_size": _to_int(loaded.get("batch_size"), settings.embedding_batch_size),
+    }
+
+
+def get_vector_store_runtime_config() -> Dict[str, Any]:
+    loaded = _load_category("vector_store")
+    return {
+        "enabled": _to_bool(loaded.get("enabled"), settings.vector_store_enabled),
+        "provider": str(loaded.get("provider", settings.vector_store_provider) or "milvus").strip().lower(),
+        "uri": _first_non_empty(loaded.get("uri"), settings.milvus_uri),
+        "token": _first_non_empty(loaded.get("token"), settings.milvus_token),
+        "db_name": _first_non_empty(loaded.get("db_name"), settings.milvus_db_name),
+        "collection": _first_non_empty(loaded.get("collection"), settings.milvus_collection),
+        "metric_type": _first_non_empty(loaded.get("metric_type"), settings.milvus_metric_type),
+        "index_type": _first_non_empty(loaded.get("index_type"), settings.milvus_index_type),
+        "search_nprobe": _to_int(loaded.get("search_nprobe"), settings.milvus_search_nprobe),
+    }
+
+
+def get_document_parser_runtime_config() -> Dict[str, Any]:
+    loaded = _load_category("document_parser")
+    return {
+        "provider": str(loaded.get("provider", settings.document_parser_provider) or "native").strip().lower(),
+        "fallback_provider": str(
+            loaded.get("fallback_provider", settings.document_parser_fallback_provider) or "native"
+        ).strip().lower(),
+        "base_url": _first_non_empty(loaded.get("base_url"), settings.mineru_base_url),
+        "endpoint_path": _first_non_empty(loaded.get("endpoint_path"), settings.mineru_endpoint_path),
+        "file_field": _first_non_empty(loaded.get("file_field"), settings.mineru_file_field),
+        "parse_mode": _first_non_empty(loaded.get("parse_mode"), settings.mineru_parse_mode),
+        "output_format": _first_non_empty(loaded.get("output_format"), settings.mineru_output_format),
+        "timeout_seconds": _to_float(loaded.get("timeout_seconds"), settings.mineru_timeout_seconds),
+        "parser_version": _first_non_empty(loaded.get("parser_version"), settings.mineru_parser_version),
     }
 
 
@@ -101,10 +170,10 @@ def get_graph_build_runtime_defaults(*, complex_extraction: bool) -> str:
 
 def get_neo4j_runtime_config() -> Dict[str, str]:
     loaded = _load_category("neo4j")
-    user = loaded.get("user") or loaded.get("username") or settings.neo4j_user
+    user = _first_non_empty(loaded.get("user"), loaded.get("username"), settings.neo4j_user)
     return {
-        "uri": loaded.get("uri", settings.neo4j_uri),
+        "uri": _first_non_empty(loaded.get("uri"), settings.neo4j_uri),
         "user": user,
-        "password": loaded.get("password", settings.neo4j_password),
-        "database": loaded.get("database", getattr(settings, "neo4j_database", "neo4j")),
+        "password": _first_non_empty(loaded.get("password"), settings.neo4j_password),
+        "database": _first_non_empty(loaded.get("database"), getattr(settings, "neo4j_database", "neo4j")),
     }

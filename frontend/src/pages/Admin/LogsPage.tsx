@@ -17,16 +17,22 @@ import {
   TableRow,
   TablePagination,
   Chip,
-  CircularProgress,
   Alert,
   TextField,
   MenuItem,
   Button,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
+  Stack,
 } from '@mui/material';
-import { Refresh, FilterList, Download } from '@mui/icons-material';
+import { FilterList, Download, DeleteSweep } from '@mui/icons-material';
 import { logApi } from '../../services/adminService';
 import type { LogItem } from '../../types/admin';
 import AdminLayout from '../../components/Admin/AdminLayout';
+import AdminRefreshButton from '../../components/Admin/AdminRefreshButton';
+import { LoadingState } from '../../components/Loading/AppleSpinner';
 import { getErrorMessage } from '../../utils/errorMessage';
 
 type LogStatusFilter = 'success' | 'failed' | '';
@@ -41,6 +47,11 @@ const LogsPage: React.FC = () => {
   const [action, setAction] = useState<string>('');
   const [status, setStatus] = useState<LogStatusFilter>('');
   const [traceId, setTraceId] = useState('');
+  const [cleanDialogOpen, setCleanDialogOpen] = useState(false);
+  const [cleanDays, setCleanDays] = useState(90);
+  const [cleanPreview, setCleanPreview] = useState<{ deleted_count: number; days?: number; dry_run?: boolean; cutoff_at?: string } | null>(null);
+  const [cleaning, setCleaning] = useState(false);
+  const [message, setMessage] = useState('');
 
   const loadLogs = useCallback(async () => {
     setLoading(true);
@@ -87,6 +98,53 @@ const LogsPage: React.FC = () => {
     }
   };
 
+  const openCleanDialog = async () => {
+    setCleanDialogOpen(true);
+    setCleanPreview(null);
+    setError('');
+    setMessage('');
+    try {
+      setCleaning(true);
+      const preview = await logApi.cleanup(cleanDays, true);
+      setCleanPreview(preview);
+    } catch (err: unknown) {
+      setError(getErrorMessage(err, '日志清理预览失败'));
+    } finally {
+      setCleaning(false);
+    }
+  };
+
+  const refreshCleanPreview = async (days = cleanDays) => {
+    setCleanPreview(null);
+    setError('');
+    try {
+      setCleaning(true);
+      const preview = await logApi.cleanup(days, true);
+      setCleanPreview(preview);
+    } catch (err: unknown) {
+      setError(getErrorMessage(err, '日志清理预览失败'));
+    } finally {
+      setCleaning(false);
+    }
+  };
+
+  const handleCleanLogs = async () => {
+    setCleaning(true);
+    setError('');
+    setMessage('');
+    try {
+      const result = await logApi.cleanup(cleanDays, false);
+      setMessage(`已清理 ${result.deleted_count} 条 ${cleanDays} 天前的日志`);
+      setCleanDialogOpen(false);
+      setCleanPreview(null);
+      await loadLogs();
+    } catch (err: unknown) {
+      setError(getErrorMessage(err, '日志清理失败'));
+    } finally {
+      setCleaning(false);
+    }
+  };
+
   useEffect(() => {
     loadLogs();
   }, [loadLogs]);
@@ -97,9 +155,7 @@ const LogsPage: React.FC = () => {
   };
 
   const actionBar = (
-    <Button variant="outlined" startIcon={<Refresh />} onClick={loadLogs} disabled={loading}>
-      刷新
-    </Button>
+    <AdminRefreshButton onClick={loadLogs} loading={loading} />
   );
 
   return (
@@ -108,6 +164,11 @@ const LogsPage: React.FC = () => {
         {error && (
           <Alert severity="error" sx={{ mb: 3 }}>
             {error}
+          </Alert>
+        )}
+        {message && (
+          <Alert severity="success" sx={{ mb: 3 }} onClose={() => setMessage('')}>
+            {message}
           </Alert>
         )}
 
@@ -160,14 +221,7 @@ const LogsPage: React.FC = () => {
                 placeholder="按 trace_id 精确查询"
               />
 
-              <Button
-                variant="outlined"
-                startIcon={<Refresh />}
-                onClick={loadLogs}
-                disabled={loading}
-              >
-                刷新
-              </Button>
+              <AdminRefreshButton onClick={loadLogs} loading={loading} />
               <Button
                 variant="outlined"
                 startIcon={<Download />}
@@ -176,6 +230,15 @@ const LogsPage: React.FC = () => {
               >
                 导出 CSV
               </Button>
+              <Button
+                variant="outlined"
+                color="error"
+                startIcon={<DeleteSweep />}
+                onClick={() => void openCleanDialog()}
+                disabled={loading || cleaning}
+              >
+                清理日志
+              </Button>
             </Box>
           </CardContent>
         </Card>
@@ -183,9 +246,7 @@ const LogsPage: React.FC = () => {
         <Card>
           <CardContent>
             {loading && logs.length === 0 ? (
-              <Box sx={{ display: 'flex', justifyContent: 'center', p: 4 }}>
-                <CircularProgress />
-              </Box>
+              <LoadingState label="正在加载日志" minHeight={280} />
             ) : (
               <>
                 <TableContainer>
@@ -261,6 +322,49 @@ const LogsPage: React.FC = () => {
           </CardContent>
         </Card>
       </Container>
+      <Dialog open={cleanDialogOpen} onClose={() => !cleaning && setCleanDialogOpen(false)} fullWidth maxWidth="sm">
+        <DialogTitle>清理旧日志</DialogTitle>
+        <DialogContent>
+          <Stack spacing={2} sx={{ mt: 1 }}>
+            <TextField
+              label="保留天数"
+              type="number"
+              value={cleanDays}
+              onChange={(event) => {
+                const next = Math.max(1, Math.min(365, Number(event.target.value || 90)));
+                setCleanDays(next);
+              }}
+              onBlur={() => void refreshCleanPreview()}
+              inputProps={{ min: 1, max: 365 }}
+              helperText="只清理早于该天数的审计日志，清理操作本身会继续留痕。"
+            />
+            {cleanPreview ? (
+              <Alert severity={cleanPreview.deleted_count > 0 ? 'warning' : 'info'}>
+                将清理 {cleanPreview.deleted_count} 条日志
+                {cleanPreview.cutoff_at ? `，截止时间 ${new Date(cleanPreview.cutoff_at).toLocaleString('zh-CN')}` : ''}
+              </Alert>
+            ) : (
+              <Alert severity="info">正在预览可清理日志...</Alert>
+            )}
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setCleanDialogOpen(false)} disabled={cleaning}>
+            取消
+          </Button>
+          <Button onClick={() => void refreshCleanPreview()} disabled={cleaning}>
+            重新预览
+          </Button>
+          <Button
+            color="error"
+            variant="contained"
+            onClick={() => void handleCleanLogs()}
+            disabled={cleaning || !cleanPreview || cleanPreview.deleted_count <= 0}
+          >
+            确认清理
+          </Button>
+        </DialogActions>
+      </Dialog>
     </AdminLayout>
   );
 };

@@ -136,7 +136,197 @@ def init_default_configs():
                 "description": "温度参数",
                 "is_sensitive": False
             },
-            
+
+            # 检索配置
+            {
+                "category": "retrieval",
+                "key": "mode",
+                "value": os.getenv("DOCQA_RETRIEVAL_MODE", "keyword"),
+                "description": "文档问答检索模式(keyword/vector/hybrid/graph_hybrid)",
+                "is_sensitive": False
+            },
+            {
+                "category": "retrieval",
+                "key": "rrf_k",
+                "value": os.getenv("DOCQA_RETRIEVAL_RRF_K", "60"),
+                "description": "RRF 融合参数",
+                "is_sensitive": False
+            },
+            {
+                "category": "retrieval",
+                "key": "candidate_multiplier",
+                "value": os.getenv("DOCQA_RETRIEVAL_CANDIDATE_MULTIPLIER", "6"),
+                "description": "候选召回倍数",
+                "is_sensitive": False
+            },
+            {
+                "category": "retrieval",
+                "key": "graph_enabled",
+                "value": os.getenv("DOCQA_RETRIEVAL_GRAPH_ENABLED", "true"),
+                "description": "是否启用图谱扩展召回",
+                "is_sensitive": False
+            },
+            {
+                "category": "retrieval",
+                "key": "rerank_enabled",
+                "value": os.getenv("DOCQA_RERANK_ENABLED", "false"),
+                "description": "是否启用重排器",
+                "is_sensitive": False
+            },
+
+            # Embedding 配置
+            {
+                "category": "embedding",
+                "key": "enabled",
+                "value": os.getenv("EMBEDDING_ENABLED", "true"),
+                "description": "是否启用 Embedding",
+                "is_sensitive": False
+            },
+            {
+                "category": "embedding",
+                "key": "provider",
+                "value": os.getenv("EMBEDDING_PROVIDER", os.getenv("AI_SERVICE_PROVIDER", os.getenv("OPENAI_PROVIDER", "openai"))),
+                "description": "Embedding 服务提供商",
+                "is_sensitive": False
+            },
+            {
+                "category": "embedding",
+                "key": "base_url",
+                "value": os.getenv("EMBEDDING_BASE_URL", ""),
+                "description": "Embedding OpenAI-compatible API 地址；留空时复用 AI 服务地址",
+                "is_sensitive": False
+            },
+            {
+                "category": "embedding",
+                "key": "api_key",
+                "value": os.getenv("EMBEDDING_API_KEY", os.getenv("AI_SERVICE_API_KEY", os.getenv("OPENAI_API_KEY", ""))),
+                "description": "Embedding API Key",
+                "is_sensitive": True
+            },
+            {
+                "category": "embedding",
+                "key": "model",
+                "value": os.getenv("EMBEDDING_MODEL", "text-embedding-3-small"),
+                "description": "Embedding 模型",
+                "is_sensitive": False
+            },
+            {
+                "category": "embedding",
+                "key": "dimension",
+                "value": os.getenv("EMBEDDING_DIMENSION", "1536"),
+                "description": "Embedding 维度",
+                "is_sensitive": False
+            },
+            {
+                "category": "embedding",
+                "key": "batch_size",
+                "value": os.getenv("EMBEDDING_BATCH_SIZE", "32"),
+                "description": "Embedding 批大小",
+                "is_sensitive": False
+            },
+
+            # 向量库配置
+            {
+                "category": "vector_store",
+                "key": "enabled",
+                "value": os.getenv("VECTOR_STORE_ENABLED", "false"),
+                "description": "是否启用向量库",
+                "is_sensitive": False
+            },
+            {
+                "category": "vector_store",
+                "key": "provider",
+                "value": os.getenv("VECTOR_STORE_PROVIDER", "milvus"),
+                "description": "向量库提供商",
+                "is_sensitive": False
+            },
+            {
+                "category": "vector_store",
+                "key": "uri",
+                "value": os.getenv("MILVUS_URI", "http://127.0.0.1:19530"),
+                "description": "Milvus 连接地址",
+                "is_sensitive": False
+            },
+            {
+                "category": "vector_store",
+                "key": "db_name",
+                "value": os.getenv("MILVUS_DB_NAME", "default"),
+                "description": "Milvus 数据库名称",
+                "is_sensitive": False
+            },
+            {
+                "category": "vector_store",
+                "key": "collection",
+                "value": os.getenv("MILVUS_COLLECTION", "graphinsight_chunks"),
+                "description": "Milvus Collection 名称",
+                "is_sensitive": False
+            },
+            {
+                "category": "vector_store",
+                "key": "token",
+                "value": os.getenv("MILVUS_TOKEN", ""),
+                "description": "Milvus Token",
+                "is_sensitive": True
+            },
+
+            # 文档解析配置
+            {
+                "category": "document_parser",
+                "key": "provider",
+                "value": os.getenv("DOCUMENT_PARSER_PROVIDER", "native"),
+                "description": "文档解析器提供商(native/mineru)",
+                "is_sensitive": False
+            },
+            {
+                "category": "document_parser",
+                "key": "fallback_provider",
+                "value": os.getenv("DOCUMENT_PARSER_FALLBACK_PROVIDER", "native"),
+                "description": "解析失败时的回退解析器(native/none)",
+                "is_sensitive": False
+            },
+            {
+                "category": "document_parser",
+                "key": "base_url",
+                "value": os.getenv("MINERU_BASE_URL", ""),
+                "description": "MinerU API 地址",
+                "is_sensitive": False
+            },
+            {
+                "category": "document_parser",
+                "key": "endpoint_path",
+                "value": os.getenv("MINERU_ENDPOINT_PATH", "/file_parse"),
+                "description": "MinerU 解析接口路径",
+                "is_sensitive": False
+            },
+            {
+                "category": "document_parser",
+                "key": "file_field",
+                "value": os.getenv("MINERU_FILE_FIELD", "files"),
+                "description": "MinerU multipart 文件字段名",
+                "is_sensitive": False
+            },
+            {
+                "category": "document_parser",
+                "key": "parse_mode",
+                "value": os.getenv("MINERU_PARSE_MODE", "auto"),
+                "description": "MinerU parse_method(auto/ocr/txt)",
+                "is_sensitive": False
+            },
+            {
+                "category": "document_parser",
+                "key": "output_format",
+                "value": os.getenv("MINERU_OUTPUT_FORMAT", "markdown,json"),
+                "description": "MinerU 输出格式",
+                "is_sensitive": False
+            },
+            {
+                "category": "document_parser",
+                "key": "timeout_seconds",
+                "value": os.getenv("MINERU_TIMEOUT_SECONDS", "300"),
+                "description": "MinerU 请求超时时间",
+                "is_sensitive": False
+            },
+
             # NL2Cypher 配置
             {
                 "category": "nl2cypher",

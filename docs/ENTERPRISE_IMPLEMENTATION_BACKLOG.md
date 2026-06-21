@@ -58,7 +58,7 @@
 5. `jobs` 控制面写侧已迁移为 Go 原生：创建 `build_graph/clear_kb/reindex` 任务、取消、重试均直接写 `admin_jobs` 和 `admin_logs`，路由 owner 为 `go-native`；任务执行器仍作为 Python 能力层/后续 worker 范畴。
 6. `auth` 模块已迁移为 Go 原生：`POST /api/v1/admin/auth/login` 直接校验 `admin_users.password_hash`、更新登录统计、签发兼容 Python 的 HS256 JWT；`POST /api/v1/admin/auth/register` 仅允许创建首个管理员并授予全局 `super_admin`；`POST /api/v1/admin/auth/logout` 记录审计日志并保持无状态 JWT 语义；`GET /api/v1/admin/auth/me`、`POST /api/v1/admin/auth/change-password`、`GET /api/v1/admin/auth/authorize` 均已改为 Go 直连 admin store；`GET /api/v1/admin/auth/profile` 仅保留为历史兼容别名，新增代码应统一使用 `/api/v1/admin/auth/me`。
 7. `users` 导出接口已迁移为 Go 原生：`GET /api/v1/admin/users/export-csv` 直接复用 Go 侧 `admin_users` 读模型生成 UTF-8 BOM CSV，并写入 `user_export_csv` 审计日志。
-8. `config/test` 已迁移为 Go 原生：`POST /api/v1/admin/config/test/neo4j`、`POST /api/v1/admin/config/test/ai_service`、`POST /api/v1/admin/config/test/openai`、`POST /api/v1/admin/config/test/model` 均由 Go 控制面执行；其中 `model` 保留真实上游探测并继续向 `GET /api/v1/admin/config/test/model/latest` 写入最近一次探测快照。
+8. `config/test` 已迁移为 Go 原生：`POST /api/v1/admin/config/test/neo4j`、`POST /api/v1/admin/config/test/ai_service`、`POST /api/v1/admin/config/test/model`、`POST /api/v1/admin/config/test/embedding`、`POST /api/v1/admin/config/test/vector_store`、`POST /api/v1/admin/config/test/document_parser` 均由 Go 控制面执行；其中 `model` 保留真实上游探测并继续向 `GET /api/v1/admin/config/test/model/latest` 写入最近一次探测快照，`document_parser` 支持 native 可用性和 MinerU `/health` 探测。历史 `test/openai` 兼容别名已移除。
 9. `profile` 历史兼容子路径已彻底收口：`/api/v1/admin/profile/*` 除 `GET /stats`、`PUT /password` 及根路径读写外，未知子路径现在由 Go 直接返回 `404`，不再回落 Python 管理后台代理。
 10. 本轮已清空 Go 路由中的 admin 兼容代理挂载：`config`、`logs`、`users` 未知子路径、`monitor/health/simple`、未知 `/api/v1/admin/*` 均改为 Go 原生处理或 Go-owned `404/405`；`/api/media/**` 与公开媒体代理兼容入口也已切到 Go 原生。
 11. `jobs` 执行边界已进一步收口：Go 仅负责写入/变更 `admin_jobs` 控制面状态，Python 在启动时拉起常驻 worker 轮询 `admin_jobs` 并原子 claim `pending` 任务执行，避免再依赖 Python 自身 `/api/v1/admin/jobs/*` 请求生命周期触发后台任务。
@@ -113,16 +113,62 @@
 1. `COST-001` 模型调用成本统计
 状态：`done`
 
-2. `SEC-001` 敏感配置 KMS 加密
+2. `RAG-001` Milvus 双路/图谱混合检索底座
+状态：`in_progress`
+
+验收进展：
+
+1. Python DocQA 已新增轻量 Retrieval Orchestrator，支持 `keyword/vector/hybrid/graph_hybrid` 四种检索模式，默认保持 `keyword`，避免未配置 Milvus 或 embedding key 时影响现有问答。
+2. Milvus 已作为独立向量库接入本地 Docker 编排；Neo4j 继续只负责 Document/Chunk/Entity/Relation 图谱结构和图谱扩展召回。
+3. Embedding 接入 OpenAI-compatible provider，默认复用 `ai_service` 配置；`embedding.base_url` 默认保持空值并在运行时回退到 AI 服务网关，只有嵌入模型走独立供应商时才通过 `embedding` 分类覆盖 provider、base_url、api_key、模型、维度和批大小。
+4. Python worker 启动时先加载 `backend/.env`，再叠加 `GRAPHINSIGHT_BACKEND_ENV_FILE` 指向的本地运行态配置；配置中心里的空 `ai_service.api_key` / `embedding.api_key` 不再遮蔽环境变量密钥，保证 Go 控制面模型目录和 Python 问答/向量运行态使用同一套 AI 服务凭据。
+5. 文档建图完成后会 best-effort 写入 Milvus chunk 向量索引；删除单文档或清空知识库时同步清理向量索引。
+6. QA trace 的 retrieval snapshot 已补充 orchestrator trace，可定位召回来源、融合策略、候选数量和向量检索跳过原因。
+7. 后台配置页已拆分问答模型与嵌入/向量检索配置，并提供嵌入模型与 Milvus 连通性测试入口；嵌入模型候选复用 Go 控制面的模型目录接口，不需要维护第二套网关地址。
+8. 模型目录已补充 token 上限元信息：优先读取服务商 `/models` 返回的 `context_window/max_output_tokens` 等字段，缺失时只给保守 `suggested_max_tokens`；配置中心选中问答模型时仅在 `Max Tokens` 为空的情况下自动填建议值。
+9. `max_tokens`、`max_output_tokens`、`context_window` 已从敏感配置识别中排除，不再被误判为 API token。
+10. 已新增管理员检索诊断入口 `POST /api/v1/admin/qa/retrieval-diagnostics`，由 Go 控制面按 `qa:ask` 权限转发到 Python internal capability，可对同一问题并行对比 `keyword/vector/hybrid/graph_hybrid` 的轻量命中、orchestrator trace、skip reason、summary 与检索健康信息。
+11. 检索诊断已补充 `backend/tests/check_admin_retrieval_diagnostics_api.py` 作为 Go 外部管理入口 smoke；脚本读取 `ADMIN_TOKEN`，不写入任何凭证。
+12. 已新增 [docs/DOCUMENT_PARSER_MINERU_INTEGRATION_PLAN.md](/Volumes/HP%20P900/projects/GraphInsight/docs/DOCUMENT_PARSER_MINERU_INTEGRATION_PLAN.md)，将 PDF/Office 解析质量提升、MinerU sidecar 接入、结构化 chunk 与混合检索质量改进列为 RAG 上游增强方向。
+13. 文档解析器已抽象为 `NativeDocumentParser / MinerUDocumentParser / DocumentParserManager`，默认保持 native；`document_parser` 运行期配置支持 `provider/fallback_provider/base_url/endpoint_path/parse_mode/output_format/timeout_seconds/parser_version`，MinerU 作为 HTTP sidecar 调用并支持失败回退 native。
+14. 建图任务已支持任务级 `parser_provider` 灰度参数；`POST /api/graph/build` 可直接传入，`POST /api/v1/admin/jobs/build-graph` 可放入 `payload`。Python worker 会把该参数传入建图执行层。
+15. 建图阶段已新增解析产物持久化：默认写入 `backend/parsed_documents/{doc_id}/manifest.json|content.md|blocks.json|chunks.jsonl|raw.json`，Neo4j `Document.parsed_artifact_path` 记录目录；删除单文档、清空知识库或全量 force rebuild 时同步清理对应产物。
+16. Neo4j `Document/Chunk` 与 Milvus chunk dynamic metadata 已写入解析元数据：`parser_provider/parser_version/parse_mode/block_type/heading_path/page_start/page_end/source_location`；建图已优先使用结构化 chunk，只有结构化切分为空时才回退旧字符窗口。
+17. 已新增 `backend/tests/check_document_parser_unit.py`，并扩展 job worker、retrieval orchestrator、runtime config boundary 单测，固定解析器回退、任务透传、解析产物落盘和向量元数据传递。
+18. 后台配置中心已新增 `document_parser` 配置分类和“文档解析 / MinerU”表单分区，可维护 `provider/fallback_provider/base_url/endpoint_path/file_field/parse_mode/output_format/timeout_seconds`，并可在界面触发 MinerU 连通性测试。
+19. 已新增 [docs/KNOWLEDGE_DISCOVERY_PIPELINE_DESIGN.md](/Volumes/HP%20P900/projects/GraphInsight/docs/KNOWLEDGE_DISCOVERY_PIPELINE_DESIGN.md)，将下一阶段收敛为通用结构化 chunker、文档画像识别、按文档类型 prompt、schema-aware 抽取、实体/关系归一化与 evidence 校验。
+20. 结构化 chunker 已完成基础接入：建图阶段会从 Markdown/ParsedDocument 识别标题层级、段落和 HTML table，表格独立成 `block_type=table` chunk，并保留 `caption/neighbor_before/neighbor_after/table_columns`；解析产物目录新增 `structured_chunks.jsonl`。
+21. Embedding 写入 Milvus 的批大小已在运行时限制到 10，兼容当前 OpenAI-compatible 网关对 `/embeddings` input batch 的上限；向量 collection 创建时会使用实际 embedding 返回维度，并在发现已有 collection 维度不匹配时自动重建，避免单次建图向量索引整批失败。
+22. 知识发现基础治理已接入：实体归一化会清理 LLM JSON/dict 污染并规范常见药剂名称空格差异；表格 chunk 会按行生成“首列主体 -> 指标值”和“主体 -> 表格主题”关系，并写入 `evidence/relation_type/confidence`。schema-aware LLM 关系抽取已要求输出 `source/target/label/evidence/confidence`，并由 `EvidenceValidator` 过滤无证据或证据无法覆盖 source/target 的关系；旧规则抽取已禁止把任意短语当关系类型，低置信度“同段提及”不进入默认图谱。当前 PDF 复建结果为 `Chunk=14`、`Entity=177`、`RELATION=77`、脏实体 0、无 evidence 关系 0。
+23. 图谱实体/关系抽取器已改为读取配置中心 `ai_service` 运行时配置，避免继续使用启动环境变量里的旧模型名导致“模型不可用，自动切换”；同时新增 `LLM_GRAPH_EXTRACT_MAX_LLM_CHUNKS`、`LLM_GRAPH_EXTRACT_TIMEOUT_SECONDS`、`LLM_RELATION_TEXT_BUDGET` 和 `LLM_RELATION_MAX_PROMPT_ENTITIES` 控制建图抽取预算，默认只有前 2 个非表格 chunk 消耗 LLM 调用，表格 chunk 走结构化抽取。图谱实体/关系抽取已采用 bounded reasoning，`fast/balanced` 均使用 low effort，只有显式 `deep` 才提升到 medium effort。LLM 实体/关系抽取的熔断范围已收窄为 provider 级错误和累计重复 timeout，单个 chunk 超时不再暂停整轮抽取，重复 timeout 会短暂 cooldown 以保护构图时延。
+24. 配置中心模型目录主路径已从历史 `openai` 命名收敛为 `GET /api/v1/admin/config/ai-service/models`；前端和 Go 测试已切换到新路径，Go 旧 `openai` 路由别名和 Python 旧 `get_openai_config/test_openai_connection/get_available_openai_models` 兼容方法已删除，并由 runtime boundary guard 防止回退。
+25. 已新增 [docs/CONFIG_CENTER_RUNTIME_AUDIT.md](/Volumes/HP%20P900/projects/GraphInsight/docs/CONFIG_CENTER_RUNTIME_AUDIT.md)，记录配置中心运行态主模型、已清理的旧 `openai` 命名、空字符串遮蔽默认值问题和剩余兼容别名。
+26. 本地开发启动脚本默认 Neo4j Bolt 地址已从 `bolt://127.0.0.1:7687` 调整为 `bolt://localhost:7687`，避免 macOS 本机进程抢占 IPv4 端口时 Python/Go 误连非 Neo4j 服务；当前配置库中的 `neo4j.uri` 也已按该策略对齐。
+27. 后端根目录旧调试/演示脚本已清理：移除 `check_node.py`、`debug_node.py`、`create_video_node.py`、`init_admin_quick.py`、`check_logs_table.py` 和旧同名 schema 文件 `admin/schemas.py`，避免硬编码演示数据、默认账号和旧 schema 入口误导运行态开发；迁移清理 guard 已加入防回流检查。
+28. 本地开发启动脚本已改为优先用 `screen` 托管 Python/Go 服务，并在 `stop/restart` 时按服务端口清理残留监听进程，避免 screen session 退出但子进程继续占用 8001/8081 导致新代码未加载。
+
+3. `SEC-001` 敏感配置 KMS 加密
 状态：`todo`
 
-3. `DATA-001` 文档版本差异对比
+4. `DATA-001` 文档版本差异对比
 状态：`todo`
 
-4. `UI-001` 后台导航与信息架构重做
-状态：`todo`
+5. `UI-001` 后台导航与信息架构重做
+状态：`in_progress`
 
-5. `MODEL-001` 模型集合与推理档位抽象（fast / balanced / deep，不做版本管理）
+验收进展：
+
+1. 后台侧边导航已从平铺菜单调整为按运营场景分组：`总览`、`知识库运营`、`问答与模型`、`观测与审计`、`组织安全`。
+2. 后台首页已从单纯“系统仪表板”调整为“运营总览”，首屏提供知识库治理、任务中心、问答追踪和系统监控入口。
+3. 问答追踪详情已补充可读诊断摘要，直接展示检索模式、召回/引用、生成模式、模型、档位、Token、trace_id 与检索 skip reason。
+4. 问答追踪详情已接入管理员检索诊断入口，可基于当前问题一键对比 `keyword/vector/hybrid/graph_hybrid` 的命中、耗时、来源计数与诊断建议。
+5. 问答追踪详情已补充到配置中心、建图任务、知识库治理的上下文跳转，形成“问答异常 -> 检索诊断 -> 配置/建图/知识库治理”的第一条排障链路。
+6. 配置中心 `AI 服务配置` 标签已调整为 `AI / 模型 / 检索`，页顶显式展示真实配置分区：`AI 基础`、`模型策略`、`检索策略`、`Embedding / Milvus`。
+7. 配置中心分区入口复用现有真实字段与接口，不新增假配置项：`ai_service`、`retrieval`、`embedding`、`vector_store` 分类仍通过既有 Go 控制面读写。
+8. 本轮未改动后端 API、路由路径或权限语义；前端仍使用既有 `/admin/*` 页面、Go 默认外部入口与 `POST /api/v1/admin/qa/retrieval-diagnostics`。
+9. 后续剩余工作：知识库/任务/问答追踪之间的更细上下文参数透传、运营总览的质量指标聚合、配置中心各分区进一步拆成独立子页或锚点状态。
+
+6. `MODEL-001` 模型集合与推理档位抽象（fast / balanced / deep，不做版本管理）
 状态：`in_progress`
 
 验收进展：
@@ -135,9 +181,11 @@
 6. Go 外部入口已在未显式传入 `reasoning_profile` 时，按统一场景策略自动补齐默认档位，并转发到 Python internal capability；当前已接入 `docqa`、`deep_research`，以及建图任务 `graph_extract / graph_extract_complex`。
 7. `model_probe` 已纳入统一场景策略配置，当前会在模型连通性测试结果快照中记录实际策略档位。
 8. `POST /api/graph/build` 当前支持任务级 `reasoning_profile` 与 `complex_extraction`，Go 会按场景默认策略补齐，Python worker 再把实际档位传递到实体/关系抽取执行层。
-9. 尚未完成的部分进一步收敛为“更完整的模型目录来源”。
+9. `POST /api/docqa` 已支持轻量多轮上下文 `conversation_history`；后端将历史用于检索改写和指代消解，前端问答面板会随每轮问题传递最近对话，并在新问题开始时清空旧引用选择，避免引用证据面板残留上一轮内容。
+10. `POST /api/docqa` 的引用摘要已改为基于本轮 question/answer 聚焦证据窗口，而不是固定展示 chunk 开头；验证覆盖 `check_docqa_reasoning_profile_unit.py`。
+11. 尚未完成的部分进一步收敛为“更完整的模型目录来源”。
 
-6. `QA-001` 前端业务主流程 E2E（上传 -> 建图 -> 问答 -> 删除）
+7. `QA-001` 前端业务主流程 E2E（上传 -> 建图 -> 问答 -> 删除）
 状态：`done`
 
 验收进展：
@@ -148,7 +196,7 @@
 4. 已增加 Go route owner 断言与测试文档自清理。
 5. 已纳入统一发布验收 CI 手动入口：`release-frontend-e2e` 通过 `backend/tests/run_release_acceptance.sh` 调用 `frontend/tests/run_admin_e2e.sh`，继续使用 Go 外部网关作为 `VITE_API_BASE_URL`。
 
-7. `PERF-001` 压测报告（建图并发、问答并发、查询并发）
+8. `PERF-001` 压测报告（建图并发、问答并发、查询并发）
 状态：`done`
 
 验收进展：
@@ -159,7 +207,7 @@
 4. 当前文档记录的是发布级性能基线，不等同于容量上限；更高并发和 soak 压测仍可后续扩展。
 5. 已新增 `backend/tests/run_perf_soak.py` 作为最小 soak/capacity 执行入口，复用 `run_perf_probe.py` 做多轮批次验证并输出 `summary.json`。
 
-8. `CI-001` 上线验收清单固化到 CI
+9. `CI-001` 上线验收清单固化到 CI
 状态：`done`
 
 验收进展：

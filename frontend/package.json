@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "build:lowmem": "tsc -b --pretty false && NODE_OPTIONS=--max-old-space-size=2048 VITE_LOW_MEM_BUILD=1 vite build",
+    "serve:dist": "node scripts/serve-dist.mjs",
     "lint": "eslint .",
     "preview": "vite preview",
     "e2e": "playwright test",

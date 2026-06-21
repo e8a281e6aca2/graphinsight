@@ -41,11 +41,17 @@ class CitationItem(BaseModel):
     confidence_level: Optional[str] = None
 
 
+class ConversationTurn(BaseModel):
+    role: str = Field(..., pattern="^(user|assistant)$")
+    content: str = Field(..., min_length=1, max_length=2000)
+
+
 class DocQARequest(BaseModel):
     question: str = Field(..., min_length=1, max_length=2000)
     top_k: int = Field(2, ge=1, le=5)
     require_citation: bool = Field(True)
     reasoning_profile: str | None = Field(default=None, pattern="^(fast|balanced|deep)$")
+    conversation_history: List[ConversationTurn] = Field(default_factory=list, max_length=8)
 
 
 class DocQAResponse(BaseModel):
@@ -118,6 +124,7 @@ def handle_doc_qa(
             payload.question,
             payload.top_k,
             reasoning_profile=payload.reasoning_profile,
+            conversation_history=[item.model_dump() for item in payload.conversation_history],
         )
         if isinstance(result.get("trace"), dict):
             generation = result["trace"].setdefault("generation", {})

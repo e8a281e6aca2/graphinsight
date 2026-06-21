@@ -755,10 +755,15 @@ func TestDocQARouteWritesBusinessAudit(t *testing.T) {
 	t.Parallel()
 
 	var seen []string
+	forwardedBody := map[string]interface{}{}
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		seen = append(seen, r.Method+" "+r.URL.Path)
 		if r.URL.Path != "/api/internal/docqa" {
 			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		rawBody, _ := io.ReadAll(r.Body)
+		if err := json.Unmarshal(rawBody, &forwardedBody); err != nil {
+			t.Fatalf("decode forwarded body: %v body=%s", err, string(rawBody))
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
@@ -782,7 +787,7 @@ func TestDocQARouteWritesBusinessAudit(t *testing.T) {
 	registerRoutes(mux, cfg, logger, nil, nil, nil, nil, orc, nil, store)
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/docqa", strings.NewReader(`{"question":"你好","top_k":3,"require_citation":true}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/docqa", strings.NewReader(`{"question":"他们的工作单位呢","top_k":3,"require_citation":true,"conversation_history":[{"role":"user","content":"郑雪梅和兰香瑚是谁？"},{"role":"assistant","content":"他们是论文作者。"}]}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-authz-permission", "qa:ask")
 	mux.ServeHTTP(rec, req)
@@ -795,6 +800,13 @@ func TestDocQARouteWritesBusinessAudit(t *testing.T) {
 	}
 	if len(seen) != 1 || seen[0] != "POST /api/internal/docqa" {
 		t.Fatalf("unexpected upstream calls: %v", seen)
+	}
+	history, ok := forwardedBody["conversation_history"].([]interface{})
+	if !ok || len(history) != 2 {
+		t.Fatalf("expected conversation_history to be forwarded, got %#v", forwardedBody["conversation_history"])
+	}
+	if forwardedBody["reasoning_profile"] != "balanced" {
+		t.Fatalf("expected default reasoning_profile to be added, got %#v", forwardedBody["reasoning_profile"])
 	}
 	if store.fakeAdminLogStore.businessAuditReq.Action != "docqa_ask" {
 		t.Fatalf("expected docqa business audit, got %#v", store.fakeAdminLogStore.businessAuditReq)
