@@ -4,11 +4,13 @@ from __future__ import annotations
 import json
 import re
 import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from config import get_settings
 from core import get_logger
 from services.model_runtime_policy import apply_reasoning_profile, reasoning_max_tokens
+from services.knowledge_discovery.extraction import build_extraction_schema
 from services.knowledge_discovery.normalization import normalize_entity_name
 from services.openai_client_factory import build_openai_client
 from services.runtime_config import get_ai_runtime_config
@@ -49,6 +51,8 @@ class LLMRelationExtractor:
         text: str,
         entities: List[str],
         reasoning_profile: Optional[str] = None,
+        document_profile: Optional[Dict[str, Any]] = None,
+        chunk_metadata: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, object]]:
         self._refresh_runtime_config()
         if not self.enabled or not self._client:
@@ -62,12 +66,13 @@ class LLMRelationExtractor:
         if len(prompt_entities) < 2:
             return []
 
-        key = (prompt_text[:600] + "|" + "|".join(sorted(prompt_entities)))[:1200]
+        profile_key = str((document_profile or {}).get("document_type") or "unknown")
+        key = (profile_key + "|" + prompt_text[:600] + "|" + "|".join(sorted(prompt_entities)))[:1400]
         if key in self._cache:
             return self._cache[key]
         self._ensure_model()
 
-        prompt = self._build_schema_prompt()
+        prompt = self._build_schema_prompt(document_profile)
 
         try:
             model_profile = self._bounded_graph_reasoning_profile(reasoning_profile)
@@ -77,7 +82,11 @@ class LLMRelationExtractor:
                     {"role": "system", "content": prompt},
                     {
                         "role": "user",
-                        "content": self._build_user_prompt(text=prompt_text, entities=prompt_entities),
+                        "content": self._build_user_prompt(
+                            text=prompt_text,
+                            entities=prompt_entities,
+                            chunk_metadata=chunk_metadata,
+                        ),
                     },
                 ],
                 "temperature": self.temperature,
@@ -243,40 +252,56 @@ class LLMRelationExtractor:
     def _bounded_graph_reasoning_profile(reasoning_profile: Optional[str]) -> str:
         return "balanced" if str(reasoning_profile or "").strip().lower() == "deep" else "fast"
 
-    @staticmethod
-    def _build_schema_prompt() -> str:
-        schema = {
-            "relations": [
-                {"label": "防治对象", "description": "药剂、措施、方案作用于某病害或对象"},
-                {"label": "平均防效", "description": "处理、药剂或方案对应的防治效果"},
-                {"label": "病情指数", "description": "处理、时间或对象对应的病情指数"},
-                {"label": "产量", "description": "处理、药剂或试验条件对应的产量"},
-                {"label": "增产率", "description": "处理或药剂相对对照的增产率"},
-                {"label": "使用剂量", "description": "处理或药剂对应的用量、浓度、稀释倍数"},
-                {"label": "发生阶段", "description": "病害、事件或现象发生的时间阶段"},
-                {"label": "地点", "description": "试验、事件或机构所在地点"},
-                {"label": "属于", "description": "实体的类型、类别或上下位关系"},
-                {"label": "影响", "description": "一个因素对另一个结果造成影响"},
-            ]
-        }
+    @classmethod
+    def _build_schema_prompt(cls, document_profile: Optional[Dict[str, Any]] = None) -> str:
+        schema = build_extraction_schema(document_profile).to_prompt_payload()
+        document_type = str(schema.get("document_type") or "unknown")
+        base_prompt = cls._load_prompt("base/entity_relation_extract.zh.md", cls._fallback_base_prompt())
+        type_prompt = cls._load_prompt(f"types/{document_type}.zh.md", "")
+        if not type_prompt and document_type != "unknown":
+            type_prompt = cls._load_prompt("types/unknown.zh.md", "")
         return (
-            "你是企业级知识图谱关系抽取器。只能抽取文本中有明确证据的关系。"
-            "必须遵守以下 schema 和输出协议："
-            f"\n关系类型候选：{json.dumps(schema, ensure_ascii=False)}"
-            "\n输出 JSON 数组；每项必须包含 source、target、label、evidence、confidence。"
-            "\nsource/target 必须来自实体列表，不要创造新实体。"
-            "\nlabel 优先使用候选关系类型；没有合适类型时使用不超过 8 个汉字的短关系词。"
-            "\nevidence 必须是原文中的连续短句或表格行片段，不允许生成解释性证据。"
-            "\nconfidence 取 0 到 1；证据不明确、只是同段出现、或需要推断过多时不要输出。"
-            "\n如果没有高质量关系，返回 []。不要输出 Markdown，不要解释。"
+            f"{base_prompt.strip()}\n\n"
+            f"动态 schema：{json.dumps(schema, ensure_ascii=False)}\n\n"
+            f"文档类型提示：\n{type_prompt.strip()}\n\n"
+            "如果没有高质量关系，返回 []。"
         )
 
     @staticmethod
-    def _build_user_prompt(*, text: str, entities: List[str]) -> str:
+    def _build_user_prompt(
+        *,
+        text: str,
+        entities: List[str],
+        chunk_metadata: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        metadata = {
+            key: value
+            for key, value in (chunk_metadata or {}).items()
+            if key in {"block_type", "heading_path", "caption", "source_location", "document_type", "domain"}
+            and value not in (None, "", [])
+        }
         return (
+            f"chunk_metadata：{json.dumps(metadata, ensure_ascii=False)}\n"
             f"实体列表：{json.dumps(entities, ensure_ascii=False)}\n"
             f"文本：{text}\n"
             "请只返回 JSON 数组。"
+        )
+
+    @staticmethod
+    def _load_prompt(relative_path: str, fallback: str) -> str:
+        path = Path(__file__).resolve().parent / "knowledge_discovery" / "prompts" / relative_path
+        try:
+            return path.read_text(encoding="utf-8")
+        except Exception:
+            return fallback
+
+    @staticmethod
+    def _fallback_base_prompt() -> str:
+        return (
+            "你是企业级知识图谱关系抽取器。只能抽取文本中有明确证据的关系。"
+            "输出 JSON 数组；每项必须包含 source、target、label、evidence、confidence。"
+            "source/target 必须来自实体列表，不要创造新实体。"
+            "evidence 必须是原文中的连续短句或表格行片段，不允许生成解释性证据。"
         )
 
     def _parse_relations(self, content: str, entity_set: set[str]) -> List[Dict[str, object]]:

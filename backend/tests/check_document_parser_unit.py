@@ -204,11 +204,15 @@ def _check_parsed_document_artifacts() -> None:
         _assert((artifact_dir / "blocks.json").exists(), "blocks.json should exist")
         _assert((artifact_dir / "chunks.jsonl").exists(), "chunks.jsonl should exist")
         _assert((artifact_dir / "structured_chunks.jsonl").exists(), "structured_chunks.jsonl should exist")
+        _assert((artifact_dir / "document_profile.json").exists(), "document_profile.json should exist")
+        _assert((artifact_dir / "extraction_schema.json").exists(), "extraction_schema.json should exist")
         _assert((artifact_dir / "raw.json").exists(), "raw.json should exist")
         manifest = json.loads((artifact_dir / "manifest.json").read_text(encoding="utf-8"))
         _assert(manifest["parser_provider"] == "mineru", manifest)
         _assert(manifest["raw_output_path"] == "raw.json", manifest)
         _assert(manifest["structured_chunks_path"] == "structured_chunks.jsonl", manifest)
+        _assert(manifest["document_profile_path"] == "document_profile.json", manifest)
+        _assert(manifest["extraction_schema_path"] == "extraction_schema.json", manifest)
         chunk_line = json.loads((artifact_dir / "chunks.jsonl").read_text(encoding="utf-8").strip())
         _assert("entities" not in chunk_line, chunk_line)
         _assert("relations" not in chunk_line, chunk_line)
@@ -294,6 +298,40 @@ def _check_entity_normalization_and_table_relations() -> None:
     normalized = service._normalize_relations(relations)
     _assert(any(item["target"] == "平均防效: 89.93 a" for item in normalized), normalized)
     _assert(any(item.get("evidence") for item in normalized), normalized)
+
+
+def _check_document_profiler_and_schema_assets() -> None:
+    from services.document_parser import ParsedBlock, ParsedDocument
+    from services.knowledge_discovery.chunking import StructuredChunker
+    from services.knowledge_discovery.extraction import build_extraction_schema
+    from services.knowledge_discovery.profiling import document_profiler
+    from services.llm_relation_extractor import LLMRelationExtractor
+
+    parsed = ParsedDocument(
+        text=(
+            "# 2种新型化学药剂防治小麦条锈病和赤霉病效果\n\n"
+            "摘要：为筛选高效药剂，开展田间试验。\n\n"
+            "## 1 材料与方法\n\n"
+            "试验在贵州省金沙县进行。\n\n"
+            "## 2 结果与分析\n\n"
+            "表 2 不同药剂处理小麦条锈病的防效。"
+        ),
+        parser_provider="mineru",
+        blocks=[ParsedBlock(text="sample")],
+    )
+    chunks = StructuredChunker(max_chars=400).chunk(parsed, doc_id="doc-1")
+    profile = document_profiler.profile(parsed, structured_chunks=chunks, file_name="sample.pdf").to_dict()
+    _assert(profile["document_type"] == "academic_paper", profile)
+    _assert(profile["domain"] == "agricultural_plant_protection", profile)
+    _assert("指标" in profile["suggested_entity_types"], profile)
+
+    schema = build_extraction_schema(profile).to_prompt_payload()
+    relation_names = [item["name"] for item in schema["relation_types"]]
+    _assert("指标结果" in relation_names, schema)
+
+    prompt = LLMRelationExtractor._build_schema_prompt(profile)
+    _assert("动态 schema" in prompt, prompt)
+    _assert("学术论文" in prompt or "试验报告" in prompt, prompt)
 
 
 def _check_graph_extractors_use_runtime_model_config() -> None:
@@ -498,6 +536,7 @@ def main() -> int:
     _check_parsed_document_artifacts()
     _check_structured_chunker_keeps_tables()
     _check_entity_normalization_and_table_relations()
+    _check_document_profiler_and_schema_assets()
     _check_graph_extractors_use_runtime_model_config()
     _check_graph_extractor_reasoning_is_bounded()
     _check_schema_aware_relations_and_evidence_validation()

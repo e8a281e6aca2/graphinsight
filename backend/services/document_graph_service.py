@@ -16,8 +16,9 @@ from config import get_settings
 from core import get_logger
 from services.document_parser import DocumentParserManager, ParsedDocument
 from services.knowledge_discovery.chunking import StructuredChunk, StructuredChunker
-from services.knowledge_discovery.extraction import evidence_validator
+from services.knowledge_discovery.extraction import build_extraction_schema, evidence_validator
 from services.knowledge_discovery.normalization import normalize_entity_name, normalize_entity_values
+from services.knowledge_discovery.profiling import document_profiler
 from services.neo4j_service import get_neo4j_service
 from services.llm_entity_extractor import llm_entity_extractor
 from services.llm_relation_extractor import llm_relation_extractor
@@ -106,6 +107,47 @@ SCHEMA_RELATION_LABELS = {
     "高发期",
     "表格主题",
     "同段提及",
+    "研究对象",
+    "采用方法",
+    "对照关系",
+    "指标结果",
+    "作者单位",
+    "结论支持",
+    "签署",
+    "付款义务",
+    "交付义务",
+    "违约责任",
+    "解除条件",
+    "管辖",
+    "金额",
+    "贡献收入",
+    "同比变化",
+    "环比变化",
+    "成本构成",
+    "利润影响",
+    "现金流影响",
+    "风险关联",
+    "发布",
+    "适用于",
+    "要求",
+    "禁止",
+    "处罚",
+    "依据",
+    "实施时间",
+    "包含部件",
+    "参数",
+    "操作顺序",
+    "触发告警",
+    "故障原因",
+    "解决方案",
+    "限制条件",
+    "参会",
+    "讨论",
+    "形成决议",
+    "负责",
+    "截止时间",
+    "依赖",
+    "风险",
 }
 
 RULE_RELATION_KEYWORDS = {
@@ -253,6 +295,12 @@ class DocumentGraphService:
                         StructuredChunk(text=chunk, block_type="paragraph", source_location=f"Chunk {idx}")
                         for idx, chunk in enumerate(self._chunk_text(text))
                     ]
+                document_profile = document_profiler.profile(
+                    parsed,
+                    structured_chunks=structured_chunks,
+                    file_name=doc.name,
+                ).to_dict()
+                extraction_schema = build_extraction_schema(document_profile).to_dict()
                 chunk_payload = []
                 llm_chunk_budget = max(settings.llm_graph_extract_max_llm_chunks, 0)
                 llm_chunks_used = 0
@@ -270,6 +318,7 @@ class DocumentGraphService:
                             chunk,
                             reasoning_profile=reasoning_profile,
                             use_llm=use_llm_extraction,
+                            document_profile=document_profile,
                         ),
                         self._entities_from_structured_chunk(structured_chunk),
                     )
@@ -281,6 +330,13 @@ class DocumentGraphService:
                         entities,
                         reasoning_profile=relation_profile,
                         use_llm=use_llm_extraction,
+                        document_profile=document_profile,
+                        chunk_metadata={
+                            **parser_metadata,
+                            "caption": structured_chunk.caption,
+                            "document_type": document_profile.get("document_type"),
+                            "domain": document_profile.get("domain"),
+                        },
                     )
                     table_relations = self._normalize_relations(
                         self._extract_table_relations(structured_chunk),
@@ -305,6 +361,9 @@ class DocumentGraphService:
                             "title": doc.name,
                             "location": structured_chunk.caption or f"Chunk {idx}",
                             **parser_metadata,
+                            "document_type": document_profile.get("document_type"),
+                            "domain": document_profile.get("domain"),
+                            "profile_version": document_profile.get("profile_version"),
                             "caption": structured_chunk.caption,
                             "neighbor_before": structured_chunk.neighbor_before,
                             "neighbor_after": structured_chunk.neighbor_after,
@@ -321,6 +380,8 @@ class DocumentGraphService:
                     content_hash=content_hash,
                     chunks=chunk_payload,
                     structured_chunks=structured_chunks,
+                    document_profile=document_profile,
+                    extraction_schema=extraction_schema,
                 )
 
                 with self.neo4j.session() as session:
@@ -342,13 +403,21 @@ class DocumentGraphService:
                             MATCH (d:Document {doc_id: $doc_id})
                             SET d.parser_version = $parser_version,
                                 d.parse_mode = $parse_mode,
-                                d.parsed_artifact_path = $parsed_artifact_path
+                                d.parsed_artifact_path = $parsed_artifact_path,
+                                d.document_type = $document_type,
+                                d.domain = $domain,
+                                d.profile_confidence = $profile_confidence,
+                                d.profile_version = $profile_version
                             """,
                             {
                                 "doc_id": doc_id,
                                 "parser_version": parsed.parser_version,
                                 "parse_mode": parsed.parse_mode,
                                 "parsed_artifact_path": str(parsed_artifact_path),
+                                "document_type": document_profile.get("document_type"),
+                                "domain": document_profile.get("domain"),
+                                "profile_confidence": document_profile.get("confidence"),
+                                "profile_version": document_profile.get("profile_version"),
                             },
                         )
                         skipped_documents += 1
@@ -367,6 +436,10 @@ class DocumentGraphService:
                             d.parser_version = $parser_version,
                             d.parse_mode = $parse_mode,
                             d.parsed_artifact_path = $parsed_artifact_path,
+                            d.document_type = $document_type,
+                            d.domain = $domain,
+                            d.profile_confidence = $profile_confidence,
+                            d.profile_version = $profile_version,
                             d.updated_at = timestamp(),
                             d.source = 'document_ingest'
                         """,
@@ -381,6 +454,10 @@ class DocumentGraphService:
                             "parser_version": parsed.parser_version,
                             "parse_mode": parsed.parse_mode,
                             "parsed_artifact_path": str(parsed_artifact_path),
+                            "document_type": document_profile.get("document_type"),
+                            "domain": document_profile.get("domain"),
+                            "profile_confidence": document_profile.get("confidence"),
+                            "profile_version": document_profile.get("profile_version"),
                         },
                     )
 
@@ -418,6 +495,9 @@ class DocumentGraphService:
                                 ch.page_start = c.page_start,
                                 ch.page_end = c.page_end,
                                 ch.source_location = c.source_location,
+                                ch.document_type = c.document_type,
+                                ch.domain = c.domain,
+                                ch.profile_version = c.profile_version,
                                 ch.caption = c.caption,
                                 ch.neighbor_before = c.neighbor_before,
                                 ch.neighbor_after = c.neighbor_after,
@@ -864,6 +944,8 @@ class DocumentGraphService:
         content_hash: str,
         chunks: List[Dict[str, Any]],
         structured_chunks: Optional[List[StructuredChunk]] = None,
+        document_profile: Optional[Dict[str, Any]] = None,
+        extraction_schema: Optional[Dict[str, Any]] = None,
     ) -> Path:
         root = Path(settings.parsed_document_storage_path).resolve()
         target_dir = root / doc_id
@@ -900,6 +982,18 @@ class DocumentGraphService:
             for item in structured_chunks or []:
                 file_obj.write(json.dumps(item.to_dict(), ensure_ascii=False) + "\n")
 
+        document_profile_path = tmp_dir / "document_profile.json"
+        document_profile_path.write_text(
+            json.dumps(document_profile or {}, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+        extraction_schema_path = tmp_dir / "extraction_schema.json"
+        extraction_schema_path.write_text(
+            json.dumps(extraction_schema or {}, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
         manifest = {
             "doc_id": doc_id,
             "file_name": doc.name,
@@ -911,11 +1005,17 @@ class DocumentGraphService:
             "parser_provider": parsed.parser_provider,
             "parser_version": parsed.parser_version,
             "parse_mode": parsed.parse_mode,
+            "document_type": (document_profile or {}).get("document_type"),
+            "domain": (document_profile or {}).get("domain"),
+            "profile_confidence": (document_profile or {}).get("confidence"),
+            "profile_version": (document_profile or {}).get("profile_version"),
             "raw_output_path": parsed.raw_output_path,
             "content_path": "content.md",
             "blocks_path": "blocks.json",
             "chunks_path": "chunks.jsonl",
             "structured_chunks_path": "structured_chunks.jsonl",
+            "document_profile_path": "document_profile.json",
+            "extraction_schema_path": "extraction_schema.json",
             "text_chars": len(parsed.text),
             "block_count": len(parsed.blocks),
             "chunk_count": len(chunks),
@@ -1119,8 +1219,17 @@ class DocumentGraphService:
         max_entities: int = 12,
         reasoning_profile: Optional[str] = None,
         use_llm: bool = True,
+        document_profile: Optional[Dict[str, Any]] = None,
     ) -> List[str]:
-        llm_entities = llm_entity_extractor.extract(text, reasoning_profile=reasoning_profile) if use_llm else []
+        llm_entities = (
+            llm_entity_extractor.extract(
+                text,
+                reasoning_profile=reasoning_profile,
+                document_profile=document_profile,
+            )
+            if use_llm
+            else []
+        )
         rule_entities = self._extract_entities_by_rules(text)
         if llm_entities or rule_entities:
             return normalize_entity_values(
@@ -1231,11 +1340,19 @@ class DocumentGraphService:
         entities: List[str],
         reasoning_profile: Optional[str] = None,
         use_llm: bool = True,
+        document_profile: Optional[Dict[str, Any]] = None,
+        chunk_metadata: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, object]]:
         if len(entities) < 2:
             return []
         llm_relations = (
-            llm_relation_extractor.extract(text, entities, reasoning_profile=reasoning_profile)
+            llm_relation_extractor.extract(
+                text,
+                entities,
+                reasoning_profile=reasoning_profile,
+                document_profile=document_profile,
+                chunk_metadata=chunk_metadata,
+            )
             if use_llm
             else []
         )

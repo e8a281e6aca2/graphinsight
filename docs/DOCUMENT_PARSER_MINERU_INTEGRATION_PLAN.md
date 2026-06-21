@@ -166,18 +166,18 @@ ParsedBlock
 
 1. `ParsedDocument` 已包含 `text`、`parser_provider`、`parser_version`、`parse_mode`、`blocks[]`、`warnings[]`、`raw_payload`、`raw_output_path`。
 2. `ParsedBlock` 已包含 `text`、`block_type`、`heading_path`、`page_start`、`page_end`、`source_location`。
-3. 建图时会按 `doc_id` 写入 `PARSED_DOCUMENT_STORAGE_PATH/{doc_id}/`，包含 `manifest.json`、`content.md`、`blocks.json`、`chunks.jsonl`，以及 MinerU 原始响应 `raw.json` 或 `raw.txt`。
+3. 建图时会按 `doc_id` 写入 `PARSED_DOCUMENT_STORAGE_PATH/{doc_id}/`，包含 `manifest.json`、`content.md`、`blocks.json`、`chunks.jsonl`、`structured_chunks.jsonl`、`document_profile.json`、`extraction_schema.json`，以及 MinerU 原始响应 `raw.json` 或 `raw.txt`。
 4. `assets[]` 和独立表格/图片/公式节点尚未落地，等待结构化 chunk 稳定后再做。
 
 ## 6. Chunk 策略
 
-当前 chunk 是固定字符窗口。接入 MinerU 后建议逐步改为结构化 chunk。更完整的知识发现管线设计已经拆到 `docs/KNOWLEDGE_DISCOVERY_PIPELINE_DESIGN.md`，该文档负责定义通用结构化 chunker、文档画像、按类型 prompt、schema-aware 抽取、归一化和 evidence 校验。
+当前主链路已使用结构化 chunk。`StructuredChunker` 会按 Markdown 标题、段落和 HTML table 切块，表格独立成 `block_type=table`，过长段落才按句子与长度做二级拆分；只有结构化切分无结果时才回退旧 `_chunk_text(max_chars=800, overlap=120)` 固定窗口。更完整的知识发现管线设计已经拆到 `docs/KNOWLEDGE_DISCOVERY_PIPELINE_DESIGN.md`，该文档负责定义通用结构化 chunker、文档画像、按类型 prompt、schema-aware 抽取、归一化和 evidence 校验。
 
 ### 第一阶段：兼容模式
 
 1. MinerU 输出 Markdown。
 2. 去掉明显空白。
-3. 仍复用现有 `_chunk_text`。
+3. 仅在结构化 chunk 为空时回退 `_chunk_text`。
 4. 记录 `parser_provider=mineru`。
 
 优点：接入快，风险低。
@@ -433,7 +433,7 @@ fallback=native
 
 状态：已完成基础实现。
 
-验收：指定 `parser_provider=mineru` 的 PDF 会调用 sidecar；MinerU 地址缺失或调用失败时可回退 native；已用真实 MinerU API 验证 `files + parse_method=auto` 合约可返回 `results.*.md_content`；建图后会在 `parsed_documents/{doc_id}` 写入 Markdown、blocks、chunks 与 raw 响应，便于排障和验收。
+验收：指定 `parser_provider=mineru` 的 PDF 会调用 sidecar；MinerU 地址缺失或调用失败时可回退 native；已用真实 MinerU API 验证 `files + parse_method=auto` 合约可返回 `results.*.md_content`；建图后会在 `parsed_documents/{doc_id}` 写入 Markdown、blocks、chunks、structured chunks、document profile、extraction schema 与 raw 响应，便于排障和验收。
 
 ### 阶段 C：结构化 chunk
 
@@ -459,11 +459,11 @@ fallback=native
 
 ## 15. 当前建议
 
-下一步建议接入真实 MinerU sidecar，并用四类验收样例做端到端验证。
-当前已完成阶段 A/B 的基础工程边界，保留现有 native 行为不变。
+下一步建议继续补知识发现评测集，并用四类验收样例做端到端验证。
+当前已完成 MinerU sidecar、结构化 chunk、DocumentProfiler、动态 schema 和类型 prompt 的基础工程边界，保留现有 native 行为不变。
 
 原因：
 
 1. 解析器边界已经抽出，后续 MinerU、其他 OCR 服务、商业解析 API 都可以复用同一接口。
-2. 当前仍复用旧 chunk 策略，结构化 chunk 可以在真实样本验收后单独推进。
-3. 后台配置和知识库治理还需要补 UI，但后端已经具备任务级灰度参数。
+2. 当前结构化 chunk 仍需增强列表、条款、图片说明、公式、跨页表格和精确 page/bbox 定位。
+3. 后台配置和知识库治理还需要补 UI，但后端已经具备任务级灰度参数和解析/抽取产物落盘。

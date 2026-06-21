@@ -187,6 +187,8 @@ def _check_index_chunks_carries_parser_metadata() -> None:
                     "page_start": 2,
                     "page_end": 3,
                     "source_location": "page=2",
+                    "document_type": "academic_paper",
+                    "domain": "agricultural_plant_protection",
                 }
             ]
         )
@@ -194,6 +196,7 @@ def _check_index_chunks_carries_parser_metadata() -> None:
     _assert(result["indexed"] == 1, result)
     _assert(captured[0].metadata["parser_provider"] == "mineru", captured[0].metadata)
     _assert(captured[0].metadata["page_start"] == 2, captured[0].metadata)
+    _assert(captured[0].metadata["document_type"] == "academic_paper", captured[0].metadata)
 
 
 def _check_diagnostics_runs_requested_modes() -> None:

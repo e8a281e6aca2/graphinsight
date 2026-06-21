@@ -26,9 +26,12 @@ def main() -> int:
     with patch("services.document_graph_service.llm_entity_extractor.extract") as entity_extract, patch(
         "services.document_graph_service.llm_relation_extractor.extract"
     ) as relation_extract:
-        entity_extract.side_effect = lambda text, reasoning_profile=None: entity_calls.append(reasoning_profile) or ["Alpha", "Beta"]
+        entity_extract.side_effect = (
+            lambda text, reasoning_profile=None, document_profile=None: entity_calls.append(reasoning_profile)
+            or ["Alpha", "Beta"]
+        )
         relation_extract.side_effect = (
-            lambda text, entities, reasoning_profile=None: relation_calls.append(reasoning_profile)
+            lambda text, entities, reasoning_profile=None, document_profile=None, chunk_metadata=None: relation_calls.append(reasoning_profile)
             or [{"source": "Alpha", "target": "Beta", "label": "related", "evidence": "Alpha Beta", "confidence": 0.8}]
         )
 

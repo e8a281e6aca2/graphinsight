@@ -37,22 +37,25 @@ class LLMEntityExtractor:
                 timeout=settings.llm_graph_extract_timeout_seconds,
             )
 
-    def extract(self, text: str, reasoning_profile: Optional[str] = None) -> List[str]:
+    def extract(
+        self,
+        text: str,
+        reasoning_profile: Optional[str] = None,
+        document_profile: Optional[Dict[str, Any]] = None,
+    ) -> List[str]:
         self._refresh_runtime_config()
         if not self.enabled or not self._client:
             return []
         if self._disabled_until > time.time():
             return []
 
-        key = text[:800]
+        profile_key = str((document_profile or {}).get("document_type") or "unknown")
+        key = f"{profile_key}|{text[:800]}"
         if key in self._cache:
             return self._cache[key]
         self._ensure_model()
 
-        prompt = (
-            "你是中文信息抽取助手。请从文本中抽取重要实体（人名、机构、地点、时间、项目、政策、" \
-            "设备、资金等），返回 JSON 数组，最多 12 个，避免重复，不要解释。"
-        )
+        prompt = self._build_prompt(document_profile)
 
         try:
             model_profile = self._bounded_graph_reasoning_profile(reasoning_profile)
@@ -160,6 +163,21 @@ class LLMEntityExtractor:
     @staticmethod
     def _bounded_graph_reasoning_profile(reasoning_profile: Optional[str]) -> str:
         return "balanced" if str(reasoning_profile or "").strip().lower() == "deep" else "fast"
+
+    @staticmethod
+    def _build_prompt(document_profile: Optional[Dict[str, Any]] = None) -> str:
+        profile = document_profile or {}
+        entity_types = [str(item) for item in (profile.get("suggested_entity_types") or []) if str(item).strip()]
+        topics = [str(item) for item in (profile.get("main_topics") or []) if str(item).strip()]
+        type_hint = str(profile.get("document_type") or "unknown")
+        return (
+            "你是中文信息抽取助手。请从文本中抽取重要实体，返回 JSON 数组，最多 12 个，避免重复，不要解释。"
+            f"\n文档类型：{type_hint}"
+            f"\n候选实体类型：{json.dumps(entity_types[:16], ensure_ascii=False)}"
+            f"\n文档主题线索：{json.dumps(topics[:8], ensure_ascii=False)}"
+            "\n优先保留可作为知识图谱节点的名词短语、专有名词、指标、时间、地点、机构、人物、产品或事件。"
+            "\n不要返回完整句子、解释性短语或 JSON 对象。"
+        )
 
     def _parse_entities(self, content: str) -> List[str]:
         content = content.strip()

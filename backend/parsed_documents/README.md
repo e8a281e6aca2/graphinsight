@@ -10,6 +10,9 @@ parsed_documents/{doc_id}/
   content.md
   blocks.json
   chunks.jsonl
+  structured_chunks.jsonl
+  document_profile.json
+  extraction_schema.json
   raw.json or raw.txt
 ```
 
