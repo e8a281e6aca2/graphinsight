@@ -119,7 +119,7 @@
 
 `parser_provider` 可取 `native` 或 `mineru`。未传入时使用运行期配置 `document_parser.provider`；传入 `mineru` 时由 Python worker 调用 MinerU HTTP sidecar，失败时按 `document_parser.fallback_provider` 回退。
 
-文档解析产物会写入 `PARSED_DOCUMENT_STORAGE_PATH/{doc_id}/`，默认位置为 `backend/parsed_documents/{doc_id}/`。目录内包含 `manifest.json`、`content.md`、`blocks.json`、`chunks.jsonl`、`structured_chunks.jsonl`、`document_profile.json`、`extraction_schema.json`，MinerU 场景还会保存原始 `raw.json` 或 `raw.txt`；Neo4j `Document.parsed_artifact_path` 记录该目录，`Document.document_type/domain/profile_confidence/profile_version` 记录文档画像，便于从任务、问答质量问题反查解析和抽取策略。
+文档解析产物会写入 `PARSED_DOCUMENT_STORAGE_PATH/{doc_id}/`，默认位置为 `backend/parsed_documents/{doc_id}/`。目录内包含 `manifest.json`、`content.md`、`blocks.json`、`chunks.jsonl`、`structured_chunks.jsonl`、`document_profile.json`、`extraction_schema.json`、`extraction_plan.json`，MinerU 场景还会保存原始 `raw.json` 或 `raw.txt`；Neo4j `Document.parsed_artifact_path` 记录该目录，`Document.document_type/domain/profile_confidence/profile_version` 记录文档画像，Chunk 会记录 `extraction_strategy/extraction_use_llm/extraction_priority/extraction_reasons`，便于从任务、问答质量问题反查解析和抽取策略。
 
 ### 4.2 任务查询
 
@@ -166,7 +166,7 @@
 8. `POST /api/v1/admin/config/test/embedding` 当前使用 OpenAI-compatible `/embeddings` 探测嵌入模型连通性，`embedding.api_key/base_url` 为空时复用 `ai_service` 配置
 9. `POST /api/v1/admin/config/test/vector_store` 当前对 Milvus 做轻量 TCP 连通性探测，用于验证本地或远程向量库地址可达
 10. `POST /api/v1/admin/config/test/document_parser` 当前读取 `document_parser` 配置分类；`provider=native` 返回内置解析器可用，`provider=mineru` 会探测 `{base_url}/health` 并返回 MinerU version/status、`file_field`、`parse_mode`、`endpoint_path` 等运行信息
-11. `POST /api/graph/build` 当前已支持可选请求字段 `reasoning_profile`、`complex_extraction` 与 `parser_provider`；未显式传入 `reasoning_profile` 时，Go 会按 `graph_extract / graph_extract_complex` 场景自动补齐默认档位，再交由 Python worker 执行；`parser_provider=mineru` 用于单次建图灰度调用 MinerU sidecar；建图会生成 `DocumentProfiler` 画像和动态抽取 schema，并把 `document_type/domain/profile_version` 写入 Chunk 与向量 metadata
+11. `POST /api/graph/build` 当前已支持可选请求字段 `reasoning_profile`、`complex_extraction` 与 `parser_provider`；未显式传入 `reasoning_profile` 时，Go 会按 `graph_extract / graph_extract_complex` 场景自动补齐默认档位，再交由 Python worker 执行；`parser_provider=mineru` 用于单次建图灰度调用 MinerU sidecar；建图会生成 `DocumentProfiler` 画像、动态抽取 schema 和自适应 extraction plan，并把 `document_type/domain/profile_version/extraction_strategy` 写入 Chunk 与向量 metadata
 12. `GET /api/v1/admin/qa-traces` 列表项当前已返回轻量 `reasoning_profile` 字段，便于后台直接筛查运行档位
 13. `POST /api/v1/admin/qa/retrieval-diagnostics` 当前由 Go 控制面校验 `qa:ask` 权限后转发到 Python internal capability，可对同一问题分别运行 `keyword/vector/hybrid/graph_hybrid` 检索模式，返回各模式轻量命中、orchestrator trace、skip reason、summary 与检索健康信息，用于判断全文、向量和图谱扩展召回是否实际生效；`summary` 包含每种模式命中数、耗时、来源计数、跳过来源、最佳命中模式、最慢模式和建议动作
 14. `POST /api/docqa` 当前支持可选 `conversation_history`，每轮包含 `role=user|assistant` 与 `content`，最多保留 8 轮；该历史只用于代词、指代和省略问题的检索改写与回答上下文，不作为事实证据来源

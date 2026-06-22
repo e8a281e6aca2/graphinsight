@@ -1,7 +1,7 @@
 # GraphInsight 文档解析与 MinerU 接入设计
 
-更新时间：2026-06-20
-状态：阶段 A/B 基础能力已落地，结构化 chunk 与后台治理待继续推进；知识发现上层设计见 `docs/KNOWLEDGE_DISCOVERY_PIPELINE_DESIGN.md`
+更新时间：2026-06-22
+状态：MinerU sidecar、结构化 chunk、文档画像、动态 schema、类型 prompt 与自适应抽取计划基础能力已落地；后台治理待继续推进；知识发现上层设计见 `docs/KNOWLEDGE_DISCOVERY_PIPELINE_DESIGN.md`
 
 ## 1. 背景
 
@@ -24,8 +24,8 @@ GraphInsight 当前已经具备文档上传、建图、DocQA、Deep Research、Q
 6. PDF 优先使用 `pdfplumber`，失败后回退 `pypdf`。
 7. `MinerUDocumentParser` 通过 HTTP multipart 调用独立 MinerU sidecar。
 8. `DocumentParserManager` 支持 `provider=mineru` 时失败回退 `native`。
-9. 解析结果被标准化为 `ParsedDocument / ParsedBlock` 后，当前仍使用固定 `max_chars=800`、`overlap=120` 的字符窗口切块。
-10. chunk 后再执行实体抽取、关系抽取、Neo4j 写入与 Milvus 向量索引。
+9. 解析结果被标准化为 `ParsedDocument / ParsedBlock` 后，建图优先使用 `StructuredChunker` 按标题、段落和 HTML table 切块；只有结构化切分为空时才回退 `_chunk_text(max_chars=800, overlap=120)`。
+10. chunk 后会生成文档画像、动态抽取 schema 和自适应抽取计划，再执行实体抽取、关系抽取、Neo4j 写入与 Milvus 向量索引。
 
 当前实现适合：
 
@@ -166,7 +166,7 @@ ParsedBlock
 
 1. `ParsedDocument` 已包含 `text`、`parser_provider`、`parser_version`、`parse_mode`、`blocks[]`、`warnings[]`、`raw_payload`、`raw_output_path`。
 2. `ParsedBlock` 已包含 `text`、`block_type`、`heading_path`、`page_start`、`page_end`、`source_location`。
-3. 建图时会按 `doc_id` 写入 `PARSED_DOCUMENT_STORAGE_PATH/{doc_id}/`，包含 `manifest.json`、`content.md`、`blocks.json`、`chunks.jsonl`、`structured_chunks.jsonl`、`document_profile.json`、`extraction_schema.json`，以及 MinerU 原始响应 `raw.json` 或 `raw.txt`。
+3. 建图时会按 `doc_id` 写入 `PARSED_DOCUMENT_STORAGE_PATH/{doc_id}/`，包含 `manifest.json`、`content.md`、`blocks.json`、`chunks.jsonl`、`structured_chunks.jsonl`、`document_profile.json`、`extraction_schema.json`、`extraction_plan.json`，以及 MinerU 原始响应 `raw.json` 或 `raw.txt`。
 4. `assets[]` 和独立表格/图片/公式节点尚未落地，等待结构化 chunk 稳定后再做。
 
 ## 6. Chunk 策略

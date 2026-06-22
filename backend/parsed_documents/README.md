@@ -13,6 +13,7 @@ parsed_documents/{doc_id}/
   structured_chunks.jsonl
   document_profile.json
   extraction_schema.json
+  extraction_plan.json
   raw.json or raw.txt
 ```
 

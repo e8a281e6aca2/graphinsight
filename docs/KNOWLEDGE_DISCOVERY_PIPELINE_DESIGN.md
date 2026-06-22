@@ -1,7 +1,7 @@
 # GraphInsight 知识发现管线设计
 
 更新时间：2026-06-22
-状态：设计中；结构化 chunker、DocumentProfiler、动态 schema、类型化 prompt、实体归一化、表格行级关系抽取、schema-aware LLM 关系抽取、evidence 校验和高价值事实规则抽取基础实现已接入；后台人工覆盖、抽取评测集、跨文档 schema 治理和更细 page/bbox 定位待实施
+状态：设计中；结构化 chunker、DocumentProfiler、动态 schema、类型化 prompt、自适应 Extraction Planner、实体归一化、表格行级关系抽取、schema-aware LLM 关系抽取、evidence 校验和高价值事实规则抽取基础实现已接入；后台人工覆盖、抽取评测集、跨文档 schema 治理和更细 page/bbox 定位待实施
 
 ## 1. 背景
 
@@ -45,6 +45,7 @@ backend/services/knowledge_discovery/
 
   extraction/
     __init__.py
+    extraction_planner.py
     schema_extractor.py
     entity_relation_extractor.py
     evidence_validator.py
@@ -87,6 +88,7 @@ DocumentParser
   -> StructuredChunker
   -> DocumentProfiler
   -> DynamicExtractionSchema
+  -> ExtractionPlanner
   -> EntityRelationExtractor
   -> EntityNormalizer
   -> RelationNormalizer
@@ -235,7 +237,43 @@ backend/services/knowledge_discovery/prompts/types/*.zh.md
 }
 ```
 
-### 4.5 EntityRelationExtractor
+### 4.5 ExtractionPlanner
+
+Planner 负责回答“哪些 chunk 值得消耗 LLM schema-aware 抽取预算”。它不是固定抽前 N 个 chunk，而是在运行预算保护下按结构和信息价值选择：
+
+1. 表格 chunk 默认走结构化表格抽取，不消耗 LLM。
+2. 非表格 chunk 根据 `block_type`、`heading_path`、`important_sections`、文档类型关键词、数字/单位/指标密度、主题重合度评分。
+3. `fast/balanced/deep` 控制覆盖比例和预算保护，不决定固定位置。
+4. 每个 chunk 写入 `extraction_strategy`、`extraction_use_llm`、`extraction_priority` 和 `extraction_reasons`，便于解释为什么图谱关系少或某个 chunk 没走 LLM。
+
+当前实现位置：
+
+```text
+backend/services/knowledge_discovery/extraction/extraction_planner.py
+```
+
+输出示例：
+
+```json
+{
+  "planner_version": "extraction-planner-v1",
+  "document_type": "academic_paper",
+  "reasoning_profile": "balanced",
+  "llm_budget": 5,
+  "selected_count": 5,
+  "items": [
+    {
+      "index": 3,
+      "use_llm": true,
+      "priority": 14.2,
+      "strategy": "llm_schema_aware",
+      "reasons": ["important_section", "type_keywords", "numeric_density"]
+    }
+  ]
+}
+```
+
+### 4.6 EntityRelationExtractor
 
 抽取输出必须结构化，禁止让业务层直接消费任意自然语言。
 
@@ -372,6 +410,11 @@ Chunk.table_columns
 Chunk.document_type
 Chunk.domain
 Chunk.profile_version
+Chunk.extraction_planner_version
+Chunk.extraction_strategy
+Chunk.extraction_use_llm
+Chunk.extraction_priority
+Chunk.extraction_reasons
 
 Entity.entity_type
 Entity.aliases
@@ -395,6 +438,8 @@ RELATION.extraction_profile
 document_type
 domain
 profile_version
+extraction_strategy
+extraction_priority
 block_type
 heading_path
 caption
@@ -411,6 +456,7 @@ evidence_count
 structured_chunks.jsonl
 document_profile.json
 extraction_schema.json
+extraction_plan.json
 extraction_results.jsonl
 normalization_report.json
 ```
@@ -425,6 +471,7 @@ chunks.jsonl
 structured_chunks.jsonl
 document_profile.json
 extraction_schema.json
+extraction_plan.json
 raw.json/raw.txt
 ```
 
@@ -502,9 +549,9 @@ knowledge_discovery.min_relation_confidence
 2. 能形成药剂到病害、药剂到防效、药剂到产量/增产率的关系或属性。
 3. 脏实体如 `{"entity": ...}` 不再入图。
 
-当前状态：基础完成。实体归一化已清理 LLM 返回的 JSON/dict 污染，并对常见药剂名称空格差异做规范化；表格 chunk 已按“首列主体 -> 其他列指标”生成行级关系，关系写入 `evidence/relation_type/confidence`。LLM 关系抽取已改为 schema-aware 输出，抽取 prompt 会由 `document_profile + DynamicExtractionSchema + base prompt + type prompt + chunk metadata` 组合生成，并要求输出 `source/target/label/evidence/confidence`。旧规则抽取已禁止把任意短语当作关系类型，低置信度“同段提及”不进入默认关系集合；当前 PDF 最近复建结果为 `Chunk=14`、`Entity=113`、`RELATION=85`，无 JSON/dict 脏实体，全部 RELATION 均带 evidence。仍需扩大 LLM 抽取覆盖策略、增加文档类型评测样例，并把 entity_type/attributes/claims 作为后续模型扩展。
+当前状态：基础完成。实体归一化已清理 LLM 返回的 JSON/dict 污染，并对常见药剂名称空格差异做规范化；表格 chunk 已按“首列主体 -> 其他列指标”生成行级关系，关系写入 `evidence/relation_type/confidence`。LLM 关系抽取已改为 schema-aware 输出，抽取 prompt 会由 `document_profile + DynamicExtractionSchema + base prompt + type prompt + chunk metadata` 组合生成，并要求输出 `source/target/label/evidence/confidence`。旧规则抽取已禁止把任意短语当作关系类型，低置信度“同段提及”不进入默认关系集合；当前 PDF 最近复建结果为 `Chunk=14`、`Entity=115`、`RELATION=85`，无 JSON/dict 脏实体，全部 RELATION 均带 evidence。仍需增加文档类型评测样例，并把 entity_type/attributes/claims 作为后续模型扩展。
 
-运行态约束：图谱抽取器已改为读取配置中心 `ai_service` 的模型、base_url 和 key，不再固定使用启动环境变量中的旧模型。为避免建图被慢模型拖住，默认只有前 2 个非表格 chunk 消耗 LLM 抽取预算，表格 chunk 走结构化规则抽取；`LLM_GRAPH_EXTRACT_MAX_LLM_CHUNKS` 和 `LLM_GRAPH_EXTRACT_TIMEOUT_SECONDS` 可在环境中调整。关系抽取 prompt 默认限制为 `LLM_RELATION_TEXT_BUDGET=1000` 字和 `LLM_RELATION_MAX_PROMPT_ENTITIES=18` 个当前 chunk 中可定位实体，避免把结构化候选实体全部塞给慢模型。图谱实体/关系抽取会使用 bounded reasoning：任务档位 `fast/balanced` 的模型调用都使用 low effort，只有显式 `deep` 才提升到 medium effort。单个 chunk 的 LLM 关系抽取失败不会触发整轮全局熔断；模型不可用、渠道不可用、鉴权失败等 provider 级错误会短暂暂停，累计重复 timeout 也会触发短暂 cooldown，让后续 chunk 交给结构化表格和规则 evidence 抽取兜底。
+运行态约束：图谱抽取器已改为读取配置中心 `ai_service` 的模型、base_url 和 key，不再固定使用启动环境变量中的旧模型。为避免建图被慢模型拖住，`ExtractionPlanner` 会在 `fast/balanced/deep` 档位下按文档类型、重要章节、信息密度和结构块类型动态选择 LLM 抽取 chunk，不再固定抽取前 N 个非表格 chunk；表格 chunk 走结构化规则抽取。`LLM_GRAPH_EXTRACT_MAX_LLM_CHUNKS` 作为 fast 档基础预算保护，balanced/deep 会按结构覆盖动态扩展；`LLM_GRAPH_EXTRACT_TIMEOUT_SECONDS` 控制单次调用超时。关系抽取 prompt 默认限制为 `LLM_RELATION_TEXT_BUDGET=1000` 字和 `LLM_RELATION_MAX_PROMPT_ENTITIES=18` 个当前 chunk 中可定位实体，避免把结构化候选实体全部塞给慢模型。图谱实体/关系抽取会使用 bounded reasoning：任务档位 `fast/balanced` 的模型调用都使用 low effort，只有显式 `deep` 才提升到 medium effort。单个 chunk 的 LLM 关系抽取失败不会触发整轮全局熔断；模型不可用、渠道不可用、鉴权失败等 provider 级错误会短暂暂停，累计重复 timeout 也会触发短暂 cooldown，让后续 chunk 交给结构化表格和规则 evidence 抽取兜底。
 
 ### 阶段 D：归一化与证据校验
 
@@ -588,7 +635,7 @@ knowledge_discovery.min_relation_confidence
 
 1. 补合同、财报、手册、政策、会议纪要的小样例评测集。
 2. 增加后台查看和人工覆盖 `document_type/domain` 的入口。
-3. 按文档类型和任务档位动态决定 LLM 抽取 chunk 预算，避免默认只抽前 2 个非表格 chunk 导致图谱偏少。
+3. 补 `ExtractionPlanner` 的后台可解释视图，让管理员能看到每个 chunk 为什么走 LLM 或规则抽取。
 4. 把 entity_type、attributes 和 claims 持久化为后续图谱扩展字段。
 5. 增强列表、条款、图片说明、公式、跨页表格和 page/bbox 定位。
 

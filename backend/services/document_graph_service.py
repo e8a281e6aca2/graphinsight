@@ -16,7 +16,7 @@ from config import get_settings
 from core import get_logger
 from services.document_parser import DocumentParserManager, ParsedDocument
 from services.knowledge_discovery.chunking import StructuredChunk, StructuredChunker
-from services.knowledge_discovery.extraction import build_extraction_schema, evidence_validator
+from services.knowledge_discovery.extraction import build_extraction_schema, evidence_validator, extraction_planner
 from services.knowledge_discovery.normalization import normalize_entity_name, normalize_entity_values
 from services.knowledge_discovery.profiling import document_profiler
 from services.neo4j_service import get_neo4j_service
@@ -301,18 +301,19 @@ class DocumentGraphService:
                     file_name=doc.name,
                 ).to_dict()
                 extraction_schema = build_extraction_schema(document_profile).to_dict()
+                extraction_plan = extraction_planner.plan(
+                    structured_chunks,
+                    document_profile=document_profile,
+                    reasoning_profile=reasoning_profile,
+                    complex_extraction=complex_extraction,
+                    base_llm_budget=max(settings.llm_graph_extract_max_llm_chunks, 0),
+                )
                 chunk_payload = []
-                llm_chunk_budget = max(settings.llm_graph_extract_max_llm_chunks, 0)
-                llm_chunks_used = 0
                 for idx, structured_chunk in enumerate(structured_chunks):
                     chunk = structured_chunk.text
                     parser_metadata = self._chunk_parser_metadata(parsed, idx, structured_chunk)
-                    use_llm_extraction = (
-                        structured_chunk.block_type != "table"
-                        and llm_chunks_used < llm_chunk_budget
-                    )
-                    if use_llm_extraction:
-                        llm_chunks_used += 1
+                    plan_item = extraction_plan.item_for(idx)
+                    use_llm_extraction = plan_item.use_llm
                     entities = self._merge_entities(
                         self._extract_entities(
                             chunk,
@@ -336,6 +337,9 @@ class DocumentGraphService:
                             "caption": structured_chunk.caption,
                             "document_type": document_profile.get("document_type"),
                             "domain": document_profile.get("domain"),
+                            "extraction_strategy": plan_item.strategy,
+                            "extraction_priority": plan_item.priority,
+                            "extraction_reasons": plan_item.reasons,
                         },
                     )
                     table_relations = self._normalize_relations(
@@ -364,6 +368,11 @@ class DocumentGraphService:
                             "document_type": document_profile.get("document_type"),
                             "domain": document_profile.get("domain"),
                             "profile_version": document_profile.get("profile_version"),
+                            "extraction_planner_version": extraction_plan.planner_version,
+                            "extraction_strategy": plan_item.strategy,
+                            "extraction_use_llm": plan_item.use_llm,
+                            "extraction_priority": plan_item.priority,
+                            "extraction_reasons": plan_item.reasons,
                             "caption": structured_chunk.caption,
                             "neighbor_before": structured_chunk.neighbor_before,
                             "neighbor_after": structured_chunk.neighbor_after,
@@ -382,6 +391,7 @@ class DocumentGraphService:
                     structured_chunks=structured_chunks,
                     document_profile=document_profile,
                     extraction_schema=extraction_schema,
+                    extraction_plan=extraction_plan.to_dict(),
                 )
 
                 with self.neo4j.session() as session:
@@ -498,6 +508,11 @@ class DocumentGraphService:
                                 ch.document_type = c.document_type,
                                 ch.domain = c.domain,
                                 ch.profile_version = c.profile_version,
+                                ch.extraction_planner_version = c.extraction_planner_version,
+                                ch.extraction_strategy = c.extraction_strategy,
+                                ch.extraction_use_llm = c.extraction_use_llm,
+                                ch.extraction_priority = c.extraction_priority,
+                                ch.extraction_reasons = c.extraction_reasons,
                                 ch.caption = c.caption,
                                 ch.neighbor_before = c.neighbor_before,
                                 ch.neighbor_after = c.neighbor_after,
@@ -946,6 +961,7 @@ class DocumentGraphService:
         structured_chunks: Optional[List[StructuredChunk]] = None,
         document_profile: Optional[Dict[str, Any]] = None,
         extraction_schema: Optional[Dict[str, Any]] = None,
+        extraction_plan: Optional[Dict[str, Any]] = None,
     ) -> Path:
         root = Path(settings.parsed_document_storage_path).resolve()
         target_dir = root / doc_id
@@ -994,6 +1010,12 @@ class DocumentGraphService:
             encoding="utf-8",
         )
 
+        extraction_plan_path = tmp_dir / "extraction_plan.json"
+        extraction_plan_path.write_text(
+            json.dumps(extraction_plan or {}, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
         manifest = {
             "doc_id": doc_id,
             "file_name": doc.name,
@@ -1016,6 +1038,7 @@ class DocumentGraphService:
             "structured_chunks_path": "structured_chunks.jsonl",
             "document_profile_path": "document_profile.json",
             "extraction_schema_path": "extraction_schema.json",
+            "extraction_plan_path": "extraction_plan.json",
             "text_chars": len(parsed.text),
             "block_count": len(parsed.blocks),
             "chunk_count": len(chunks),

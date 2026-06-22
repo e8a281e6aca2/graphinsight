@@ -206,6 +206,7 @@ def _check_parsed_document_artifacts() -> None:
         _assert((artifact_dir / "structured_chunks.jsonl").exists(), "structured_chunks.jsonl should exist")
         _assert((artifact_dir / "document_profile.json").exists(), "document_profile.json should exist")
         _assert((artifact_dir / "extraction_schema.json").exists(), "extraction_schema.json should exist")
+        _assert((artifact_dir / "extraction_plan.json").exists(), "extraction_plan.json should exist")
         _assert((artifact_dir / "raw.json").exists(), "raw.json should exist")
         manifest = json.loads((artifact_dir / "manifest.json").read_text(encoding="utf-8"))
         _assert(manifest["parser_provider"] == "mineru", manifest)
@@ -213,6 +214,7 @@ def _check_parsed_document_artifacts() -> None:
         _assert(manifest["structured_chunks_path"] == "structured_chunks.jsonl", manifest)
         _assert(manifest["document_profile_path"] == "document_profile.json", manifest)
         _assert(manifest["extraction_schema_path"] == "extraction_schema.json", manifest)
+        _assert(manifest["extraction_plan_path"] == "extraction_plan.json", manifest)
         chunk_line = json.loads((artifact_dir / "chunks.jsonl").read_text(encoding="utf-8").strip())
         _assert("entities" not in chunk_line, chunk_line)
         _assert("relations" not in chunk_line, chunk_line)
@@ -332,6 +334,41 @@ def _check_document_profiler_and_schema_assets() -> None:
     prompt = LLMRelationExtractor._build_schema_prompt(profile)
     _assert("动态 schema" in prompt, prompt)
     _assert("学术论文" in prompt or "试验报告" in prompt, prompt)
+
+
+def _check_extraction_planner_selects_high_value_chunks() -> None:
+    from services.knowledge_discovery.chunking import StructuredChunk
+    from services.knowledge_discovery.extraction import extraction_planner
+
+    chunks = [
+        StructuredChunk(text="普通背景说明，介绍研究现状。", block_type="section", heading_path=["1 引言"]),
+        StructuredChunk(text="普通材料描述，无指标无结论。", block_type="section", heading_path=["1 引言"]),
+        StructuredChunk(text="结果与分析显示，125g/L氟环唑SC平均防效为89.93%，产量最高。", block_type="section", heading_path=["2 结果与分析"]),
+        StructuredChunk(text="小结：建议优先推广125g/L氟环唑SC防治小麦条锈病。", block_type="section", heading_path=["3 小结"]),
+        StructuredChunk(
+            text="表 2 不同药剂处理小麦条锈病的防效\n<table></table>",
+            block_type="table",
+            heading_path=["2 结果与分析"],
+            caption="表 2 不同药剂处理小麦条锈病的防效",
+        ),
+    ]
+    profile = {
+        "document_type": "academic_paper",
+        "domain": "agricultural_plant_protection",
+        "main_topics": ["小麦条锈病", "氟环唑SC"],
+        "important_sections": ["2 结果与分析", "3 小结"],
+    }
+    plan = extraction_planner.plan(
+        chunks,
+        document_profile=profile,
+        reasoning_profile="fast",
+        complex_extraction=False,
+        base_llm_budget=2,
+    )
+    selected = [item.index for item in plan.items if item.use_llm]
+    _assert(selected == [2, 3], [item.to_dict() for item in plan.items])
+    table_item = plan.item_for(4)
+    _assert(table_item.use_llm is False and table_item.strategy == "structured_table", table_item.to_dict())
 
 
 def _check_graph_extractors_use_runtime_model_config() -> None:
@@ -537,6 +574,7 @@ def main() -> int:
     _check_structured_chunker_keeps_tables()
     _check_entity_normalization_and_table_relations()
     _check_document_profiler_and_schema_assets()
+    _check_extraction_planner_selects_high_value_chunks()
     _check_graph_extractors_use_runtime_model_config()
     _check_graph_extractor_reasoning_is_bounded()
     _check_schema_aware_relations_and_evidence_validation()
