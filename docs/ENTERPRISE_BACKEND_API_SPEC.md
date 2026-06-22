@@ -171,7 +171,8 @@
 13. `POST /api/v1/admin/qa/retrieval-diagnostics` 当前由 Go 控制面校验 `qa:ask` 权限后转发到 Python internal capability，可对同一问题分别运行 `keyword/vector/hybrid/graph_hybrid` 检索模式，返回各模式轻量命中、orchestrator trace、skip reason、summary 与检索健康信息，用于判断全文、向量和图谱扩展召回是否实际生效；`summary` 包含每种模式命中数、耗时、来源计数、跳过来源、最佳命中模式、最慢模式和建议动作
 14. `POST /api/docqa` 当前支持可选 `conversation_history`，每轮包含 `role=user|assistant` 与 `content`，最多保留 8 轮；该历史只用于代词、指代和省略问题的检索改写与回答上下文，不作为事实证据来源
 15. `POST /api/docqa` 返回的 `citations[].snippet` 当前会根据本轮 question/answer 聚焦到更相关的证据窗口，避免前端展示固定 chunk 开头造成引用证据滞后
-16. 不对外返回原始思维链，只返回最终答案、引用和运行元信息
+16. `retrieval.rerank_enabled=true` 且配置了 `retrieval.rerank_model` 时，Python Retrieval Orchestrator 会在 keyword/vector/graph RRF 融合候选之后调用 OpenAI-compatible `/rerank` 二阶段重排；`rerank_base_url` 留空时复用 `ai_service.base_url`，API key 复用 `ai_service.api_key`，reranker 失败只回退原融合排序，不阻断问答
+17. 不对外返回原始思维链，只返回最终答案、引用和运行元信息
 
 ## 6. 监控与审计
 

@@ -146,6 +146,8 @@
 26. 本地开发启动脚本默认 Neo4j Bolt 地址已从 `bolt://127.0.0.1:7687` 调整为 `bolt://localhost:7687`，避免 macOS 本机进程抢占 IPv4 端口时 Python/Go 误连非 Neo4j 服务；当前配置库中的 `neo4j.uri` 也已按该策略对齐。
 27. 后端根目录旧调试/演示脚本已清理：移除 `check_node.py`、`debug_node.py`、`create_video_node.py`、`init_admin_quick.py`、`check_logs_table.py` 和旧同名 schema 文件 `admin/schemas.py`，避免硬编码演示数据、默认账号和旧 schema 入口误导运行态开发；迁移清理 guard 已加入防回流检查。
 28. 本地开发启动脚本已改为优先用 `screen` 托管 Python/Go 服务，并在 `stop/restart` 时按服务端口清理残留监听进程，避免 screen session 退出但子进程继续占用 8001/8081 导致新代码未加载。
+29. DocQA 检索编排已接入真正的二阶段 Reranker：`keyword/vector/graph` 候选先按 RRF 融合，再在 `retrieval.rerank_enabled=true` 且 `retrieval.rerank_model` 已配置时调用 OpenAI-compatible `/rerank` 端点重排；`rerank_base_url` 留空复用 `ai_service.base_url`，API key 复用 `ai_service.api_key`，调用失败会降级为原融合排序并写入 orchestrator trace。
+30. 已修复多轮问答第二轮可能 500 的问题：上下文检索 query 中的 `g/L`、`/` 等 Lucene 特殊字符会先做 fulltext-safe 清洗，且 Neo4j fulltext 懒加载迭代异常已纳入 fallback，不再直接中断问答。
 
 3. `SEC-001` 敏感配置 KMS 加密
 状态：`todo`

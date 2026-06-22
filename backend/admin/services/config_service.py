@@ -352,6 +352,31 @@ class ConfigService:
                     "description": "是否启用重排器",
                     "is_sensitive": "false",
                 },
+                "rerank_model": {
+                    "value": os.getenv("DOCQA_RERANK_MODEL", ""),
+                    "description": "Reranker 模型名称，留空则不执行二阶段重排",
+                    "is_sensitive": "false",
+                },
+                "rerank_base_url": {
+                    "value": os.getenv("DOCQA_RERANK_BASE_URL", ""),
+                    "description": "Reranker API 地址，留空时复用 AI 服务地址",
+                    "is_sensitive": "false",
+                },
+                "rerank_endpoint_path": {
+                    "value": os.getenv("DOCQA_RERANK_ENDPOINT_PATH", "/rerank"),
+                    "description": "Reranker 接口路径",
+                    "is_sensitive": "false",
+                },
+                "rerank_top_n": {
+                    "value": os.getenv("DOCQA_RERANK_TOP_N", "20"),
+                    "description": "进入 Reranker 的融合候选上限",
+                    "is_sensitive": "false",
+                },
+                "rerank_timeout_seconds": {
+                    "value": os.getenv("DOCQA_RERANK_TIMEOUT_SECONDS", "15"),
+                    "description": "Reranker 请求超时时间",
+                    "is_sensitive": "false",
+                },
             },
             "embedding": {
                 "enabled": {

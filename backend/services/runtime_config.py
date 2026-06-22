@@ -83,6 +83,7 @@ def get_ai_runtime_config() -> Dict[str, Any]:
 
 def get_retrieval_runtime_config() -> Dict[str, Any]:
     loaded = _load_category("retrieval")
+    ai_config = get_ai_runtime_config()
     return {
         "mode": str(loaded.get("mode", settings.docqa_retrieval_mode) or "keyword").strip().lower(),
         "rrf_k": _to_int(loaded.get("rrf_k"), settings.docqa_retrieval_rrf_k),
@@ -92,6 +93,29 @@ def get_retrieval_runtime_config() -> Dict[str, Any]:
         ),
         "graph_enabled": _to_bool(loaded.get("graph_enabled"), settings.docqa_retrieval_graph_enabled),
         "rerank_enabled": _to_bool(loaded.get("rerank_enabled"), False),
+        "rerank_model": _first_non_empty(loaded.get("rerank_model"), os.getenv("DOCQA_RERANK_MODEL")),
+        "rerank_base_url": _first_non_empty(
+            loaded.get("rerank_base_url"),
+            os.getenv("DOCQA_RERANK_BASE_URL"),
+            ai_config.get("base_url"),
+            settings.llm_base_url,
+        ),
+        "rerank_api_key": _first_non_empty(
+            loaded.get("rerank_api_key"),
+            os.getenv("DOCQA_RERANK_API_KEY"),
+            ai_config.get("api_key"),
+            settings.llm_api_key,
+        ),
+        "rerank_endpoint_path": _first_non_empty(
+            loaded.get("rerank_endpoint_path"),
+            os.getenv("DOCQA_RERANK_ENDPOINT_PATH"),
+            "/rerank",
+        ),
+        "rerank_top_n": _to_int(loaded.get("rerank_top_n"), _to_int(os.getenv("DOCQA_RERANK_TOP_N"), 20)),
+        "rerank_timeout_seconds": _to_float(
+            loaded.get("rerank_timeout_seconds"),
+            _to_float(os.getenv("DOCQA_RERANK_TIMEOUT_SECONDS"), 15.0),
+        ),
     }
 
 

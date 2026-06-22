@@ -80,6 +80,44 @@ def _check_hybrid_fusion_prefers_multi_source_hit() -> None:
     _assert(result["trace"]["sources"]["vector"]["raw_count"] == 2, result["trace"])
 
 
+def _check_reranker_applies_after_fusion() -> None:
+    from services.retrieval_orchestrator import RetrievalOrchestrator
+
+    service = RetrievalOrchestrator()
+    with patch(
+        "services.retrieval_orchestrator.get_retrieval_runtime_config",
+        return_value={
+            "mode": "hybrid",
+            "rrf_k": 60,
+            "candidate_multiplier": 4,
+            "graph_enabled": True,
+            "rerank_enabled": True,
+        },
+    ), patch.object(
+        service,
+        "_keyword_search",
+        return_value=[_fake_item("keyword-hit", 0.8)],
+    ), patch.object(
+        service,
+        "_vector_search",
+        return_value={"items": [_fake_item("vector-hit", 0.9)], "trace": {"raw_count": 1}},
+    ), patch(
+        "services.retrieval_orchestrator.rerank_service.rerank",
+        return_value={
+            "items": [
+                {**_fake_item("vector-hit", 0.9), "rerank_score": 0.95},
+                {**_fake_item("keyword-hit", 0.8), "rerank_score": 0.3},
+            ],
+            "trace": {"enabled": True, "applied": True, "reranked_count": 2},
+        },
+    ) as rerank:
+        result = service.retrieve("hello", 2)
+
+    _assert(rerank.called, "reranker should run when rerank_enabled=true")
+    _assert([item["id"] for item in result["items"]] == ["vector-hit", "keyword-hit"], result)
+    _assert(result["trace"]["rerank"]["applied"] is True, result["trace"])
+
+
 def _check_vector_disabled_fallback() -> None:
     from services.retrieval_orchestrator import RetrievalOrchestrator
 
@@ -273,15 +311,96 @@ def _check_diagnostics_summary_recommends_vector_setup() -> None:
     _assert(result["summary"]["modes"]["hybrid"]["skipped_sources"] == ["vector:vector_store_disabled", "keyword_fallback:keyword_already_queried"], result)
 
 
+def _check_keyword_search_handles_lucene_special_chars() -> None:
+    from services.retrieval_orchestrator import RetrievalOrchestrator
+
+    class FakeNode(dict):
+        id = 101
+
+    class LazyFailure:
+        def __iter__(self):
+            raise RuntimeError("lucene lexical error")
+
+    class FakeSession:
+        def __init__(self) -> None:
+            self.queries = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def run(self, _query, params):
+            self.queries.append(params)
+            if len(self.queries) == 1:
+                return LazyFailure()
+            return [
+                {
+                    "c": FakeNode(chunk_id="fallback", index=0, text="125 g/L 氟环唑 SC 防效最高"),
+                    "d": FakeNode(doc_id="doc-1", name="Doc"),
+                    "score": 0.0,
+                    "entity_names": [],
+                }
+            ]
+
+    class FakeDriver:
+        def __init__(self, session):
+            self._session = session
+
+        def session(self):
+            return self._session
+
+    class FakeService:
+        def __init__(self, session):
+            self.driver = FakeDriver(session)
+
+    fake_session = FakeSession()
+    service = RetrievalOrchestrator()
+    with patch("services.retrieval_orchestrator.get_neo4j_service", return_value=FakeService(fake_session)):
+        items = service._keyword_search("125 g/L 氟环唑 SC 防效最高 /", 2)
+
+    _assert(items and items[0]["id"] == "fallback", items)
+    _assert("/" not in fake_session.queries[0]["q"], fake_session.queries)
+
+
+def _check_retrieval_health_redacts_rerank_key() -> None:
+    from services.retrieval_orchestrator import RetrievalOrchestrator
+
+    service = RetrievalOrchestrator()
+    with patch(
+        "services.retrieval_orchestrator.get_retrieval_runtime_config",
+        return_value={
+            "mode": "graph_hybrid",
+            "rrf_k": 60,
+            "candidate_multiplier": 4,
+            "graph_enabled": True,
+            "rerank_enabled": True,
+            "rerank_model": "reranker-test",
+            "rerank_api_key": "secret-key",
+        },
+    ), patch("services.retrieval_orchestrator.embedding_service.is_enabled", return_value=True), patch(
+        "services.retrieval_orchestrator.embedding_service.config",
+        return_value={"model": "embed", "dimension": 1024},
+    ), patch("services.retrieval_orchestrator.vector_store.health", return_value={"ok": True}):
+        health = service.health()
+
+    _assert("rerank_api_key" not in health["retrieval"], health)
+    _assert(health["retrieval"]["rerank_api_key_configured"] is True, health)
+
+
 def main() -> int:
     _check_keyword_mode()
     _check_hybrid_fusion_prefers_multi_source_hit()
+    _check_reranker_applies_after_fusion()
     _check_vector_disabled_fallback()
     _check_hybrid_skips_duplicate_keyword_fallback()
     _check_index_chunks_skips_when_disabled()
     _check_index_chunks_carries_parser_metadata()
     _check_diagnostics_runs_requested_modes()
     _check_diagnostics_summary_recommends_vector_setup()
+    _check_keyword_search_handles_lucene_special_chars()
+    _check_retrieval_health_redacts_rerank_key()
     print("RETRIEVAL_ORCHESTRATOR_UNIT_OK")
     return 0
 

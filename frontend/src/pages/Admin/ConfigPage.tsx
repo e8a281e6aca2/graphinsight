@@ -89,6 +89,11 @@ interface FormValues {
   retrieval_candidate_multiplier: string;
   retrieval_graph_enabled: string;
   retrieval_rerank_enabled: string;
+  retrieval_rerank_model: string;
+  retrieval_rerank_base_url: string;
+  retrieval_rerank_endpoint_path: string;
+  retrieval_rerank_top_n: string;
+  retrieval_rerank_timeout_seconds: string;
   embedding_enabled: string;
   embedding_provider: string;
   embedding_base_url: string;
@@ -145,6 +150,11 @@ const RETRIEVAL_FIELD_CONFIGS: Array<{ field: keyof FormValues; category: Config
   { field: 'retrieval_candidate_multiplier', category: 'retrieval', key: 'candidate_multiplier' },
   { field: 'retrieval_graph_enabled', category: 'retrieval', key: 'graph_enabled' },
   { field: 'retrieval_rerank_enabled', category: 'retrieval', key: 'rerank_enabled' },
+  { field: 'retrieval_rerank_model', category: 'retrieval', key: 'rerank_model' },
+  { field: 'retrieval_rerank_base_url', category: 'retrieval', key: 'rerank_base_url' },
+  { field: 'retrieval_rerank_endpoint_path', category: 'retrieval', key: 'rerank_endpoint_path' },
+  { field: 'retrieval_rerank_top_n', category: 'retrieval', key: 'rerank_top_n' },
+  { field: 'retrieval_rerank_timeout_seconds', category: 'retrieval', key: 'rerank_timeout_seconds' },
   { field: 'embedding_enabled', category: 'embedding', key: 'enabled' },
   { field: 'embedding_provider', category: 'embedding', key: 'provider' },
   { field: 'embedding_base_url', category: 'embedding', key: 'base_url' },
@@ -239,6 +249,11 @@ const buildFormValuesFromConfigs = (configs: Record<ConfigCategory, Record<strin
     retrieval_candidate_multiplier: configs.retrieval?.candidate_multiplier?.value || '6',
     retrieval_graph_enabled: configs.retrieval?.graph_enabled?.value || 'true',
     retrieval_rerank_enabled: configs.retrieval?.rerank_enabled?.value || 'false',
+    retrieval_rerank_model: configs.retrieval?.rerank_model?.value || '',
+    retrieval_rerank_base_url: configs.retrieval?.rerank_base_url?.value || '',
+    retrieval_rerank_endpoint_path: configs.retrieval?.rerank_endpoint_path?.value || '/rerank',
+    retrieval_rerank_top_n: configs.retrieval?.rerank_top_n?.value || '20',
+    retrieval_rerank_timeout_seconds: configs.retrieval?.rerank_timeout_seconds?.value || '15',
     embedding_enabled: configs.embedding?.enabled?.value || 'true',
     embedding_provider: configs.embedding?.provider?.value || configs.ai_service?.provider?.value || 'openai',
     embedding_base_url: embeddingBaseUrl === aiServiceBaseUrl ? '' : embeddingBaseUrl,
@@ -322,6 +337,11 @@ const ConfigPage: React.FC = () => {
     retrieval_candidate_multiplier: '6',
     retrieval_graph_enabled: 'true',
     retrieval_rerank_enabled: 'false',
+    retrieval_rerank_model: '',
+    retrieval_rerank_base_url: '',
+    retrieval_rerank_endpoint_path: '/rerank',
+    retrieval_rerank_top_n: '20',
+    retrieval_rerank_timeout_seconds: '15',
     embedding_enabled: 'true',
     embedding_provider: 'openai',
     embedding_base_url: '',
@@ -527,6 +547,11 @@ const ConfigPage: React.FC = () => {
         retrieval_candidate_multiplier: { category: 'retrieval', key: 'candidate_multiplier' },
         retrieval_graph_enabled: { category: 'retrieval', key: 'graph_enabled' },
         retrieval_rerank_enabled: { category: 'retrieval', key: 'rerank_enabled' },
+        retrieval_rerank_model: { category: 'retrieval', key: 'rerank_model' },
+        retrieval_rerank_base_url: { category: 'retrieval', key: 'rerank_base_url' },
+        retrieval_rerank_endpoint_path: { category: 'retrieval', key: 'rerank_endpoint_path' },
+        retrieval_rerank_top_n: { category: 'retrieval', key: 'rerank_top_n' },
+        retrieval_rerank_timeout_seconds: { category: 'retrieval', key: 'rerank_timeout_seconds' },
         embedding_enabled: { category: 'embedding', key: 'enabled' },
         embedding_provider: { category: 'embedding', key: 'provider' },
         embedding_base_url: { category: 'embedding', key: 'base_url' },
@@ -1673,6 +1698,47 @@ const ConfigPage: React.FC = () => {
                       <option value="false">禁用</option>
                       <option value="true">启用</option>
                     </TextField>
+                  </Box>
+                  <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: '2fr 2fr 1.2fr 1fr 1fr' }, gap: 2 }}>
+                    <TextField
+                      fullWidth
+                      label="Reranker 模型"
+                      value={formValues.retrieval_rerank_model}
+                      onChange={(e) => handleFormChange('retrieval_rerank_model', e.target.value)}
+                      onBlur={() => handleSaveField('retrieval', 'rerank_model', 'retrieval_rerank_model')}
+                      helperText="留空则跳过二阶段重排"
+                    />
+                    <TextField
+                      fullWidth
+                      label="Reranker 地址"
+                      value={formValues.retrieval_rerank_base_url}
+                      onChange={(e) => handleFormChange('retrieval_rerank_base_url', e.target.value)}
+                      onBlur={() => handleSaveField('retrieval', 'rerank_base_url', 'retrieval_rerank_base_url')}
+                      helperText="留空复用 AI 服务地址"
+                    />
+                    <TextField
+                      fullWidth
+                      label="接口路径"
+                      value={formValues.retrieval_rerank_endpoint_path}
+                      onChange={(e) => handleFormChange('retrieval_rerank_endpoint_path', e.target.value)}
+                      onBlur={() => handleSaveField('retrieval', 'rerank_endpoint_path', 'retrieval_rerank_endpoint_path')}
+                    />
+                    <TextField
+                      fullWidth
+                      label="重排候选"
+                      type="number"
+                      value={formValues.retrieval_rerank_top_n}
+                      onChange={(e) => handleFormChange('retrieval_rerank_top_n', e.target.value)}
+                      onBlur={() => handleSaveField('retrieval', 'rerank_top_n', 'retrieval_rerank_top_n')}
+                    />
+                    <TextField
+                      fullWidth
+                      label="超时秒"
+                      type="number"
+                      value={formValues.retrieval_rerank_timeout_seconds}
+                      onChange={(e) => handleFormChange('retrieval_rerank_timeout_seconds', e.target.value)}
+                      onBlur={() => handleSaveField('retrieval', 'rerank_timeout_seconds', 'retrieval_rerank_timeout_seconds')}
+                    />
                   </Box>
                 </Box>
                 <Box id="document-parser" sx={{ display: 'grid', gap: 2, mt: 1, pt: 2, borderTop: 1, borderColor: 'divider', scrollMarginTop: 120 }}>

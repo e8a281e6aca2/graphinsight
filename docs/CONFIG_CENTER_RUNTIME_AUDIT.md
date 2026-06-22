@@ -1,6 +1,6 @@
 # GraphInsight 配置中心运行态审计
 
-更新时间：2026-06-21
+更新时间：2026-06-22
 
 ## 结论
 
@@ -10,7 +10,7 @@
 2. `embedding`：仅在嵌入模型和 AI 服务不同时覆盖 provider/base_url/api_key/model/dimension/batch_size。
 3. `vector_store`：Milvus 等向量库连接。
 4. `document_parser`：native / MinerU 解析器配置。
-5. `retrieval`：keyword/vector/hybrid/graph_hybrid 召回策略。
+5. `retrieval`：keyword/vector/hybrid/graph_hybrid 召回策略，以及 RRF 后二阶段 reranker 配置。
 6. `neo4j`、`nl2cypher`：专项运行配置。
 
 历史 `openai` 命名不再作为主入口使用。Go 侧旧别名已经移除；前端、文档主路径和 Python 运行态都只使用 `ai_service` / `ai-service`。
@@ -32,6 +32,7 @@
 4. `runtime_config.py` 对 `document_parser`、`vector_store`、`neo4j` 改为“空字符串不遮蔽默认值”。
 5. 配置 schema 示例和企业交付文档已改用 `ai_service` / `ai-service` 命名。
 6. 开发启动脚本的默认 `NEO4J_URI` 已改为 `bolt://localhost:7687`，并同步修正当前配置库 `neo4j.uri`，避免继续误连被占用的 `127.0.0.1:7687`。
+7. DocQA reranker 已从“仅配置开关”升级为真实二阶段重排能力，运行字段包括 `rerank_enabled`、`rerank_model`、`rerank_base_url`、`rerank_endpoint_path`、`rerank_top_n`、`rerank_timeout_seconds`；`rerank_base_url` 留空时复用 AI 服务网关，API key 复用 `ai_service.api_key`。
 
 ## 已移除的历史别名
 

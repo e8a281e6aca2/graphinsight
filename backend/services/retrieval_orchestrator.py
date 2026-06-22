@@ -6,6 +6,7 @@ graph expansion retrieval to evolve independently.
 from __future__ import annotations
 
 import json
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
@@ -15,6 +16,7 @@ from neo4j import Query
 from core import get_logger
 from services.embedding_service import embedding_service
 from services.neo4j_service import get_neo4j_service
+from services.rerank_service import rerank_service
 from services.runtime_config import get_retrieval_runtime_config
 from services.vector_store import VectorSearchHit, vector_store
 
@@ -122,7 +124,14 @@ class RetrievalOrchestrator:
                 "seed_count": len(seed_ids),
             }
 
-        items = self._fuse(source_hits, top_k=top_k, rrf_k=int(cfg.get("rrf_k") or 60))
+        fused_items = self._fuse(source_hits, top_k=candidate_limit, rrf_k=int(cfg.get("rrf_k") or 60))
+        trace["fusion"]["candidate_count"] = len(fused_items)
+        if bool(cfg.get("rerank_enabled")):
+            reranked = rerank_service.rerank(normalized_question, fused_items, top_k=top_k)
+            items = reranked.get("items", fused_items[:top_k])
+            trace["rerank"] = {**trace["rerank"], **(reranked.get("trace") or {})}
+        else:
+            items = fused_items[:top_k]
         trace["fusion"]["result_count"] = len(items)
         trace["duration_ms"] = round((time.perf_counter() - started_at) * 1000, 3)
         return {"items": items, "trace": trace}
@@ -218,8 +227,9 @@ class RetrievalOrchestrator:
             logger.warning("清空 Milvus 向量索引失败", context={"error": str(exc)})
 
     def health(self) -> Dict[str, Any]:
+        retrieval_config = self._public_retrieval_config(get_retrieval_runtime_config())
         return {
-            "retrieval": get_retrieval_runtime_config(),
+            "retrieval": retrieval_config,
             "embedding": {
                 "enabled": embedding_service.is_enabled(),
                 "model": embedding_service.config().get("model"),
@@ -246,9 +256,14 @@ class RetrievalOrchestrator:
                         """,
                         timeout=RETRIEVAL_QUERY_TIMEOUT_SECONDS,
                     ),
-                    {"q": question, "limit": limit},
+                    {"q": self._lucene_safe_query(question), "limit": limit},
                 )
+                for record in result:
+                    item = self._record_to_item(record)
+                    if item:
+                        items.append(item)
             except Exception:
+                items = []
                 result = session.run(
                     Query(
                         """
@@ -263,10 +278,10 @@ class RetrievalOrchestrator:
                     ),
                     {"q": question, "limit": limit},
                 )
-            for record in result:
-                item = self._record_to_item(record)
-                if item:
-                    items.append(item)
+                for record in result:
+                    item = self._record_to_item(record)
+                    if item:
+                        items.append(item)
         return items
 
     def _vector_search(self, question: str, limit: int) -> Dict[str, Any]:
@@ -588,6 +603,22 @@ class RetrievalOrchestrator:
         if normalized in {"keyword", "vector", "hybrid", "graph_hybrid"}:
             return normalized
         return "keyword"
+
+    @staticmethod
+    def _public_retrieval_config(config: Dict[str, Any]) -> Dict[str, Any]:
+        public = {key: value for key, value in config.items() if key != "rerank_api_key"}
+        public["rerank_api_key_configured"] = bool(str(config.get("rerank_api_key") or "").strip())
+        return public
+
+    @staticmethod
+    def _lucene_safe_query(question: str) -> str:
+        text = str(question or "").strip()
+        if not text:
+            return ""
+        text = re.sub(r"&&|\|\|", " ", text)
+        text = re.sub(r"[+\\\-!(){}\[\]^\"~*?:/]", " ", text)
+        text = re.sub(r"\s+", " ", text).strip()
+        return text[:500]
 
     @staticmethod
     def _safe_score(value: Any) -> Optional[float]:
