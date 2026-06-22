@@ -277,7 +277,17 @@ class LLMRelationExtractor:
         metadata = {
             key: value
             for key, value in (chunk_metadata or {}).items()
-            if key in {"block_type", "heading_path", "caption", "source_location", "document_type", "domain"}
+            if key
+            in {
+                "block_type",
+                "heading_path",
+                "caption",
+                "source_location",
+                "document_type",
+                "domain",
+                "extraction_strategy",
+                "table_columns",
+            }
             and value not in (None, "", [])
         }
         return (

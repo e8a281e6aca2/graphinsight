@@ -311,12 +311,13 @@ class DocumentGraphService:
                 chunk_payload = []
                 for idx, structured_chunk in enumerate(structured_chunks):
                     chunk = structured_chunk.text
+                    llm_extraction_text = self._llm_extraction_text(structured_chunk)
                     parser_metadata = self._chunk_parser_metadata(parsed, idx, structured_chunk)
                     plan_item = extraction_plan.item_for(idx)
                     use_llm_extraction = plan_item.use_llm
                     entities = self._merge_entities(
                         self._extract_entities(
-                            chunk,
+                            llm_extraction_text,
                             reasoning_profile=reasoning_profile,
                             use_llm=use_llm_extraction,
                             document_profile=document_profile,
@@ -327,7 +328,7 @@ class DocumentGraphService:
                     if complex_extraction and not relation_profile:
                         relation_profile = "balanced"
                     semantic_relations = self._extract_relations(
-                        chunk,
+                        llm_extraction_text,
                         entities,
                         reasoning_profile=relation_profile,
                         use_llm=use_llm_extraction,
@@ -340,6 +341,7 @@ class DocumentGraphService:
                             "extraction_strategy": plan_item.strategy,
                             "extraction_priority": plan_item.priority,
                             "extraction_reasons": plan_item.reasons,
+                            "table_columns": structured_chunk.table_columns,
                         },
                     )
                     table_relations = self._normalize_relations(
@@ -1146,6 +1148,36 @@ class DocumentGraphService:
                 next_start = end
             start = next_start
         return chunks
+
+    @staticmethod
+    def _llm_extraction_text(chunk: StructuredChunk) -> str:
+        if chunk.block_type != "table" or not chunk.table_columns or not chunk.table_rows:
+            return chunk.text
+
+        parts: List[str] = []
+        heading = " > ".join(part for part in chunk.heading_path if str(part).strip())
+        if heading:
+            parts.append(f"标题路径：{heading}")
+        if chunk.caption:
+            parts.append(f"表题：{chunk.caption}")
+        if chunk.neighbor_before:
+            parts.append(f"表前上下文：{chunk.neighbor_before}")
+        parts.append("列：" + " | ".join(chunk.table_columns))
+
+        max_rows = 60
+        for index, row in enumerate(chunk.table_rows[:max_rows], start=1):
+            cells = []
+            for column in chunk.table_columns:
+                value = str(row.get(column) or "").strip()
+                if value:
+                    cells.append(f"{column}={value}")
+            if cells:
+                parts.append(f"第{index}行：" + "；".join(cells))
+        if len(chunk.table_rows) > max_rows:
+            parts.append(f"其余行数：{len(chunk.table_rows) - max_rows}")
+        if chunk.neighbor_after:
+            parts.append(f"表后上下文：{chunk.neighbor_after}")
+        return "\n".join(parts).strip() or chunk.text
 
     @staticmethod
     def _merge_entities(*groups: List[str]) -> List[str]:

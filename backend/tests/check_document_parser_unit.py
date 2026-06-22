@@ -301,6 +301,11 @@ def _check_entity_normalization_and_table_relations() -> None:
     _assert(any(item["target"] == "平均防效: 89.93 a" for item in normalized), normalized)
     _assert(any(item.get("evidence") for item in normalized), normalized)
 
+    llm_text = service._llm_extraction_text(chunk)
+    _assert("表题：表 2 不同药剂处理小麦条锈病的防效" in llm_text, llm_text)
+    _assert("列：处理 | 平均防效" in llm_text, llm_text)
+    _assert("第1行：处理=125 g/L氟环唑SC；平均防效=89.93 a" in llm_text, llm_text)
+
 
 def _check_document_profiler_and_schema_assets() -> None:
     from services.document_parser import ParsedBlock, ParsedDocument
@@ -369,6 +374,17 @@ def _check_extraction_planner_selects_high_value_chunks() -> None:
     _assert(selected == [2, 3], [item.to_dict() for item in plan.items])
     table_item = plan.item_for(4)
     _assert(table_item.use_llm is False and table_item.strategy == "structured_table", table_item.to_dict())
+
+    balanced_plan = extraction_planner.plan(
+        chunks,
+        document_profile=profile,
+        reasoning_profile="balanced",
+        complex_extraction=True,
+        base_llm_budget=2,
+    )
+    balanced_table_item = balanced_plan.item_for(4)
+    _assert(balanced_table_item.use_llm is True, balanced_table_item.to_dict())
+    _assert(balanced_table_item.strategy == "structured_table_plus_llm", balanced_table_item.to_dict())
 
 
 def _check_graph_extractors_use_runtime_model_config() -> None:

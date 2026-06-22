@@ -67,16 +67,21 @@ class ExtractionPlanner:
         llm_candidates: List[tuple[float, int, List[str]]] = []
         items: List[ExtractionPlanItem] = []
 
+        table_llm_enabled = base_llm_budget > 0 and (profile_name in {"balanced", "deep"} or complex_extraction)
+
         for index, chunk in enumerate(chunk_list):
             priority, reasons = self._score_chunk(chunk, document_type=document_type, profile=profile)
             if chunk.block_type == "table":
+                table_reasons = [*reasons, "structured_table_rule_extraction"]
+                if table_llm_enabled:
+                    table_reasons.append("table_semantic_llm_enhancement")
                 items.append(
                     ExtractionPlanItem(
                         index=index,
-                        use_llm=False,
+                        use_llm=table_llm_enabled,
                         priority=priority,
-                        reasons=[*reasons, "structured_table_rule_extraction"],
-                        strategy="structured_table",
+                        reasons=table_reasons,
+                        strategy="structured_table_plus_llm" if table_llm_enabled else "structured_table",
                     )
                 )
                 continue
