@@ -34,6 +34,7 @@ interface ContextMenuProps {
   onShowNode: (id: string) => void;
   onHideEdge: (id: string) => void;
   onShowEdge: (id: string) => void;
+  onExpandNode: (id: string) => void | Promise<void>;
   viewportSize: { width: number; height: number };
 }
 
@@ -48,6 +49,7 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
   onShowNode,
   onHideEdge,
   onShowEdge,
+  onExpandNode,
   viewportSize,
 }) => {
   const { setSelectedNodeId, createGroup, setNodeTypeFilter, setRelationshipTypeFilter } = useGraphStore();
@@ -101,9 +103,8 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
   const handleExpandNeighbors = () => {
     const elementData = getElementData();
     if (elementType === 'node' && elementData) {
-      const neighbors = rendererRef.current?.getNeighbors(elementData.id) || [];
       rendererRef.current?.setActiveElement({ type: 'node', id: elementData.id });
-      rendererRef.current?.fitTo([elementData.id, ...neighbors], 80);
+      void onExpandNode(elementData.id);
     }
     handleClose();
   };

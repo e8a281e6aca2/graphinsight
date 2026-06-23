@@ -12,14 +12,13 @@ import { ContextMenu, type ContextMenuTarget } from './ContextMenu';
 import { PerformanceWarningDialog } from './PerformanceWarningDialog';
 import { NavigationPanel } from './NavigationPanel';
 import { reportClientLog } from '../../services/clientLog';
-import { buildApiUrl } from '../../utils/apiBase';
+import { expandNode } from '../../services/graphService';
 
 interface GraphCanvasProps {
   rendererRef?: React.RefObject<RendererAPI | null>;
   onGroupingUpdate?: () => void;
 }
 
-type ExpandResponse = Pick<GraphData, 'nodes' | 'edges' | 'stats'>;
 type TooltipNodeData = {
   id: string;
   label: string;
@@ -84,11 +83,16 @@ export function GraphCanvas({ rendererRef: externalRendererRef, onGroupingUpdate
     () => (viewMode === '3d' ? (isDarkMode ? '3d-dark' : '3d-light') : '2d'),
     [viewMode, isDarkMode]
   );
+  const hasData = Boolean(graphData && (graphData.nodes.length > 0 || graphData.edges.length > 0));
+  const hasQueryResult = graphData !== null;
+  const isEmptyResult = hasQueryResult && !hasData;
 
   const groupingStateRef = useRef(groupingState);
   const graphDataRef = useRef(graphData);
   const onGroupingUpdateRef = useRef(onGroupingUpdate);
   const isExpandingRef = useRef(false);
+  const pendingExpandFocusRef = useRef<{ requestId: number; nodeId: string; focusIds: string[] } | null>(null);
+  const expandFocusRequestRef = useRef(0);
 
   useEffect(() => {
     groupingStateRef.current = groupingState;
@@ -135,49 +139,58 @@ export function GraphCanvas({ rendererRef: externalRendererRef, onGroupingUpdate
     setIsExpanding(true);
 
     try {
-      const response = await fetch(buildApiUrl('/expand'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          nodeId: nodeId,
-          direction: 'both',
-          limit: 20,
-        }),
+      const data = await expandNode(nodeId, 'both', undefined, 30);
+      const currentData: GraphData = graphDataRef.current || {
+        nodes: [],
+        edges: [],
+        stats: { nodeCount: 0, edgeCount: 0, executionTime: 0 },
+      };
+
+      const existingNodeIds = new Set(currentData.nodes.map((node) => node.id));
+      const newNodes = data.nodes.filter((node) => !existingNodeIds.has(node.id));
+
+      const existingEdgeIds = new Set(currentData.edges.map((edge) => edge.id));
+      const newEdges = data.edges.filter((edge) => !existingEdgeIds.has(edge.id));
+
+      const mergedData = {
+        nodes: [...currentData.nodes, ...newNodes],
+        edges: [...currentData.edges, ...newEdges],
+        stats: {
+          nodeCount: currentData.nodes.length + newNodes.length,
+          edgeCount: currentData.edges.length + newEdges.length,
+          executionTime: data.stats?.executionTime || 0,
+        },
+      };
+
+      setGraphData(mergedData);
+      setSelectedNodeId(nodeId);
+      activeElementRef.current = { type: 'node', id: nodeId };
+
+      const apiNodeIds = data.nodes.map((node) => node.id);
+      const existingNeighborIds = rendererRef.current?.getNeighbors(nodeId) || [];
+      const focusIds = Array.from(new Set([nodeId, ...apiNodeIds, ...existingNeighborIds]));
+      const requestId = expandFocusRequestRef.current + 1;
+      expandFocusRequestRef.current = requestId;
+      pendingExpandFocusRef.current = { requestId, nodeId, focusIds };
+
+      [180, 520, 1000].forEach((delay, index, delays) => {
+        window.setTimeout(() => {
+          const pendingFocus = pendingExpandFocusRef.current;
+          if (!pendingFocus || pendingFocus.requestId !== requestId) return;
+          rendererRef.current?.setActiveElement({ type: 'node', id: pendingFocus.nodeId });
+          rendererRef.current?.fitTo(pendingFocus.focusIds, 90);
+          if (index === delays.length - 1) {
+            pendingExpandFocusRef.current = null;
+          }
+        }, delay);
       });
-
-      const data = (await response.json()) as ExpandResponse;
-
-      if (data.nodes && data.nodes.length > 0) {
-        const currentData: GraphData = graphDataRef.current || {
-          nodes: [],
-          edges: [],
-          stats: { nodeCount: 0, edgeCount: 0, executionTime: 0 },
-        };
-
-        const existingNodeIds = new Set(currentData.nodes.map((node) => node.id));
-        const newNodes = data.nodes.filter((node) => !existingNodeIds.has(node.id));
-
-        const existingEdgeIds = new Set(currentData.edges.map((edge) => edge.id));
-        const newEdges = data.edges.filter((edge) => !existingEdgeIds.has(edge.id));
-
-        const mergedData = {
-          nodes: [...currentData.nodes, ...newNodes],
-          edges: [...currentData.edges, ...newEdges],
-          stats: {
-            nodeCount: currentData.nodes.length + newNodes.length,
-            edgeCount: currentData.edges.length + newEdges.length,
-            executionTime: data.stats?.executionTime || 0,
-          },
-        };
-
-        setGraphData(mergedData);
-      }
     } catch (error) {
       console.error('Failed to expand node:', error);
+      pendingExpandFocusRef.current = null;
     } finally {
       setIsExpanding(false);
     }
-  }, [setGraphData]);
+  }, [rendererRef, setGraphData, setSelectedNodeId]);
 
   const handleVideoClose = () => {
     setVideoDialogOpen(false);
@@ -366,6 +379,7 @@ export function GraphCanvas({ rendererRef: externalRendererRef, onGroupingUpdate
     const is3D = rendererKey !== '2d';
     if (!is3D && !canvas) return;
     if (is3D && !container3d) return;
+    if (is3D && !hasData) return;
 
     setRendererError(null);
     const styleName = rendererKey === '3d-dark' ? 'kgCosmic' : 'kgVivid';
@@ -416,6 +430,17 @@ export function GraphCanvas({ rendererRef: externalRendererRef, onGroupingUpdate
 
     const initRenderer = async () => {
       if (disposed) return;
+      if (is3D) {
+        const rect = container3d!.getBoundingClientRect();
+        const containerReady = rect.width >= 48 && rect.height >= 48 && container3d!.getClientRects().length > 0;
+        if (!containerReady) {
+          retryTimer = window.setTimeout(() => {
+            void initRenderer();
+          }, 120);
+          return;
+        }
+      }
+
       attempt += 1;
       try {
         if (!is3D) {
@@ -505,6 +530,7 @@ export function GraphCanvas({ rendererRef: externalRendererRef, onGroupingUpdate
     handleRendererContextMenu,
     handleRendererDoubleClick,
     handleRendererHover,
+    hasData,
     rendererRef,
     rendererKey,
   ]);
@@ -547,6 +573,7 @@ export function GraphCanvas({ rendererRef: externalRendererRef, onGroupingUpdate
 
   useEffect(() => {
     if (!rendererRef.current || !rendererData || rendererData.nodes.length === 0) return;
+    if (pendingExpandFocusRef.current) return;
 
     const timer = window.setTimeout(() => {
       rendererRef.current?.fitTo(undefined, SAFE_FIT_PADDING);
@@ -561,7 +588,7 @@ export function GraphCanvas({ rendererRef: externalRendererRef, onGroupingUpdate
       const nodeIds = rendererDataRef.current.nodes.map((node) => node.id);
       const edgeIds = rendererDataRef.current.edges.map((edge) => edge.id);
       rendererRef.current.setSearchHighlight({ nodeIds, edgeIds });
-      if (activeWorkspaceTab === 'graph') {
+      if (activeWorkspaceTab === 'graph' && !pendingExpandFocusRef.current) {
         rendererRef.current.fitTo(nodeIds, SAFE_FIT_PADDING);
       }
       rendererRef.current.setPathHighlight({ nodeIds: [], edgeIds: [] });
@@ -649,7 +676,7 @@ export function GraphCanvas({ rendererRef: externalRendererRef, onGroupingUpdate
 
     if (highlightIds.length > 0) {
       rendererRef.current.setSearchHighlight({ nodeIds: highlightIds, edgeIds: highlightEdgeIds });
-      if (activeWorkspaceTab === 'graph') {
+      if (activeWorkspaceTab === 'graph' && !pendingExpandFocusRef.current) {
         rendererRef.current.fitTo(highlightIds, SAFE_FIT_PADDING);
       }
     } else {
@@ -714,7 +741,7 @@ export function GraphCanvas({ rendererRef: externalRendererRef, onGroupingUpdate
     if (autoPaths.length > 0) {
       const primary = autoPaths[0];
       rendererRef.current.setPathHighlight({ nodeIds: primary.nodes, edgeIds: primary.edges });
-      if (activeWorkspaceTab === 'graph') {
+      if (activeWorkspaceTab === 'graph' && !pendingExpandFocusRef.current) {
         rendererRef.current.fitTo(primary.nodes, 90);
       }
     } else {
@@ -738,11 +765,6 @@ export function GraphCanvas({ rendererRef: externalRendererRef, onGroupingUpdate
 
     return () => observer.disconnect();
   }, []);
-
-
-  const hasData = graphData && (graphData.nodes.length > 0 || graphData.edges.length > 0);
-  const hasQueryResult = graphData !== null;
-  const isEmptyResult = hasQueryResult && !hasData;
 
   return (
     <Box
@@ -799,7 +821,7 @@ export function GraphCanvas({ rendererRef: externalRendererRef, onGroupingUpdate
           </Typography>
           {isEmptyResult && (
             <Typography variant="caption" sx={{ mt: 0.5 }}>
-              可尝试：MATCH (n) RETURN n LIMIT 25
+              可尝试重新执行自动发现查询，或放宽当前过滤条件。
             </Typography>
           )}
         </Box>
@@ -870,6 +892,7 @@ export function GraphCanvas({ rendererRef: externalRendererRef, onGroupingUpdate
         onShowNode={handleShowNode}
         onHideEdge={handleHideEdge}
         onShowEdge={handleShowEdge}
+        onExpandNode={handleExpandNode}
         viewportSize={canvasSize}
       />
 

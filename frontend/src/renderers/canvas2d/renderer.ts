@@ -42,6 +42,18 @@ const HIGHLIGHT_COLOR = '#ffd700';
 const PATH_COLOR = '#ff6b6b';
 const FONT_FAMILY = 'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
 
+function stableHash(input: string) {
+  let hash = 0;
+  for (let i = 0; i < input.length; i += 1) {
+    hash = (hash * 31 + input.charCodeAt(i)) | 0;
+  }
+  return Math.abs(hash);
+}
+
+function hasFinitePosition(node?: { x?: number; y?: number }) {
+  return Boolean(node && Number.isFinite(node.x) && Number.isFinite(node.y));
+}
+
 export function createRenderer(
   canvas: HTMLCanvasElement,
   handlers: RendererEventHandlers = {},
@@ -68,8 +80,6 @@ export function createRenderer(
   let edgeById = new Map<string, LinkDatum>();
   let visibleNodeIds = new Set<string>();
   let visibleEdgeIds = new Set<string>();
-  let highlightedNodeIds = new Set<string>();
-  let highlightedEdgeIds = new Set<string>();
   let activeHighlightNodeIds = new Set<string>();
   let activeHighlightEdgeIds = new Set<string>();
   let searchHighlightNodeIds = new Set<string>();
@@ -276,17 +286,6 @@ export function createRenderer(
         }
       }
     }
-
-    highlightedNodeIds = new Set<string>([
-      ...activeHighlightNodeIds,
-      ...searchHighlightNodeIds,
-      ...pathHighlightNodeIds,
-    ]);
-    highlightedEdgeIds = new Set<string>([
-      ...activeHighlightEdgeIds,
-      ...searchHighlightEdgeIds,
-      ...pathHighlightEdgeIds,
-    ]);
   }
 
   function updateSimulation() {
@@ -620,8 +619,6 @@ export function createRenderer(
   }
 
   function drawEdges(context: CanvasRenderingContext2D, currentTransform: ZoomTransform) {
-    const hasHighlight = highlightedNodeIds.size > 0 || highlightedEdgeIds.size > 0;
-
     edges.forEach((edge) => {
       if (!visibleEdgeIds.has(edge.id)) return;
       const { source, target } = getEdgeNodes(edge);
@@ -643,20 +640,11 @@ export function createRenderer(
       const isPathHighlighted = pathHighlightEdgeIds.has(edge.id);
       const isSearchHighlighted = searchHighlightEdgeIds.has(edge.id);
       const isActiveRelated = activeHighlightEdgeIds.has(edge.id);
-      const isEmphasized = isActiveEdge || isPathHighlighted || isSearchHighlighted || isActiveRelated;
       const baseColor = edge.color || DEFAULT_EDGE_COLOR;
-      const strokeColor = isActiveEdge
-        ? ACTIVE_COLOR
-        : isPathHighlighted
-          ? PATH_COLOR
-          : isSearchHighlighted
-            ? HIGHLIGHT_COLOR
-            : isActiveRelated
-              ? HIGHLIGHT_COLOR
-              : baseColor;
+      const strokeColor = baseColor;
       const lineWidth = isActiveEdge ? 3 : isPathHighlighted ? 2.5 : isSearchHighlighted ? 2 : isActiveRelated ? 2 : 1.2;
 
-      context.globalAlpha = hasHighlight && !isEmphasized ? 0.15 : 1;
+      context.globalAlpha = 1;
       context.strokeStyle = strokeColor;
       context.lineWidth = lineWidth;
       context.beginPath();
@@ -751,8 +739,6 @@ export function createRenderer(
   }
 
   function drawNodes(context: CanvasRenderingContext2D, currentTransform: ZoomTransform) {
-    const hasHighlight = highlightedNodeIds.size > 0 || highlightedEdgeIds.size > 0;
-
     nodes.forEach((node) => {
       if (!visibleNodeIds.has(node.id)) return;
       if (node.x === undefined || node.y === undefined) return;
@@ -761,10 +747,9 @@ export function createRenderer(
       const isPathHighlighted = pathHighlightNodeIds.has(node.id);
       const isSearchHighlighted = searchHighlightNodeIds.has(node.id);
       const isActiveRelated = activeHighlightNodeIds.has(node.id);
-      const isEmphasized = isActiveNode || isPathHighlighted || isSearchHighlighted || isActiveRelated;
       const radius = node.radius ?? 24;
 
-      context.globalAlpha = hasHighlight && !isEmphasized ? 0.2 : 1;
+      context.globalAlpha = 1;
 
       context.fillStyle = node.color;
       context.beginPath();
@@ -846,6 +831,19 @@ export function createRenderer(
 
     const nextNodeById = new Map<string, RendererNode>();
     nextNodes.forEach((node) => nextNodeById.set(node.id, node));
+    nextNodes.forEach((node) => {
+      if (hasFinitePosition(node)) return;
+
+      const anchor = node.neighbors
+        .map((id) => previousNodes.get(id) || nextNodeById.get(id))
+        .find((candidate) => hasFinitePosition(candidate));
+      const seed = stableHash(node.id);
+      const angle = ((seed % 360) / 180) * Math.PI;
+      const distance = 72 + (seed % 48);
+
+      node.x = (anchor?.x ?? width / 2) + Math.cos(angle) * distance;
+      node.y = (anchor?.y ?? height / 2) + Math.sin(angle) * distance;
+    });
 
     const nextEdges: LinkDatum[] = data.edges.map((edge) => ({
       ...edge,
@@ -1105,7 +1103,6 @@ export function createRenderer(
   async function exportSVG(options?: { background?: string }) {
     const svgWidth = width;
     const svgHeight = height;
-    const hasHighlight = highlightedNodeIds.size > 0 || highlightedEdgeIds.size > 0;
     const defs: string[] = [];
     const nodesSvg: string[] = [];
     const edgesSvg: string[] = [];
@@ -1134,19 +1131,10 @@ export function createRenderer(
       const isPathHighlighted = pathHighlightEdgeIds.has(edge.id);
       const isSearchHighlighted = searchHighlightEdgeIds.has(edge.id);
       const isActiveRelated = activeHighlightEdgeIds.has(edge.id);
-      const isEmphasized = isActiveEdge || isPathHighlighted || isSearchHighlighted || isActiveRelated;
       const baseColor = edge.color || DEFAULT_EDGE_COLOR;
-      const strokeColor = isActiveEdge
-        ? ACTIVE_COLOR
-        : isPathHighlighted
-          ? PATH_COLOR
-          : isSearchHighlighted
-            ? HIGHLIGHT_COLOR
-            : isActiveRelated
-              ? HIGHLIGHT_COLOR
-              : baseColor;
+      const strokeColor = baseColor;
       const strokeWidth = (isActiveEdge ? 3 : isPathHighlighted ? 2.5 : isSearchHighlighted ? 2 : isActiveRelated ? 2 : 1.2) * transform.k;
-      const opacity = hasHighlight && !isEmphasized ? 0.15 : 1;
+      const opacity = 1;
 
       edgesSvg.push(
         `<line x1="${startScreen.x.toFixed(2)}" y1="${startScreen.y.toFixed(2)}" x2="${endScreen.x.toFixed(2)}" y2="${endScreen.y.toFixed(2)}" stroke="${strokeColor}" stroke-width="${strokeWidth}" opacity="${opacity}"/>`
@@ -1187,8 +1175,7 @@ export function createRenderer(
       const isPathHighlighted = pathHighlightNodeIds.has(node.id);
       const isSearchHighlighted = searchHighlightNodeIds.has(node.id);
       const isActiveRelated = activeHighlightNodeIds.has(node.id);
-      const isEmphasized = isActiveNode || isPathHighlighted || isSearchHighlighted || isActiveRelated;
-      const opacity = hasHighlight && !isEmphasized ? 0.2 : 1;
+      const opacity = 1;
       const stroke = isActiveNode
         ? ACTIVE_COLOR
         : isPathHighlighted

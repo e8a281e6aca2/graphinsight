@@ -1,32 +1,27 @@
-import ForceGraph3D from '3d-force-graph';
-import SpriteText from 'three-spritetext';
 import {
-  AdditiveBlending,
   AmbientLight,
-  ACESFilmicToneMapping,
   BufferGeometry,
   Color,
   DirectionalLight,
   Float32BufferAttribute,
-  Fog,
   Group,
-  LinearFilter,
+  Line,
+  LineBasicMaterial,
   Mesh,
-  MeshPhysicalMaterial,
-  PMREMGenerator,
-  Points,
-  PointsMaterial,
+  MeshBasicMaterial,
+  MeshLambertMaterial,
   PerspectiveCamera,
+  Raycaster,
   Scene,
   SphereGeometry,
-  TextureLoader,
-  Texture,
+  Vector2,
+  Vector3,
   WebGLRenderer,
-  SRGBColorSpace,
 } from 'three';
-import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
-import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
+import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import SpriteText from 'three-spritetext';
 import type {
+  LayoutConfig,
   RendererAPI,
   RendererActiveElement,
   RendererData,
@@ -36,114 +31,16 @@ import type {
   RendererOptions,
 } from '../core/types';
 import { FORCE3D_PRESETS } from './stylePresets';
-import { generateVideoThumbnail } from '../../utils/videoThumbnail';
 
-type GraphNode = RendererNode & { x?: number; y?: number; z?: number };
-type GraphLink = RendererEdge & { source: string; target: string };
-
-type Vector3Like = { x: number; y: number; z: number };
-type ControlsLike = {
-  target?: Vector3Like & { set?: (x: number, y: number, z: number) => void };
-  enableDamping?: boolean;
-  dampingFactor?: number;
-  rotateSpeed?: number;
-  zoomSpeed?: number;
-  panSpeed?: number;
-  minDistance?: number;
-  maxDistance?: number;
-  update?: () => void;
-  addEventListener?: (event: string, handler: () => void) => void;
-  removeEventListener?: (event: string, handler: () => void) => void;
-};
-type ExtendedWebGLRenderer = WebGLRenderer & {
-  physicallyCorrectLights?: boolean;
-};
-type ForceGraphData = { nodes?: GraphNode[]; links?: GraphLink[] };
-type ForceGraphRuntime = {
-  renderer: () => ExtendedWebGLRenderer;
-  scene?: () => Scene;
-  camera: () => PerspectiveCamera;
-  controls: () => ControlsLike;
-  width: (value: number) => ForceGraphRuntime;
-  height: (value: number) => ForceGraphRuntime;
-  backgroundColor: (value: string) => ForceGraphRuntime;
-  showNavInfo?: (value: boolean) => ForceGraphRuntime;
-  enablePointerInteraction?: (value: boolean) => ForceGraphRuntime;
-  nodeId: (key: string) => ForceGraphRuntime;
-  linkSource: (key: string) => ForceGraphRuntime;
-  linkTarget: (key: string) => ForceGraphRuntime;
-  nodeLabel: (fn: (node: GraphNode) => string) => ForceGraphRuntime;
-  nodeOpacity?: (value: number) => ForceGraphRuntime;
-  nodeResolution?: (value: number) => ForceGraphRuntime;
-  linkOpacity?: (value: number) => ForceGraphRuntime;
-  linkDirectionalArrowLength: (value: number) => ForceGraphRuntime;
-  linkDirectionalArrowRelPos: (value: number) => ForceGraphRuntime;
-  linkDirectionalArrowResolution?: (value: number) => ForceGraphRuntime;
-  linkResolution?: (value: number) => ForceGraphRuntime;
-  lights?: (lights: unknown[]) => ForceGraphRuntime;
-  forceEngine?: (engine: string) => ForceGraphRuntime;
-  numDimensions?: (dimensions: number) => ForceGraphRuntime;
-  d3Force?: (name: string) => { strength?: (value: number) => void; distance?: (value: number) => void };
-  postProcessingComposer?: () => { addPass: (pass: unknown) => void };
-  graphData: {
-    (): ForceGraphData;
-    (data: { nodes: GraphNode[]; links: GraphLink[] }): ForceGraphRuntime;
-  };
-  cameraPosition: (position: Vector3Like, lookAt?: Vector3Like, duration?: number) => ForceGraphRuntime;
-  nodeColor: (fn: (node: GraphNode) => string) => ForceGraphRuntime;
-  linkColor: (fn: (edge: GraphLink) => string) => ForceGraphRuntime;
-  linkDirectionalArrowColor: (fn: (edge: GraphLink) => string) => ForceGraphRuntime;
-  linkWidth: (fn: (edge: GraphLink) => number) => ForceGraphRuntime;
-  linkDirectionalParticles: (fn: (edge: GraphLink) => number) => ForceGraphRuntime;
-  linkDirectionalParticleWidth?: (value: number) => ForceGraphRuntime;
-  linkDirectionalParticleSpeed?: (value: number) => ForceGraphRuntime;
-  linkDirectionalParticleColor?: (fn: (edge: GraphLink) => string) => ForceGraphRuntime;
-  nodeRelSize: (value: number) => ForceGraphRuntime;
-  nodeVal: (fn: (node: GraphNode) => number) => ForceGraphRuntime;
-  nodeThreeObject: (fn: (node: GraphNode) => Group) => ForceGraphRuntime;
-  nodeThreeObjectExtend: (value: boolean) => ForceGraphRuntime;
-  linkThreeObject: (fn: (edge: GraphLink) => SpriteText | Group) => ForceGraphRuntime;
-  linkThreeObjectExtend: (value: boolean) => ForceGraphRuntime;
-  linkPositionUpdate: (
-    fn: (
-      obj: LinkLabelObject | null,
-      coords: { start?: Vector3Like; end?: Vector3Like }
-    ) => false | void
-  ) => ForceGraphRuntime;
-  onNodeHover: (fn: (node: GraphNode | null) => void) => ForceGraphRuntime;
-  onLinkHover: (fn: (link: GraphLink | null) => void) => ForceGraphRuntime;
-  onNodeClick: (fn: (node: GraphNode | null) => void) => ForceGraphRuntime;
-  onLinkClick: (fn: (link: GraphLink | null) => void) => ForceGraphRuntime;
-  onNodeRightClick?: (fn: (node: GraphNode | null, event?: PointerEvent) => void) => ForceGraphRuntime;
-  onLinkRightClick?: (fn: (link: GraphLink | null, event?: PointerEvent) => void) => ForceGraphRuntime;
-  refresh?: () => ForceGraphRuntime;
-  resumeAnimation?: () => void;
-  pauseAnimation?: () => void;
-  d3ReheatSimulation?: () => void;
-  onEngineTick?: (fn: () => void) => ForceGraphRuntime;
-  _destructor?: () => void;
+type GraphNode = RendererNode & {
+  x?: number;
+  y?: number;
+  z?: number;
 };
 
-type ForceGraphFactory = {
-  new (container: HTMLDivElement, config: Record<string, unknown>): ForceGraphInstance;
-  (config?: Record<string, unknown>): ForceGraphInstance | ((container: HTMLDivElement) => ForceGraphInstance);
-};
-
-type ForceGraphInstance = ForceGraphRuntime;
-
-type DebugWindow = Window & {
-  __KG_GRAPH_3D__?: ForceGraphInstance;
-};
-
-type LinkLabelObject = SpriteText & {
-  position: { set: (x: number, y: number, z: number) => void };
-};
-
-type NodeObject = {
-  group: Group;
-  sphere: Mesh;
-  material: MeshPhysicalMaterial;
-  label?: SpriteText;
+type GraphLink = RendererEdge & {
+  sourceId: string;
+  targetId: string;
 };
 
 type FilterState = {
@@ -153,110 +50,146 @@ type FilterState = {
   hiddenEdgeIds: Set<string>;
 };
 
-const DEFAULT_EDGE_COLOR = 'rgba(148, 163, 184, 0.35)';
-const ACTIVE_COLOR = '#ff4081';
-const HIGHLIGHT_COLOR = '#ffd700';
-const PATH_COLOR = '#ff6b6b';
+type NodeVisual = {
+  group: Group;
+  core: Mesh<SphereGeometry, MeshLambertMaterial>;
+  halo: Mesh<SphereGeometry, MeshBasicMaterial>;
+  label: SpriteText;
+};
 
-function parseHexColor(hex: string) {
-  const cleaned = hex.replace('#', '');
-  if (cleaned.length === 3) {
-    const r = parseInt(cleaned[0] + cleaned[0], 16);
-    const g = parseInt(cleaned[1] + cleaned[1], 16);
-    const b = parseInt(cleaned[2] + cleaned[2], 16);
-    return { r, g, b };
+type EdgeVisual = {
+  line: Line<BufferGeometry, LineBasicMaterial>;
+};
+
+const MIN_RENDER_SIZE = 48;
+const SIZE_RETRY_DELAY_MS = 120;
+const DEFAULT_NODE_COLOR = '#64748b';
+const DEFAULT_EDGE_COLOR = 'rgba(100, 116, 139, 0.32)';
+const DEFAULT_RADIUS = 18;
+const SMALL_LABEL_MAX = 34;
+const OVERVIEW_LABEL_MAX = 14;
+const INITIAL_RELAX_ITERATIONS = 90;
+const MAX_REPULSION_NODES = 420;
+const VIEW_FILL_FACTOR = 0.84;
+
+function stableHash(input: string) {
+  let hash = 0;
+  for (let i = 0; i < input.length; i += 1) {
+    hash = (hash * 31 + input.charCodeAt(i)) | 0;
   }
-  if (cleaned.length === 6) {
-    const r = parseInt(cleaned.slice(0, 2), 16);
-    const g = parseInt(cleaned.slice(2, 4), 16);
-    const b = parseInt(cleaned.slice(4, 6), 16);
-    return { r, g, b };
-  }
-  return null;
+  return Math.abs(hash);
 }
 
-function parseCssColor(color: string): { r: number; g: number; b: number; a?: number } | null {
-  if (!color) return null;
-  if (color.startsWith('#')) {
-    const rgb = parseHexColor(color);
-    return rgb ? { r: rgb.r, g: rgb.g, b: rgb.b } : null;
+function toCompactText(value: unknown, maxLength = 120): string {
+  if (value === null || value === undefined) return '';
+  if (Array.isArray(value)) {
+    const text = value.map((item: unknown) => toCompactText(item, 32)).filter(Boolean).join(', ');
+    return text.length > maxLength ? `${text.slice(0, maxLength)}...` : text;
   }
-  const match = color
-    .replace(/\s+/g, '')
-    .match(/^rgba?\((\d+(\.\d+)?),(\d+(\.\d+)?),(\d+(\.\d+)?)(?:,(\d+(\.\d+)?))?\)$/i);
-  if (!match) return null;
-  const r = Number(match[1]);
-  const g = Number(match[3]);
-  const b = Number(match[5]);
-  const a = match[7] !== undefined ? Number(match[7]) : undefined;
-  if (!Number.isFinite(r) || !Number.isFinite(g) || !Number.isFinite(b)) return null;
-  return { r, g, b, a };
+  if (typeof value === 'object') return '';
+  const text = String(value).trim().replace(/\s+/g, ' ');
+  if (!text) return '';
+  return text.length > maxLength ? `${text.slice(0, maxLength)}...` : text;
 }
 
-function clamp01(value: number) {
-  return Math.min(1, Math.max(0, value));
-}
-
-function boostColor(color: string, saturationBoost: number, lightnessBoost: number) {
-  const parsed = parseCssColor(color);
-  if (!parsed) return color;
-  const { r, g, b, a } = parsed;
-  const threeColor = new Color(r / 255, g / 255, b / 255);
-  const hsl = { h: 0, s: 0, l: 0 };
-  threeColor.getHSL(hsl);
-  const nextS = clamp01(hsl.s + saturationBoost);
-  const nextL = clamp01(hsl.l + lightnessBoost);
-  threeColor.setHSL(hsl.h, nextS, nextL);
-  const outR = Math.round(threeColor.r * 255);
-  const outG = Math.round(threeColor.g * 255);
-  const outB = Math.round(threeColor.b * 255);
-  if (a !== undefined && a < 1) {
-    return `rgba(${outR}, ${outG}, ${outB}, ${a})`;
-  }
-  return `rgb(${outR}, ${outG}, ${outB})`;
-}
-
-function withAlpha(color: string, alpha: number) {
+function toThreeColor(color: string) {
   if (color.startsWith('rgba')) {
     return color.replace(/rgba\(([^)]+)\)/, (_, content) => {
-      const parts = content.split(',').map((p: string) => p.trim());
-      if (parts.length >= 3) {
-        return `rgba(${parts[0]}, ${parts[1]}, ${parts[2]}, ${alpha})`;
-      }
-      return color;
+      const [r, g, b] = content.split(',').map((part: string) => part.trim());
+      return `rgb(${r}, ${g}, ${b})`;
     });
-  }
-  if (color.startsWith('rgb')) {
-    return color.replace(/rgb\(([^)]+)\)/, (_, content) => `rgba(${content}, ${alpha})`);
-  }
-  const rgb = parseHexColor(color);
-  if (rgb) {
-    return `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${alpha})`;
   }
   return color;
 }
 
-function getEdgeLabelText(edge: { type?: string; predicate?: string; properties?: Record<string, unknown> }) {
-  const props = edge.properties || {};
+function nodeTypeKey(node: { type?: string }) {
+  return String(node.type || 'unknown').trim().toLowerCase();
+}
+
+function getNodeDisplayLabel(node: GraphNode) {
+  const props = node.properties || {};
   const candidates = [
-    'label',
-    'name',
-    'relation',
-    'rel',
-    'predicate',
-    'title',
-    '关系',
-    '关系名',
-    '名称',
-    '标题',
+    node.label,
+    props.name,
+    props.title,
+    props.label,
+    props['名称'],
+    props['标题'],
+    props.text,
+    props.content,
+    node.id,
   ];
-  for (const key of candidates) {
-    const raw = props[key];
-    if (raw === null || raw === undefined) continue;
-    const text = String(raw).trim();
+  for (const candidate of candidates) {
+    const text = toCompactText(candidate, 34);
     if (text) return text;
   }
-  return edge.type || edge.predicate || '';
+  return node.id;
+}
+
+function sphericalSeed(id: string, radius: number): Vector3 {
+  const seed = stableHash(id);
+  const theta = ((seed % 4096) / 4096) * Math.PI * 2;
+  const u = (((seed >> 7) % 2048) / 1024) - 1;
+  const phi = Math.acos(Math.max(-1, Math.min(1, u)));
+  const r = radius * (0.42 + (((seed >> 13) % 1000) / 1000) * 0.72);
+  return new Vector3(
+    r * Math.sin(phi) * Math.cos(theta),
+    r * Math.cos(phi),
+    r * Math.sin(phi) * Math.sin(theta)
+  );
+}
+
+function fibonacciShell(index: number, count: number, radius: number, seedText: string) {
+  if (count <= 1) return sphericalSeed(seedText, radius * 0.18);
+  const seed = stableHash(seedText);
+  const offset = 2 / count;
+  const increment = Math.PI * (3 - Math.sqrt(5));
+  const y = ((index * offset) - 1) + (offset / 2);
+  const radial = Math.sqrt(Math.max(0, 1 - y * y));
+  const angle = ((index + (seed % 17) * 0.037) * increment) + ((seed % 360) * Math.PI / 180);
+  return new Vector3(
+    Math.cos(angle) * radial * radius,
+    y * radius,
+    Math.sin(angle) * radial * radius
+  );
+}
+
+function typeDepthBias(type: string) {
+  const key = type.trim().toLowerCase();
+  if (key === 'document' || key === 'doc') return -120;
+  if (key === 'chunk' || key === 'section' || key === 'paragraph') return -20;
+  if (key.includes('fact')) return 115;
+  if (key === 'entity') return 70;
+  if (key === 'group') return -70;
+  return 35;
+}
+
+function desiredLinkDistance(edge: GraphLink, source?: GraphNode, target?: GraphNode) {
+  const relation = `${edge.type || ''} ${edge.predicate || ''}`.toLowerCase();
+  const sourceType = source ? nodeTypeKey(source) : '';
+  const targetType = target ? nodeTypeKey(target) : '';
+  if (relation.includes('chunk') || sourceType === 'document' || targetType === 'document') return 170;
+  if (relation.includes('mention') || sourceType === 'chunk' || targetType === 'chunk') return 145;
+  if (relation.includes('support') || sourceType.includes('fact') || targetType.includes('fact')) return 125;
+  return 155;
+}
+
+function hasFinitePosition(node?: { x?: number; y?: number; z?: number }) {
+  return Boolean(
+    node
+    && Number.isFinite(node.x)
+    && Number.isFinite(node.y)
+    && Number.isFinite(node.z)
+  );
+}
+
+function setLinePoints(line: Line<BufferGeometry, LineBasicMaterial>, a: Vector3, b: Vector3) {
+  line.geometry.dispose();
+  line.geometry = new BufferGeometry();
+  line.geometry.setAttribute('position', new Float32BufferAttribute([
+    a.x, a.y, a.z,
+    b.x, b.y, b.z,
+  ], 3));
 }
 
 export function createRenderer3D(
@@ -264,92 +197,74 @@ export function createRenderer3D(
   handlers: RendererEventHandlers = {},
   options: RendererOptions = {}
 ): RendererAPI {
-  const isDev = import.meta.env.DEV;
-  const debugLog = (...args: unknown[]) => {
-    if (isDev) {
-      console.info('[Force3D]', ...args);
-    }
-  };
-  let width = (options.width ?? container.clientWidth) || 1;
-  let height = (options.height ?? container.clientHeight) || 1;
   const style =
     (options.styleName && FORCE3D_PRESETS[options.styleName])
       ? FORCE3D_PRESETS[options.styleName]
-      : FORCE3D_PRESETS.kgCosmic;
+      : FORCE3D_PRESETS.kgVivid;
 
-  const graphConfig = {
-    controlType: style.controlType,
-    rendererConfig: { antialias: true, alpha: true },
+  const firstPositive = (...values: Array<number | undefined>) => {
+    const found = values.find((value) => Number.isFinite(value) && Number(value) > 0);
+    return found ?? 1;
   };
 
-  const initGraph = () => {
-    const GraphCtor = ForceGraph3D as unknown as ForceGraphFactory;
-    try {
-      return new GraphCtor(container, graphConfig);
-    } catch {
-      // ignore and fallback
-    }
-
-    try {
-    const factory = GraphCtor(graphConfig);
-    if (typeof factory === 'function') {
-      const maybeInstance = factory(container);
-      return maybeInstance || factory;
-    }
-      return factory as ForceGraphInstance;
-    } catch {
-      // ignore and fallback
-    }
-
-    const fallbackFactory = (ForceGraph3D as unknown as ForceGraphFactory)();
-    if (typeof fallbackFactory === 'function') {
-      const maybeInstance = fallbackFactory(container);
-      return maybeInstance || fallbackFactory;
-    }
-    return fallbackFactory as ForceGraphInstance;
+  const readContainerSize = () => {
+    const rect = container.getBoundingClientRect();
+    const parentRect = container.parentElement?.getBoundingClientRect();
+    const configuredWidth = Number.isFinite(options.width) && Number(options.width) > 0 ? Number(options.width) : undefined;
+    const configuredHeight = Number.isFinite(options.height) && Number(options.height) > 0 ? Number(options.height) : undefined;
+    return {
+      width: Math.max(1, Math.round(configuredWidth ?? firstPositive(rect.width, container.clientWidth, parentRect?.width))),
+      height: Math.max(1, Math.round(configuredHeight ?? firstPositive(rect.height, container.clientHeight, parentRect?.height))),
+    };
   };
 
-  const graph = initGraph();
+  const initialSize = readContainerSize();
+  let width = initialSize.width;
+  let height = initialSize.height;
 
-  if (!graph) {
-    throw new Error('Failed to initialize 3D graph renderer');
-  }
-  debugLog('init', { width, height });
-  if (isDev && typeof window !== 'undefined') {
-    (window as DebugWindow).__KG_GRAPH_3D__ = graph;
-  }
-
-  container.style.minWidth = '1px';
-  container.style.minHeight = '1px';
+  container.style.position = 'relative';
   container.style.width = '100%';
   container.style.height = '100%';
+  container.style.overflow = 'hidden';
+  container.style.background = style.backgroundColor;
 
-  const ensureRendererDom = () => {
-    const maybeBindable = graph as ForceGraphRuntime & { (container: HTMLDivElement): ForceGraphRuntime };
-    if (typeof maybeBindable === 'function') {
-      const renderer = graph.renderer?.();
-      const needsBind = !renderer?.domElement || !container.contains(renderer.domElement);
-      if (needsBind) {
-        try {
-          maybeBindable(container);
-        } catch {
-          // ignore
-        }
-      }
-    }
+  const scene = new Scene();
+  scene.background = new Color(style.backgroundColor);
 
-    const renderer = graph.renderer?.();
-    if (renderer?.domElement && !container.contains(renderer.domElement)) {
-      container.appendChild(renderer.domElement);
-    }
-    if (renderer?.domElement) {
-      debugLog('renderer-dom', {
-        canvas: { w: renderer.domElement.width, h: renderer.domElement.height },
-      });
-    }
-  };
+  const camera = new PerspectiveCamera(52, width / height, 1, 100000);
+  camera.position.set(520, 340, 760);
+  camera.lookAt(0, 0, 0);
 
-  ensureRendererDom();
+  const renderer = new WebGLRenderer({ antialias: true, alpha: false, powerPreference: 'high-performance' });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, style.maxPixelRatio));
+  renderer.setSize(width, height);
+  renderer.domElement.style.width = '100%';
+  renderer.domElement.style.height = '100%';
+  renderer.domElement.style.display = 'block';
+  container.appendChild(renderer.domElement);
+
+  const controls = new OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.08;
+  controls.rotateSpeed = 0.72;
+  controls.zoomSpeed = 0.9;
+  controls.panSpeed = 0.62;
+  controls.minDistance = style.minDistance;
+  controls.maxDistance = style.maxDistance;
+  controls.target.set(0, 0, 0);
+  controls.update();
+
+  scene.add(new AmbientLight(0xffffff, style.ambientLightIntensity));
+  const directionalLight = new DirectionalLight(0xffffff, style.directionalLightIntensity);
+  directionalLight.position.set(420, 720, 680);
+  scene.add(directionalLight);
+
+  const graphGroup = new Group();
+  scene.add(graphGroup);
+
+  const sphereGeometry = new SphereGeometry(1, style.nodeResolution, style.nodeResolution);
+  const raycaster = new Raycaster();
+  const pointer = new Vector2();
 
   let nodes: GraphNode[] = [];
   let edges: GraphLink[] = [];
@@ -357,1120 +272,631 @@ export function createRenderer3D(
   let edgeById = new Map<string, GraphLink>();
   let visibleNodeIds = new Set<string>();
   let visibleEdgeIds = new Set<string>();
-
-  let highlightedNodeIds = new Set<string>();
-  let highlightedEdgeIds = new Set<string>();
-  let activeHighlightNodeIds = new Set<string>();
-  let activeHighlightEdgeIds = new Set<string>();
+  let overviewLabelNodeIds = new Set<string>();
+  let globalSearchHighlight = false;
+  let activeElement: RendererActiveElement | null = null;
   let searchHighlightNodeIds = new Set<string>();
   let searchHighlightEdgeIds = new Set<string>();
   let pathHighlightNodeIds = new Set<string>();
   let pathHighlightEdgeIds = new Set<string>();
-  let activeElement: RendererActiveElement | null = null;
+  let activeNeighborNodeIds = new Set<string>();
+  let activeNeighborEdgeIds = new Set<string>();
+  let hoveredType: 'node' | 'edge' | 'background' = 'background';
+  let hoveredId: string | null = null;
   let filterState: FilterState = {
     nodeTypes: [],
     edgeTypes: [],
     hiddenNodeIds: new Set(),
     hiddenEdgeIds: new Set(),
   };
-
   let nodeSizeOverrides: Map<string, number> | null = null;
-  const baseRadiusById = new Map<string, number>();
-  const nodeObjectCache = new Map<string, NodeObject>();
-  const edgeLabelCache = new Map<string, SpriteText>();
-  const textureCache = new Map<string, Texture>();
-  const texturePending = new Set<string>();
-  const textureLoader = new TextureLoader();
-  textureLoader.setCrossOrigin('anonymous');
-  const sphereGeometry = new SphereGeometry(1, style.nodeResolution, style.nodeResolution);
-  let bloomPass: UnrealBloomPass | null = null;
-  let customNodesEnabled = false;
-  let customNodeRetry = 0;
-  let environmentTexture: Texture | null = null;
-  let pmremGenerator: PMREMGenerator | null = null;
-  let starfield: Points | null = null;
-
-  let lastPointer = { x: 0, y: 0 };
-  let hoveredType: 'node' | 'edge' | 'background' = 'background';
-  let hoveredId: string | null = null;
   let lastClickId: string | null = null;
-  let lastClickTime = 0;
-  let suppressBackgroundClick = false;
+  let lastClickAt = 0;
   let baseDistance: number | null = null;
-  let doubleClickTimer: number | null = null;
-  let controlsChangeHandler: (() => void) | null = null;
   let fitTimer: number | null = null;
-  let lastSize = { width, height };
   let sizeRetryTimer: number | null = null;
-  let lastCameraDistance = style.focusDistance * 3;
+  let animationFrame: number | null = null;
+  let pendingGraphApply = false;
+  let destroyed = false;
 
-  const updateLabelVisibility = (distance: number) => {
-    const labelDistance = style.labelMaxDistance ?? style.maxDistance * 0.35;
-    nodeObjectCache.forEach((entry, id) => {
-      if (!entry.label) return;
-      const isHovered = hoveredType === 'node' && hoveredId === id;
-      const isEmphasized = highlightedNodeIds.has(id);
-      const baseScale = entry.sphere.scale.x || 1;
-      const isTiny = baseScale < 1.4;
-      entry.label.visible = isHovered || isEmphasized || (distance < labelDistance && !isTiny);
-    });
-    const edgeLabelDistance = (style.labelMaxDistance ?? style.maxDistance * 0.35) * 0.7;
-    edgeLabelCache.forEach((label, id) => {
-      const isHovered = hoveredType === 'edge' && hoveredId === id;
-      const isEmphasized = highlightedEdgeIds.has(id);
-      label.visible = isHovered || isEmphasized || distance < edgeLabelDistance;
-    });
-  };
+  const nodeVisuals = new Map<string, NodeVisual>();
+  const edgeVisuals = new Map<string, EdgeVisual>();
 
-  graph
-    .width(width)
-    .height(height)
-    .backgroundColor(style.backgroundColor)
-    .nodeId('id')
-    .linkSource('source')
-    .linkTarget('target')
-    .nodeLabel(() => '')
-    .linkDirectionalArrowLength(style.arrowLength)
-    .linkDirectionalArrowRelPos(style.arrowRelPos)
-    .linkThreeObject((edge: GraphLink) => {
-      const labelText = getEdgeLabelText(edge);
-      const text = typeof labelText === 'string' ? labelText.trim() : String(labelText || '');
-      if (!text) {
-        return new Group();
-      }
-      let label = edgeLabelCache.get(edge.id);
-      if (!label) {
-        label = new SpriteText(text);
-        label.material.depthWrite = false;
-        label.material.depthTest = false;
-        label.color = style.labelColor;
-        label.fontFace = 'Inter, "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif';
-        label.fontWeight = '600';
-        label.fontSize = Math.round((style.labelFontSize ?? 130) * 0.65);
-        label.strokeWidth = Math.max(0.05, (style.labelStrokeWidth ?? 0) * 0.6);
-        label.strokeColor = style.labelStrokeColor ?? 'rgba(15, 23, 42, 0.4)';
-        label.textHeight = Math.max(4, style.labelSize * 0.65);
-        label.backgroundColor = withAlpha(style.labelBackground, 0.75);
-        label.borderColor = 'rgba(15, 23, 42, 0.12)';
-        label.borderWidth = 1;
-        label.padding = 4;
-        label.borderRadius = 3;
-        label.visible = false;
-        edgeLabelCache.set(edge.id, label);
-      } else if (label.text !== text) {
-        label.text = text;
-      }
-      return label;
-    })
-    .linkThreeObjectExtend(true)
-    .linkPositionUpdate((
-      obj: LinkLabelObject | null,
-      coords: {
-        start?: { x: number; y: number; z: number };
-        end?: { x: number; y: number; z: number };
-      }
-    ) => {
-      const { start, end } = coords || {};
-      if (!obj || !start || !end) return;
-      const midX = (start.x + end.x) / 2;
-      const midY = (start.y + end.y) / 2;
-      const midZ = (start.z + end.z) / 2;
-      obj.position.set(midX, midY + 4, midZ);
-      const label = obj as SpriteText;
-      if (label?.material?.map) {
-        label.material.map.anisotropy = maxAnisotropy;
-        label.material.map.minFilter = LinearFilter;
-        label.material.map.magFilter = LinearFilter;
-        label.material.map.needsUpdate = true;
-      }
-      return false;
-    });
-  graph.showNavInfo?.(false);
-  graph.enablePointerInteraction?.(true);
-  graph.nodeOpacity?.(style.nodeOpacity);
-  graph.nodeResolution?.(style.nodeResolution);
-  graph.linkOpacity?.(style.linkOpacity);
-  graph.linkDirectionalArrowResolution?.(style.arrowResolution);
-  graph.linkResolution?.(style.linkResolution);
-
-  graph.forceEngine?.('d3');
-  graph.numDimensions?.(3);
-
-  const camera = graph.camera?.();
-  if (camera) {
-    camera.near = 1;
-    camera.far = 100000;
-    camera.updateProjectionMatrix?.();
+  function hasRenderableSize() {
+    return (
+      width >= MIN_RENDER_SIZE
+      && height >= MIN_RENDER_SIZE
+      && container.isConnected
+      && container.getClientRects().length > 0
+    );
   }
 
-  if (typeof graph.d3Force === 'function') {
-    graph.d3Force('charge')?.strength?.(style.chargeStrength);
-    const linkForce = graph.d3Force('link');
-    if (linkForce && typeof linkForce.distance === 'function') {
-      linkForce.distance(style.linkDistance);
+  function scheduleSizeRetry() {
+    if (destroyed || sizeRetryTimer !== null) return;
+    sizeRetryTimer = window.setTimeout(() => {
+      sizeRetryTimer = null;
+      updateSize();
+      if (!hasRenderableSize() && pendingGraphApply) scheduleSizeRetry();
+    }, SIZE_RETRY_DELAY_MS);
+  }
+
+  function getNodeBaseColor(node: GraphNode) {
+    return node.color || DEFAULT_NODE_COLOR;
+  }
+
+  function getEdgeBaseColor(edge: GraphLink) {
+    void edge;
+    return style.edgeBaseColor || DEFAULT_EDGE_COLOR;
+  }
+
+  function isGlobalSearchHighlight() {
+    return globalSearchHighlight;
+  }
+
+  function updateGlobalSearchHighlight() {
+    if (visibleNodeIds.size === 0 || searchHighlightNodeIds.size < visibleNodeIds.size) {
+      globalSearchHighlight = false;
+      return;
     }
-  }
-
-  const controls = graph.controls?.();
-  if (controls) {
-    controls.enableDamping = true;
-    controls.dampingFactor = 0.08;
-    controls.rotateSpeed = 0.6;
-    controls.zoomSpeed = 0.9;
-    controls.panSpeed = 0.8;
-    controls.minDistance = style.minDistance;
-    controls.maxDistance = style.maxDistance;
-    controlsChangeHandler = () => {
-      const { distance } = getCameraState();
-      lastCameraDistance = distance;
-      updateLabelVisibility(distance);
-    };
-    controls.addEventListener?.('change', controlsChangeHandler);
-  }
-
-  const renderer = graph.renderer?.();
-  const maxAnisotropy = renderer?.capabilities?.getMaxAnisotropy?.() ?? 1;
-  if (renderer?.setPixelRatio) {
-    const ratio = Math.min(window.devicePixelRatio || 1, style.maxPixelRatio);
-    renderer.setPixelRatio(ratio);
-  }
-  if (renderer) {
-    renderer.setClearColor?.(style.backgroundColor, 1);
-    renderer.outputColorSpace = SRGBColorSpace;
-    renderer.toneMapping = ACESFilmicToneMapping;
-    renderer.toneMappingExposure = style.toneMappingExposure ?? 1.12;
-    renderer.physicallyCorrectLights = true;
-  }
-
-  const keyLight = new DirectionalLight(new Color('#fff1e6'), 0.95);
-  keyLight.position.set(1.2, 1, 0.9);
-  const fillLight = new DirectionalLight(new Color('#dbeafe'), 0.5);
-  fillLight.position.set(-1.1, -0.4, 1.2);
-  const rimLight = new DirectionalLight(new Color('#c7d2fe'), 0.3);
-  rimLight.position.set(0.4, 1.1, -1.2);
-
-  graph.lights?.([
-    new AmbientLight(new Color('#ffffff'), 0.45),
-    keyLight,
-    fillLight,
-    rimLight,
-  ]);
-
-  const scene = graph.scene?.();
-  if (scene) {
-    const fogNear = style.fogNear ?? 900;
-    const fogFar = style.fogFar ?? 2600;
-    scene.fog = new Fog(style.backgroundColor, fogNear, fogFar);
-    if (renderer) {
-      pmremGenerator = new PMREMGenerator(renderer);
-      const envScene = new RoomEnvironment();
-      environmentTexture = pmremGenerator.fromScene(envScene, 0.04).texture;
-      scene.environment = environmentTexture;
-    }
-    if (style.starfieldEnabled) {
-      const count = Math.max(1, style.starfieldCount);
-      const radius = Math.max(800, style.starfieldRadius);
-      const positions = new Float32Array(count * 3);
-      for (let i = 0; i < count; i += 1) {
-        const u = Math.random();
-        const v = Math.random();
-        const theta = 2 * Math.PI * u;
-        const phi = Math.acos(2 * v - 1);
-        const r = Math.pow(Math.random(), 0.5) * radius;
-        const sinPhi = Math.sin(phi);
-        const x = r * sinPhi * Math.cos(theta);
-        const y = r * sinPhi * Math.sin(theta);
-        const z = r * Math.cos(phi);
-        const idx = i * 3;
-        positions[idx] = x;
-        positions[idx + 1] = y;
-        positions[idx + 2] = z;
+    for (const id of visibleNodeIds) {
+      if (!searchHighlightNodeIds.has(id)) {
+        globalSearchHighlight = false;
+        return;
       }
+    }
+    if (searchHighlightEdgeIds.size === 0) {
+      globalSearchHighlight = true;
+      return;
+    }
+    if (searchHighlightEdgeIds.size < visibleEdgeIds.size) {
+      globalSearchHighlight = false;
+      return;
+    }
+    for (const id of visibleEdgeIds) {
+      if (!searchHighlightEdgeIds.has(id)) {
+        globalSearchHighlight = false;
+        return;
+      }
+    }
+    globalSearchHighlight = true;
+  }
 
-      const geometry = new BufferGeometry();
-      geometry.setAttribute('position', new Float32BufferAttribute(positions, 3));
-      const material = new PointsMaterial({
-        color: new Color(style.starfieldColor),
-        size: style.starfieldSize,
-        transparent: true,
-        opacity: style.starfieldOpacity,
-        depthWrite: false,
-        blending: AdditiveBlending,
-        sizeAttenuation: true,
+  function isExplicitSearchNode(id: string) {
+    return searchHighlightNodeIds.has(id) && !isGlobalSearchHighlight();
+  }
+
+  function isExplicitSearchEdge(id: string) {
+    return searchHighlightEdgeIds.has(id) && !isGlobalSearchHighlight();
+  }
+
+  function isNodeHighlighted(id: string) {
+    return (
+      activeElement?.type === 'node' && activeElement.id === id
+    ) || isExplicitSearchNode(id) || pathHighlightNodeIds.has(id);
+  }
+
+  function isNodeRelated(id: string) {
+    return activeNeighborNodeIds.has(id);
+  }
+
+  function isEdgeHighlighted(id: string) {
+    return (
+      activeElement?.type === 'edge' && activeElement.id === id
+    ) || isExplicitSearchEdge(id) || pathHighlightEdgeIds.has(id) || activeNeighborEdgeIds.has(id);
+  }
+
+  function hasFocusContext() {
+    return Boolean(
+      activeElement
+      || (searchHighlightNodeIds.size && !isGlobalSearchHighlight())
+      || (searchHighlightEdgeIds.size && !isGlobalSearchHighlight())
+      || pathHighlightNodeIds.size
+      || pathHighlightEdgeIds.size
+      || hoveredType !== 'background'
+    );
+  }
+
+  function nodeRank(node: GraphNode) {
+    const key = nodeTypeKey(node);
+    const typeWeight = key === 'document' || key === 'doc'
+      ? 5000
+      : key === 'chunk' || key === 'section' || key === 'paragraph'
+        ? 3000
+        : key.includes('fact') || key.includes('factview')
+          ? 2400
+          : key === 'entity'
+            ? 1700
+            : 1000;
+    return typeWeight + (node.degree ?? 0) * 150 + Math.min(80, getNodeDisplayLabel(node).length);
+  }
+
+  function rebuildOverviewLabels() {
+    const visibleNodes = nodes.filter((node) => visibleNodeIds.has(node.id));
+    if (visibleNodes.length <= SMALL_LABEL_MAX) {
+      overviewLabelNodeIds = new Set(visibleNodes.map((node) => node.id));
+      return;
+    }
+    overviewLabelNodeIds = new Set(
+      [...visibleNodes]
+        .sort((a, b) => nodeRank(b) - nodeRank(a) || a.id.localeCompare(b.id))
+        .slice(0, Math.max(6, Math.min(OVERVIEW_LABEL_MAX, Math.round(Math.sqrt(visibleNodes.length)))))
+        .map((node) => node.id)
+    );
+  }
+
+  function shouldShowNodeLabel(node: GraphNode) {
+    const id = node.id;
+    if (hoveredType === 'node' && hoveredId === id) return true;
+    if (isNodeHighlighted(id) || isExplicitSearchNode(id)) return true;
+    if (visibleNodeIds.size <= SMALL_LABEL_MAX) return true;
+    if (hasFocusContext()) return isNodeRelated(id) && (node.degree ?? 0) >= 2;
+    return overviewLabelNodeIds.has(id);
+  }
+
+  function nodeValue(node: GraphNode) {
+    const baseRadius = nodeSizeOverrides?.get(node.id) ?? node.radius ?? DEFAULT_RADIUS;
+    const active = activeElement?.type === 'node' && activeElement.id === node.id;
+    const highlighted = isNodeHighlighted(node.id);
+    const related = isNodeRelated(node.id);
+    const scale = active ? 1.55 : highlighted ? 1.32 : related ? 1.14 : 1;
+    return Math.max(4, (baseRadius * style.nodeScale * scale) / 3.2);
+  }
+
+  function normalizeNodes(data: RendererData): GraphNode[] {
+    const previous = nodeById;
+    const radius = Math.max(180, Math.sqrt(Math.max(1, data.nodes.length)) * style.linkDistance * 0.62);
+    return data.nodes.map((rawNode, index) => {
+      const existing = previous.get(rawNode.id);
+      const deterministic = fibonacciShell(index, data.nodes.length, radius, `${nodeTypeKey(rawNode)}:${rawNode.id}`);
+      return {
+        ...rawNode,
+        x: hasFinitePosition(existing) ? existing!.x : deterministic.x + index * 0.01,
+        y: hasFinitePosition(existing) ? existing!.y : deterministic.y + index * 0.01,
+        z: hasFinitePosition(existing) ? existing!.z : deterministic.z + typeDepthBias(rawNode.type),
+      };
+    });
+  }
+
+  function normalizeEdges(data: RendererData) {
+    const nodeIds = new Set(data.nodes.map((node) => node.id));
+    return data.edges
+      .filter((edge) => nodeIds.has(edge.source) && nodeIds.has(edge.target))
+      .map((edge) => ({
+        ...edge,
+        sourceId: edge.source,
+        targetId: edge.target,
+      }));
+  }
+
+  function relaxInitialLayout() {
+    if (nodes.length <= 1) return;
+    const movableNodes = nodes.filter((node) => visibleNodeIds.has(node.id));
+    if (movableNodes.length <= 1) return;
+
+    const typeBuckets = new Map<string, GraphNode[]>();
+    movableNodes.forEach((node) => {
+      const key = nodeTypeKey(node);
+      typeBuckets.set(key, [...(typeBuckets.get(key) ?? []), node]);
+    });
+
+    const typeCenters = new Map<string, Vector3>();
+    const sortedTypes = [...typeBuckets.keys()].sort();
+    const typeOrbit = Math.max(150, Math.sqrt(movableNodes.length) * style.linkDistance * 0.28);
+    sortedTypes.forEach((type, index) => {
+      const angle = sortedTypes.length <= 1 ? 0 : (index / sortedTypes.length) * Math.PI * 2;
+      typeCenters.set(type, new Vector3(
+        Math.cos(angle) * typeOrbit,
+        Math.sin(angle) * typeOrbit * 0.58,
+        typeDepthBias(type) * 1.1
+      ));
+    });
+
+    for (let iteration = 0; iteration < INITIAL_RELAX_ITERATIONS; iteration += 1) {
+      const alpha = 1 - iteration / INITIAL_RELAX_ITERATIONS;
+
+      edges.forEach((edge) => {
+        if (!visibleEdgeIds.has(edge.id)) return;
+        const source = nodeById.get(edge.sourceId);
+        const target = nodeById.get(edge.targetId);
+        if (!source || !target) return;
+        const sourcePos = nodePosition(source);
+        const targetPos = nodePosition(target);
+        const delta = targetPos.clone().sub(sourcePos);
+        const distance = Math.max(1, delta.length());
+        const desired = desiredLinkDistance(edge, source, target);
+        const correction = (distance - desired) * 0.024 * alpha;
+        delta.normalize().multiplyScalar(correction);
+        source.x = (source.x ?? 0) + delta.x;
+        source.y = (source.y ?? 0) + delta.y;
+        source.z = (source.z ?? 0) + delta.z;
+        target.x = (target.x ?? 0) - delta.x;
+        target.y = (target.y ?? 0) - delta.y;
+        target.z = (target.z ?? 0) - delta.z;
       });
-      starfield = new Points(geometry, material);
-      scene.add(starfield);
-    }
-  }
 
-  setupBloom();
-
-  function getCameraState() {
-    const camera = graph.camera();
-    const controls = graph.controls();
-    const target = controls?.target ?? { x: 0, y: 0, z: 0 };
-    const dx = camera.position.x - target.x;
-    const dy = camera.position.y - target.y;
-    const dz = camera.position.z - target.z;
-    const distance = Math.hypot(dx, dy, dz) || 1;
-    return { camera, target, dx, dy, dz, distance };
-  }
-
-  function setupBloom() {
-    if (bloomPass) return;
-    const composer = graph.postProcessingComposer?.();
-    if (!composer) return;
-    bloomPass = new UnrealBloomPass();
-    bloomPass.strength = style.bloomStrength;
-    bloomPass.radius = style.bloomRadius;
-    bloomPass.threshold = style.bloomThreshold;
-    composer.addPass(bloomPass);
-  }
-
-  function renderOnce() {
-    const renderer = graph.renderer?.();
-    const scene = graph.scene?.();
-    const camera = graph.camera?.();
-    if (renderer?.render && scene && camera) {
-      renderer.render(scene, camera);
-    }
-  }
-
-  function hasValidPositions() {
-    const graphData = graph.graphData?.();
-    const graphNodes: GraphNode[] = graphData?.nodes ?? [];
-    return graphNodes.some(
-      (node) => Number.isFinite(node.x) && Number.isFinite(node.y) && Number.isFinite(node.z)
-    );
-  }
-
-  function isFiniteVec(vec?: { x?: number; y?: number; z?: number }) {
-    if (!vec) return false;
-    return Number.isFinite(vec.x) && Number.isFinite(vec.y) && Number.isFinite(vec.z);
-  }
-
-  function ensureCameraValid() {
-    const camera = graph.camera?.();
-    const controls = graph.controls?.();
-    if (!camera) return;
-    if (!isFiniteVec(camera.position)) {
-      graph.cameraPosition(
-        { x: 0, y: 0, z: style.focusDistance * 3 },
-        { x: 0, y: 0, z: 0 },
-        0
-      );
-      if (controls?.target?.set) {
-        controls.target.set(0, 0, 0);
-        controls.update?.();
+      if (movableNodes.length <= MAX_REPULSION_NODES) {
+        for (let i = 0; i < movableNodes.length; i += 1) {
+          for (let j = i + 1; j < movableNodes.length; j += 1) {
+            const a = movableNodes[i];
+            const b = movableNodes[j];
+            const delta = nodePosition(b).sub(nodePosition(a));
+            const distance = Math.max(8, delta.length());
+            const minDistance = nodeValue(a) + nodeValue(b) + 28;
+            if (distance >= minDistance) continue;
+            const push = (minDistance - distance) * 0.018 * alpha;
+            delta.normalize().multiplyScalar(push);
+            a.x = (a.x ?? 0) - delta.x;
+            a.y = (a.y ?? 0) - delta.y;
+            a.z = (a.z ?? 0) - delta.z;
+            b.x = (b.x ?? 0) + delta.x;
+            b.y = (b.y ?? 0) + delta.y;
+            b.z = (b.z ?? 0) + delta.z;
+          }
+        }
       }
+
+      movableNodes.forEach((node) => {
+        const center = typeCenters.get(nodeTypeKey(node));
+        if (!center) return;
+        node.x = (node.x ?? 0) + (center.x - (node.x ?? 0)) * 0.008 * alpha;
+        node.y = (node.y ?? 0) + (center.y - (node.y ?? 0)) * 0.008 * alpha;
+        node.z = (node.z ?? 0) + (center.z - (node.z ?? 0)) * 0.012 * alpha;
+      });
     }
   }
 
-  function computeBounds(targetIds?: string[]) {
-    const sourceNodes: GraphNode[] = targetIds?.length
-      ? targetIds
-        .map((id) => nodeById.get(id))
-        .filter((node): node is GraphNode => Boolean(node))
-      : nodes.filter((node) => visibleNodeIds.has(node.id));
-    let minX = Infinity;
-    let minY = Infinity;
-    let minZ = Infinity;
-    let maxX = -Infinity;
-    let maxY = -Infinity;
-    let maxZ = -Infinity;
-    let count = 0;
-    sourceNodes.forEach((node) => {
-      if (!Number.isFinite(node?.x) || !Number.isFinite(node?.y) || !Number.isFinite(node?.z)) {
-        return;
-      }
-      const nx = node.x!;
-      const ny = node.y!;
-      const nz = node.z!;
-      minX = Math.min(minX, nx);
-      minY = Math.min(minY, ny);
-      minZ = Math.min(minZ, nz);
-      maxX = Math.max(maxX, nx);
-      maxY = Math.max(maxY, ny);
-      maxZ = Math.max(maxZ, nz);
-      count += 1;
-    });
-    if (!count || !Number.isFinite(minX)) return null;
-    const center = {
-      x: (minX + maxX) / 2,
-      y: (minY + maxY) / 2,
-      z: (minZ + maxZ) / 2,
-    };
-    const size = Math.max(maxX - minX, maxY - minY, maxZ - minZ, style.focusDistance);
-    return { center, size };
+  function rebuildIndexes() {
+    nodeById = new Map(nodes.map((node) => [node.id, node]));
+    edgeById = new Map(edges.map((edge) => [edge.id, edge]));
   }
 
-  function applyBoundsFit(
-    bounds: { center: { x: number; y: number; z: number }; size: number },
-    duration = 400,
-    padding = style.fitPadding
-  ) {
-    const { center, size } = bounds;
-    const camera = graph.camera?.();
-    const fov = camera?.fov ? (camera.fov * Math.PI) / 180 : Math.PI / 4;
-    const paddingScale = 1 + padding / Math.max(1, Math.min(width, height));
-    const baseDistance = Math.max(
-      style.minDistance,
-      Math.min(
-        style.maxDistance,
-        ((size / 2) / Math.max(Math.tan(fov / 2), 0.01)) * paddingScale
-      )
-    );
-    const desiredDistance = Math.max(style.minDistance, baseDistance * style.fitTightness);
-    const nextPos = {
-      x: center.x,
-      y: center.y,
-      z: center.z + desiredDistance,
-    };
-    graph.cameraPosition(nextPos, center, duration);
-    const controls = graph.controls?.();
-    if (controls?.target?.set) {
-      controls.target.set(center.x, center.y, center.z);
-      controls.update?.();
-    }
-    lastCameraDistance = desiredDistance;
-    updateLabelVisibility(desiredDistance);
+  function nodePosition(node: GraphNode) {
+    return new Vector3(node.x ?? 0, node.y ?? 0, node.z ?? 0);
   }
 
-  function scheduleAutoFit(delay = 120) {
-    if (fitTimer) {
-      window.clearTimeout(fitTimer);
-    }
-    fitTimer = window.setTimeout(() => {
-      if (!hasValidPositions()) {
-        primeCamera();
-        scheduleAutoFit(160);
-        fitTimer = null;
-        return;
-      }
-      primeCamera();
-      fitGraph(400);
-      const { distance } = getCameraState();
-      baseDistance = distance;
-      ensureCameraValid();
-      fitTimer = null;
-    }, delay);
-  }
-
-  function primeCamera() {
-    graph.cameraPosition(
-      { x: 0, y: 0, z: style.focusDistance * 3 },
-      { x: 0, y: 0, z: 0 },
-      0
-    );
-    const controls = graph.controls?.();
-    if (controls?.target?.set) {
-      controls.target.set(0, 0, 0);
-      controls.update?.();
-    }
-  }
-
-  function getTexture(url: string, onLoad?: () => void) {
-    if (!url) return null;
-    const cached = textureCache.get(url);
-    if (cached) return cached;
-    if (texturePending.has(url)) return null;
-    texturePending.add(url);
-    textureLoader.load(
-      url,
-      (texture: Texture) => {
-        texture.colorSpace = SRGBColorSpace;
-        textureCache.set(url, texture);
-        texturePending.delete(url);
-        if (onLoad) onLoad();
-        graph.refresh?.();
-      },
-      undefined,
-      () => {
-        texturePending.delete(url);
-      }
-    );
-    return null;
-  }
-
-  function ensureNodeObject(node: GraphNode) {
-    let entry = nodeObjectCache.get(node.id);
-    if (entry) return entry;
-
-    const material = new MeshPhysicalMaterial({
-      color: boostColor(node.color, style.nodeColorSaturationBoost, style.nodeColorLightnessBoost),
-      roughness: 0.32,
-      metalness: 0.2,
-      clearcoat: 0.6,
-      clearcoatRoughness: 0.18,
-    });
-    const sphere = new Mesh(sphereGeometry, material);
+  function createNodeVisual(node: GraphNode): NodeVisual {
     const group = new Group();
-    group.add(sphere);
+    group.userData = { type: 'node', id: node.id };
 
-    let label: SpriteText | undefined;
-    const labelText = node.label || node.id;
-    if (labelText) {
-      label = new SpriteText(labelText);
-      label.material.depthWrite = false;
-      label.material.depthTest = false;
-      label.color = style.labelColor;
-      label.fontFace = 'Inter, "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif';
-      label.fontWeight = '600';
-      label.fontSize = style.labelFontSize ?? 130;
-      label.strokeWidth = style.labelStrokeWidth ?? 0;
-      label.strokeColor = style.labelStrokeColor ?? 'rgba(15, 23, 42, 0.4)';
-      label.textHeight = style.labelSize;
-      label.backgroundColor = style.labelBackground;
-      label.borderColor = 'rgba(15, 23, 42, 0.12)';
-      label.borderWidth = 2;
-      label.padding = 6;
-      label.borderRadius = 4;
-      label.center.y = -0.6;
-      group.add(label);
-    }
-
-    entry = { group, sphere, material, label };
-    nodeObjectCache.set(node.id, entry);
-    return entry;
-  }
-
-  function updateNodeObject(entry: NodeObject, node: GraphNode) {
-    const baseRadius = baseRadiusById.get(node.id) ?? node.radius ?? 24;
-    const override = nodeSizeOverrides?.get(node.id);
-    const radius = (override ?? baseRadius) * style.nodeScale;
-    const scale = Math.max(1, radius / 6);
-    entry.sphere.scale.set(scale, scale, scale);
-
-    if (entry.label) {
-      const labelDistance = style.labelMaxDistance ?? style.maxDistance * 0.35;
-      const distanceScale = Math.min(1, Math.max(0.5, labelDistance / Math.max(lastCameraDistance, 1)));
-      const baseTextHeight = style.labelSize;
-      const targetTextHeight = Math.max(baseTextHeight * distanceScale, scale * 1.2);
-      const fontScale = targetTextHeight / Math.max(baseTextHeight, 1);
-      const baseFontSize = style.labelFontSize ?? 130;
-      const maxFontSize = style.labelFontSizeMax ?? baseFontSize * 1.8;
-      const nextFontSize = Math.min(maxFontSize, Math.round(baseFontSize * fontScale));
-
-      entry.label.text = node.label || node.id;
-      if (entry.label.textHeight !== targetTextHeight) {
-        entry.label.textHeight = targetTextHeight;
-      }
-      if (entry.label.fontSize !== nextFontSize) {
-        entry.label.fontSize = nextFontSize;
-      }
-      entry.label.position.y = scale * 1.6;
-      const isHovered = hoveredType === 'node' && hoveredId === node.id;
-      const isHighlighted = highlightedNodeIds.has(node.id);
-      const isTiny = scale < 1.4;
-      entry.label.visible = isHovered || isHighlighted || (lastCameraDistance < labelDistance && !isTiny);
-      if (entry.label.material?.map) {
-        entry.label.material.map.anisotropy = maxAnisotropy;
-        entry.label.material.map.minFilter = LinearFilter;
-        entry.label.material.map.magFilter = LinearFilter;
-        entry.label.material.map.needsUpdate = true;
-      }
-    }
-
-    const isActiveNode = activeElement?.type === 'node' && activeElement.id === node.id;
-    const isPathHighlighted = pathHighlightNodeIds.has(node.id);
-    const isSearchHighlighted = searchHighlightNodeIds.has(node.id);
-    const isActiveRelated = activeHighlightNodeIds.has(node.id);
-    const isEmphasized = isActiveNode || isPathHighlighted || isSearchHighlighted || isActiveRelated;
-
-    const baseColor = boostColor(
-      node.color,
-      style.nodeColorSaturationBoost,
-      style.nodeColorLightnessBoost
+    const core = new Mesh(
+      sphereGeometry,
+      new MeshLambertMaterial({
+        color: new Color(getNodeBaseColor(node)),
+        transparent: true,
+        opacity: style.nodeOpacity,
+      })
     );
-    const color = isActiveNode
-      ? ACTIVE_COLOR
-      : isPathHighlighted
-        ? PATH_COLOR
-        : isSearchHighlighted
-          ? HIGHLIGHT_COLOR
-          : isActiveRelated
-            ? HIGHLIGHT_COLOR
-            : baseColor;
+    core.userData = { type: 'node', id: node.id };
+    group.add(core);
 
-    const imageUrl = node.videoThumbnailUrl || node.image;
-    const texture = imageUrl ? getTexture(imageUrl, () => refreshStyles()) : null;
-    entry.material.map = texture || null;
-    entry.material.color.set(texture ? '#ffffff' : color);
-    entry.material.roughness = texture ? 0.6 : 0.32;
-    entry.material.metalness = texture ? 0.04 : 0.2;
-    entry.material.clearcoat = texture ? 0.2 : 0.6;
-    entry.material.clearcoatRoughness = texture ? 0.6 : 0.18;
-    const emissiveBase = texture
-      ? '#000000'
-      : boostColor(baseColor, 0.08, 0.04);
-    entry.material.emissive.set(isEmphasized ? color : emissiveBase);
-    entry.material.emissiveIntensity = isEmphasized ? 0.24 : (texture ? 0.02 : 0.04);
-    entry.material.transparent = true;
-    entry.material.opacity = highlightedNodeIds.size > 0 && !isEmphasized ? 0.25 : 1;
-    entry.material.needsUpdate = true;
+    const halo = new Mesh(
+      sphereGeometry,
+      new MeshBasicMaterial({
+        color: new Color(getNodeBaseColor(node)),
+        transparent: true,
+        opacity: 0,
+        depthWrite: false,
+      })
+    );
+    halo.userData = { type: 'node', id: node.id };
+    group.add(halo);
+
+    const label = new SpriteText(getNodeDisplayLabel(node));
+    label.color = style.labelTextColor;
+    label.fontFace = 'Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif';
+    label.fontWeight = '700';
+    label.textHeight = 7.2;
+    label.backgroundColor = style.name === 'kgCosmic' ? 'rgba(15, 23, 42, 0.58)' : 'rgba(255, 255, 255, 0.72)';
+    label.borderColor = style.labelBorderColor;
+    label.borderWidth = 0.4;
+    label.borderRadius = 4;
+    label.padding = 4;
+    label.material.depthTest = false;
+    label.material.depthWrite = false;
+    group.add(label);
+
+    graphGroup.add(group);
+    return { group, core, halo, label };
   }
 
-  function preloadMedia(nextNodes: GraphNode[]) {
-    nextNodes.forEach((node) => {
-      if (node.isVideo && node.video && !node.videoThumbnailUrl && !node.image) {
-        generateVideoThumbnail(node.video)
-          .then((thumbnail) => {
-            node.videoThumbnailUrl = thumbnail;
-            getTexture(thumbnail, () => refreshStyles());
-          })
-          .catch(() => null);
-      }
+  function createEdgeVisual(edge: GraphLink): EdgeVisual {
+    const source = nodeById.get(edge.sourceId);
+    const target = nodeById.get(edge.targetId);
+    const line = new Line(
+      new BufferGeometry(),
+      new LineBasicMaterial({
+        color: new Color(toThreeColor(getEdgeBaseColor(edge))),
+        transparent: true,
+        opacity: Math.min(0.72, style.linkOpacity * 1.28),
+      })
+    );
+    line.userData = { type: 'edge', id: edge.id };
+    if (source && target) setLinePoints(line, nodePosition(source), nodePosition(target));
+    graphGroup.add(line);
+    return { line };
+  }
 
-      const imageUrl = node.videoThumbnailUrl || node.image;
-      if (imageUrl) {
-        getTexture(imageUrl, () => refreshStyles());
+  function disposeNodeVisual(visual: NodeVisual) {
+    visual.core.material.dispose();
+    visual.halo.material.dispose();
+    visual.label.material.dispose();
+    graphGroup.remove(visual.group);
+  }
+
+  function disposeEdgeVisual(visual: EdgeVisual) {
+    visual.line.geometry.dispose();
+    visual.line.material.dispose();
+    graphGroup.remove(visual.line);
+  }
+
+  function syncNodeVisual(node: GraphNode, visual: NodeVisual) {
+    const highlighted = isNodeHighlighted(node.id);
+    const active = activeElement?.type === 'node' && activeElement.id === node.id;
+    const related = isNodeRelated(node.id);
+    const faded = hasFocusContext() && !highlighted && !related && hoveredId !== node.id;
+    const size = nodeValue(node);
+    const color = getNodeBaseColor(node);
+
+    visual.group.position.copy(nodePosition(node));
+    visual.core.scale.setScalar(size);
+    visual.core.material.color.set(color);
+    visual.core.material.opacity = faded ? 0.22 : active ? 1 : highlighted ? 0.96 : style.nodeOpacity;
+
+    visual.halo.scale.setScalar(size * (active ? 2.2 : highlighted ? 1.8 : related ? 1.45 : 1.2));
+    visual.halo.material.color.set(active ? style.edgeHighlightColor : color);
+    visual.halo.material.opacity = active ? 0.2 : highlighted ? 0.15 : related ? 0.07 : 0;
+
+    visual.label.text = getNodeDisplayLabel(node);
+    visual.label.visible = shouldShowNodeLabel(node);
+    visual.label.textHeight = active ? 11 : highlighted || hoveredId === node.id ? 9.4 : 8;
+    visual.label.position.set(0, size + visual.label.textHeight * 1.2, 0);
+  }
+
+  function syncEdgeVisual(edge: GraphLink, visual: EdgeVisual) {
+    const source = nodeById.get(edge.sourceId);
+    const target = nodeById.get(edge.targetId);
+    if (!source || !target) return;
+    setLinePoints(visual.line, nodePosition(source), nodePosition(target));
+    visual.line.material.color.set(toThreeColor(isEdgeHighlighted(edge.id) ? style.edgeHighlightColor : getEdgeBaseColor(edge)));
+    const depthBoost = Math.min(0.16, Math.abs((source.z ?? 0) - (target.z ?? 0)) / 1300);
+    visual.line.material.opacity = hasFocusContext()
+      ? activeNeighborEdgeIds.has(edge.id) || isEdgeHighlighted(edge.id) ? 0.78 : 0.14
+      : Math.min(0.76, style.linkOpacity * 1.28 + depthBoost);
+  }
+
+  function updateActiveNeighborhood() {
+    activeNeighborNodeIds = new Set();
+    activeNeighborEdgeIds = new Set();
+    if (!activeElement) return;
+
+    if (activeElement.type === 'node') {
+      const node = nodeById.get(activeElement.id);
+      if (!node) return;
+      activeNeighborNodeIds.add(node.id);
+      node.neighbors.forEach((id) => activeNeighborNodeIds.add(id));
+      edges.forEach((edge) => {
+        if (edge.sourceId === node.id || edge.targetId === node.id) activeNeighborEdgeIds.add(edge.id);
+      });
+      return;
+    }
+
+    const edge = edgeById.get(activeElement.id);
+    if (!edge) return;
+    activeNeighborEdgeIds.add(edge.id);
+    activeNeighborNodeIds.add(edge.sourceId);
+    activeNeighborNodeIds.add(edge.targetId);
+  }
+
+  function syncScene() {
+    nodeVisuals.forEach((visual, id) => {
+      if (!nodeById.has(id) || !visibleNodeIds.has(id)) {
+        disposeNodeVisual(visual);
+        nodeVisuals.delete(id);
       }
+    });
+    edgeVisuals.forEach((visual, id) => {
+      if (!edgeById.has(id) || !visibleEdgeIds.has(id)) {
+        disposeEdgeVisual(visual);
+        edgeVisuals.delete(id);
+      }
+    });
+
+    nodes.forEach((node) => {
+      if (!visibleNodeIds.has(node.id)) return;
+      let visual = nodeVisuals.get(node.id);
+      if (!visual) {
+        visual = createNodeVisual(node);
+        nodeVisuals.set(node.id, visual);
+      }
+      syncNodeVisual(node, visual);
+    });
+
+    edges.forEach((edge) => {
+      if (!visibleEdgeIds.has(edge.id)) return;
+      let visual = edgeVisuals.get(edge.id);
+      if (!visual) {
+        visual = createEdgeVisual(edge);
+        edgeVisuals.set(edge.id, visual);
+      }
+      syncEdgeVisual(edge, visual);
     });
   }
 
-  function applyFilter() {
-    visibleNodeIds = new Set<string>();
+  function renderFrame() {
+    controls.update();
+    renderer.render(scene, camera);
+  }
+
+  function startRenderLoop() {
+    if (animationFrame !== null) return;
+    const tick = () => {
+      if (destroyed) return;
+      renderFrame();
+      animationFrame = requestAnimationFrame(tick);
+    };
+    animationFrame = requestAnimationFrame(tick);
+  }
+
+  function stopRenderLoop() {
+    if (animationFrame !== null) {
+      cancelAnimationFrame(animationFrame);
+      animationFrame = null;
+    }
+  }
+
+  function applyFilter(control: { allowDefer?: boolean } = {}) {
+    visibleNodeIds = new Set();
     nodes.forEach((node) => {
       if (filterState.nodeTypes.length > 0 && !filterState.nodeTypes.includes(node.type)) return;
       if (filterState.hiddenNodeIds.has(node.id)) return;
       visibleNodeIds.add(node.id);
     });
 
-    visibleEdgeIds = new Set<string>();
-    const filteredEdges = edges.filter((edge) => {
-      if (filterState.edgeTypes.length > 0 && !filterState.edgeTypes.includes(edge.type)) return false;
-      if (filterState.hiddenEdgeIds.has(edge.id)) return false;
-      const sourceId = typeof edge.source === 'string' ? edge.source : (edge.source as GraphNode)?.id;
-      const targetId = typeof edge.target === 'string' ? edge.target : (edge.target as GraphNode)?.id;
-      if (!sourceId || !targetId) return false;
-      if (!visibleNodeIds.has(sourceId) || !visibleNodeIds.has(targetId)) return false;
+    visibleEdgeIds = new Set();
+    edges.forEach((edge) => {
+      if (filterState.edgeTypes.length > 0 && !filterState.edgeTypes.includes(edge.type)) return;
+      if (filterState.hiddenEdgeIds.has(edge.id)) return;
+      if (!visibleNodeIds.has(edge.sourceId) || !visibleNodeIds.has(edge.targetId)) return;
       visibleEdgeIds.add(edge.id);
-      return true;
     });
 
-    const filteredNodes = nodes.filter((node) => visibleNodeIds.has(node.id));
-    graph.graphData({ nodes: filteredNodes, links: filteredEdges });
-  }
-
-  function updateHighlights() {
-    activeHighlightNodeIds = new Set<string>();
-    activeHighlightEdgeIds = new Set<string>();
-
-    if (activeElement) {
-      if (activeElement.type === 'node') {
-        const node = nodeById.get(activeElement.id);
-        if (node) {
-          activeHighlightNodeIds.add(node.id);
-          node.neighbors.forEach((id) => activeHighlightNodeIds.add(id));
-          edges.forEach((edge) => {
-            const sourceId = typeof edge.source === 'string' ? edge.source : (edge.source as GraphNode)?.id;
-            const targetId = typeof edge.target === 'string' ? edge.target : (edge.target as GraphNode)?.id;
-            if (sourceId === node.id || targetId === node.id) {
-              activeHighlightEdgeIds.add(edge.id);
-            }
-          });
-        }
-      }
-
-      if (activeElement.type === 'edge') {
-        const edge = edgeById.get(activeElement.id);
-        if (edge) {
-          activeHighlightEdgeIds.add(edge.id);
-          const sourceId = typeof edge.source === 'string' ? edge.source : (edge.source as GraphNode)?.id;
-          const targetId = typeof edge.target === 'string' ? edge.target : (edge.target as GraphNode)?.id;
-          if (sourceId) activeHighlightNodeIds.add(sourceId);
-          if (targetId) activeHighlightNodeIds.add(targetId);
-        }
-      }
+    updateGlobalSearchHighlight();
+    rebuildOverviewLabels();
+    updateActiveNeighborhood();
+    if (control.allowDefer !== false && !hasRenderableSize()) {
+      pendingGraphApply = true;
+      scheduleSizeRetry();
+      return;
     }
 
-    highlightedNodeIds = new Set<string>([
-      ...activeHighlightNodeIds,
-      ...searchHighlightNodeIds,
-      ...pathHighlightNodeIds,
-    ]);
-    highlightedEdgeIds = new Set<string>([
-      ...activeHighlightEdgeIds,
-      ...searchHighlightEdgeIds,
-      ...pathHighlightEdgeIds,
-    ]);
+    pendingGraphApply = false;
+    syncScene();
+    startRenderLoop();
+    scheduleFit(160);
   }
 
-  function refreshStyles() {
-    const hasHighlight = highlightedNodeIds.size > 0 || highlightedEdgeIds.size > 0;
-    const { distance } = getCameraState();
-    lastCameraDistance = distance;
-
-    if (customNodesEnabled) {
-      nodes.forEach((node) => {
-        const entry = ensureNodeObject(node);
-        updateNodeObject(entry, node);
-      });
+  function scheduleFit(delay = 160, ids?: string[], padding = style.fitPadding) {
+    if (!hasRenderableSize()) {
+      scheduleSizeRetry();
+      return;
     }
-
-    graph.nodeColor((node: GraphNode) => {
-      const isActiveNode = activeElement?.type === 'node' && activeElement.id === node.id;
-      const isPathHighlighted = pathHighlightNodeIds.has(node.id);
-      const isSearchHighlighted = searchHighlightNodeIds.has(node.id);
-      const isActiveRelated = activeHighlightNodeIds.has(node.id);
-      const isEmphasized = isActiveNode || isPathHighlighted || isSearchHighlighted || isActiveRelated;
-      const baseColor = boostColor(
-        node.color,
-        style.nodeColorSaturationBoost,
-        style.nodeColorLightnessBoost
-      );
-      const color = isActiveNode
-        ? ACTIVE_COLOR
-        : isPathHighlighted
-          ? PATH_COLOR
-          : isSearchHighlighted
-            ? HIGHLIGHT_COLOR
-            : isActiveRelated
-              ? HIGHLIGHT_COLOR
-              : baseColor;
-
-      if (hasHighlight && !isEmphasized) {
-        return withAlpha(color, 0.2);
-      }
-      return color;
-    });
-
-    graph.linkColor((edge: GraphLink) => {
-      const isActiveEdge = activeElement?.type === 'edge' && activeElement.id === edge.id;
-      const isPathHighlighted = pathHighlightEdgeIds.has(edge.id);
-      const isSearchHighlighted = searchHighlightEdgeIds.has(edge.id);
-      const isActiveRelated = activeHighlightEdgeIds.has(edge.id);
-      const isEmphasized = isActiveEdge || isPathHighlighted || isSearchHighlighted || isActiveRelated;
-      const baseColor = boostColor(
-        edge.color || style.edgeBaseColor || DEFAULT_EDGE_COLOR,
-        style.edgeColorSaturationBoost,
-        style.edgeColorLightnessBoost
-      );
-      const color = isActiveEdge
-        ? ACTIVE_COLOR
-        : isPathHighlighted
-          ? PATH_COLOR
-          : isSearchHighlighted
-            ? HIGHLIGHT_COLOR
-            : isActiveRelated
-              ? HIGHLIGHT_COLOR
-              : baseColor;
-
-      if (hasHighlight && !isEmphasized) {
-        return withAlpha(color, 0.2);
-      }
-      return color;
-    });
-
-    graph.linkDirectionalArrowColor((edge: GraphLink) => {
-      const baseColor = boostColor(
-        edge.color || style.edgeBaseColor || DEFAULT_EDGE_COLOR,
-        style.edgeColorSaturationBoost,
-        style.edgeColorLightnessBoost
-      );
-      if (!highlightedEdgeIds.size) return baseColor;
-      if (highlightedEdgeIds.has(edge.id)) return baseColor;
-      return withAlpha(baseColor, 0.2);
-    });
-
-    graph.linkWidth((edge: GraphLink) => {
-      const isActiveEdge = activeElement?.type === 'edge' && activeElement.id === edge.id;
-      const isPathHighlighted = pathHighlightEdgeIds.has(edge.id);
-      const isSearchHighlighted = searchHighlightEdgeIds.has(edge.id);
-      const isActiveRelated = activeHighlightEdgeIds.has(edge.id);
-      const baseWidth = style.linkWidth;
-      return isActiveEdge ? baseWidth * 2.2 : isPathHighlighted ? baseWidth * 2 : isSearchHighlighted ? baseWidth * 1.6 : isActiveRelated ? baseWidth * 1.6 : baseWidth;
-    });
-
-    graph.linkDirectionalParticles((edge: GraphLink) => {
-      const isActiveEdge = activeElement?.type === 'edge' && activeElement.id === edge.id;
-      const isPathHighlighted = pathHighlightEdgeIds.has(edge.id);
-      const isSearchHighlighted = searchHighlightEdgeIds.has(edge.id);
-      const isActiveRelated = activeHighlightEdgeIds.has(edge.id);
-      return isActiveEdge || isPathHighlighted || isSearchHighlighted || isActiveRelated ? 2 : 0;
-    });
-
-    graph.linkDirectionalParticleWidth?.(style.particleWidth);
-    graph.linkDirectionalParticleSpeed?.(style.particleSpeed);
-    graph.linkDirectionalParticleColor?.((edge: GraphLink) => {
-      const baseColor = boostColor(
-        edge.color || style.edgeBaseColor || DEFAULT_EDGE_COLOR,
-        style.edgeColorSaturationBoost,
-        style.edgeColorLightnessBoost
-      );
-      if (!highlightedEdgeIds.size) return baseColor;
-      if (highlightedEdgeIds.has(edge.id)) return baseColor;
-      return withAlpha(baseColor, 0.3);
-    });
-
-    const edgeLabelDistance = (style.labelMaxDistance ?? style.maxDistance * 0.35) * 0.7;
-    edgeLabelCache.forEach((label, id) => {
-      const edge = edgeById.get(id);
-      if (!edge) return;
-      const isActiveEdge = activeElement?.type === 'edge' && activeElement.id === edge.id;
-      const isPathHighlighted = pathHighlightEdgeIds.has(edge.id);
-      const isSearchHighlighted = searchHighlightEdgeIds.has(edge.id);
-      const isActiveRelated = activeHighlightEdgeIds.has(edge.id);
-      const isEmphasized = isActiveEdge || isPathHighlighted || isSearchHighlighted || isActiveRelated;
-      const color = isActiveEdge
-        ? ACTIVE_COLOR
-        : isPathHighlighted
-          ? PATH_COLOR
-          : isSearchHighlighted
-            ? HIGHLIGHT_COLOR
-            : isActiveRelated
-              ? HIGHLIGHT_COLOR
-              : style.labelColor;
-      label.color = color;
-      label.backgroundColor = withAlpha(style.labelBackground, isEmphasized ? 0.88 : 0.55);
-      const distanceScale = Math.min(1, Math.max(0.55, edgeLabelDistance / Math.max(lastCameraDistance, 1)));
-      const baseTextHeight = Math.max(4, style.labelSize * 0.65);
-      const nextTextHeight = baseTextHeight * distanceScale;
-      if (label.textHeight !== nextTextHeight) {
-        label.textHeight = nextTextHeight;
-      }
-      const baseFontSize = Math.round((style.labelFontSize ?? 130) * 0.65);
-      const maxFontSize = Math.round((style.labelFontSizeMax ?? baseFontSize * 1.8) * 0.65);
-      const nextFontSize = Math.min(maxFontSize, Math.round(baseFontSize * distanceScale));
-      if (label.fontSize !== nextFontSize) {
-        label.fontSize = nextFontSize;
-      }
-    });
-
-    graph.nodeRelSize(style.nodeRelSize);
-    graph.nodeVal((node: GraphNode) => {
-      const baseRadius = baseRadiusById.get(node.id) ?? node.radius ?? 24;
-      const override = nodeSizeOverrides?.get(node.id);
-      const radius = (override ?? baseRadius) * style.nodeScale;
-      return Math.max(1, radius / 6);
-    });
-
-    updateLabelVisibility(lastCameraDistance);
-  }
-
-  function enableCustomNodes() {
-    if (customNodesEnabled) return;
-    customNodesEnabled = true;
-    graph
-      .nodeThreeObject((node: GraphNode) => {
-        const entry = ensureNodeObject(node);
-        updateNodeObject(entry, node);
-        return entry.group;
-      })
-      .nodeThreeObjectExtend(true);
-    refreshStyles();
-    graph.refresh?.();
-  }
-
-  function scheduleCustomNodes(delay = 200) {
-    if (customNodesEnabled) return;
-    if (customNodeRetry >= 6) return;
-    customNodeRetry += 1;
-    window.setTimeout(() => {
-      if (customNodesEnabled) return;
-      const renderer = graph.renderer?.();
-      const canvas = renderer?.domElement as HTMLCanvasElement | undefined;
-      const hasSize = Boolean(canvas && canvas.width > 0 && canvas.height > 0);
-      const data = graph.graphData?.();
-      const hasNodes = Boolean(data?.nodes && data.nodes.length > 0);
-      if (hasSize && hasNodes) {
-        enableCustomNodes();
-      } else {
-        scheduleCustomNodes(200);
-      }
+    if (fitTimer !== null) window.clearTimeout(fitTimer);
+    fitTimer = window.setTimeout(() => {
+      fitTimer = null;
+      fitTo(ids, padding);
     }, delay);
   }
 
-  function updateSize() {
-    const rect = container.getBoundingClientRect();
-    let nextWidth = (options.width ?? rect.width ?? container.clientWidth) || 0;
-    let nextHeight = (options.height ?? rect.height ?? container.clientHeight) || 0;
-
-    if ((!nextWidth || !nextHeight) && container.parentElement) {
-      const parentRect = container.parentElement.getBoundingClientRect();
-      nextWidth = nextWidth || parentRect.width;
-      nextHeight = nextHeight || parentRect.height;
-    }
-
-    if (!nextWidth || !nextHeight) {
-      if (sizeRetryTimer === null) {
-        sizeRetryTimer = window.setTimeout(() => {
-          sizeRetryTimer = null;
-          updateSize();
-        }, 120);
-      }
-      return;
-    }
-    width = Math.max(1, Math.round(nextWidth));
-    height = Math.max(1, Math.round(nextHeight));
-    graph.width(width).height(height);
-    const renderer = graph.renderer?.();
-    if (renderer?.setPixelRatio) {
-      const ratio = Math.min(window.devicePixelRatio || 1, style.maxPixelRatio);
-      renderer.setPixelRatio(ratio);
-    }
-    if (renderer?.setClearColor) {
-      renderer.setClearColor(style.backgroundColor, 1);
-    }
-    if (renderer?.domElement) {
-      renderer.domElement.style.width = '100%';
-      renderer.domElement.style.height = '100%';
-      renderer.domElement.style.display = 'block';
-    }
-    ensureRendererDom();
-    graph.refresh?.();
-    if (!customNodesEnabled) {
-      scheduleCustomNodes(120);
-    }
-    if (width !== lastSize.width || height !== lastSize.height) {
-      lastSize = { width, height };
-      scheduleAutoFit(120);
-      debugLog('resize', { width, height });
-    }
-  }
-
-  function handleBackgroundClick() {
-    if (suppressBackgroundClick) return;
-    handlers.onClick?.({ type: 'background', x: lastPointer.x, y: lastPointer.y });
-  }
-
-  function handleBackgroundContextMenu() {
-    handlers.onContextMenu?.({ type: 'background', x: lastPointer.x, y: lastPointer.y });
-  }
-
-  graph.onNodeHover((node: GraphNode | null) => {
-    if (node) {
-      hoveredType = 'node';
-      hoveredId = node.id;
-      handlers.onHover?.({ type: 'node', id: node.id, x: lastPointer.x, y: lastPointer.y });
-      updateLabelVisibility(lastCameraDistance);
-      return;
-    }
-    if (hoveredType !== 'background') {
-      hoveredType = 'background';
-      hoveredId = null;
-      handlers.onHover?.({ type: 'background', x: lastPointer.x, y: lastPointer.y });
-      updateLabelVisibility(lastCameraDistance);
-    }
-  });
-
-  graph.onLinkHover((link: GraphLink | null) => {
-    if (link) {
-      hoveredType = 'edge';
-      hoveredId = link.id;
-      handlers.onHover?.({ type: 'edge', id: link.id, x: lastPointer.x, y: lastPointer.y });
-      updateLabelVisibility(lastCameraDistance);
-      return;
-    }
-    if (hoveredType !== 'background') {
-      hoveredType = 'background';
-      hoveredId = null;
-      handlers.onHover?.({ type: 'background', x: lastPointer.x, y: lastPointer.y });
-      updateLabelVisibility(lastCameraDistance);
-    }
-  });
-
-  graph.onNodeClick((node: GraphNode | null) => {
-    if (!node) return;
-    suppressBackgroundClick = true;
-    handlers.onClick?.({ type: 'node', id: node.id, x: lastPointer.x, y: lastPointer.y });
-    const now = performance.now();
-    if (lastClickId === node.id && now - lastClickTime < 350) {
-      handlers.onDoubleClick?.({ type: 'node', id: node.id });
-    }
-    lastClickId = node.id;
-    lastClickTime = now;
-    window.setTimeout(() => {
-      suppressBackgroundClick = false;
-    }, 0);
-  });
-
-  graph.onLinkClick((link: GraphLink | null) => {
-    if (!link) return;
-    suppressBackgroundClick = true;
-    handlers.onClick?.({ type: 'edge', id: link.id, x: lastPointer.x, y: lastPointer.y });
-    window.setTimeout(() => {
-      suppressBackgroundClick = false;
-    }, 0);
-  });
-
-  if (typeof graph.onNodeRightClick === 'function') {
-    graph.onNodeRightClick((node: GraphNode | null, event?: PointerEvent) => {
-      if (!node) return;
-      const x = event?.clientX ?? lastPointer.x;
-      const y = event?.clientY ?? lastPointer.y;
-      handlers.onContextMenu?.({ type: 'node', id: node.id, x, y });
-    });
-  }
-
-  if (typeof graph.onLinkRightClick === 'function') {
-    graph.onLinkRightClick((link: GraphLink | null, event?: PointerEvent) => {
-      if (!link) return;
-      const x = event?.clientX ?? lastPointer.x;
-      const y = event?.clientY ?? lastPointer.y;
-      handlers.onContextMenu?.({ type: 'edge', id: link.id, x, y });
-    });
-  }
-
-  const handlePointerMove = (event: PointerEvent) => {
-    lastPointer = { x: event.clientX, y: event.clientY };
-  };
-
-  const handleClick = () => {
-    if (hoveredType === 'background') {
-      if (doubleClickTimer) {
-        window.clearTimeout(doubleClickTimer);
-        doubleClickTimer = null;
-        fitTo(undefined, style.fitPadding);
-        return;
-      }
-      doubleClickTimer = window.setTimeout(() => {
-        handleBackgroundClick();
-        doubleClickTimer = null;
-      }, 240);
-    }
-  };
-
-  const handleContextMenu = (event: MouseEvent) => {
-    event.preventDefault();
-    if (hoveredType === 'background') {
-      lastPointer = { x: event.clientX, y: event.clientY };
-      handleBackgroundContextMenu();
-    }
-  };
-
-  container.addEventListener('pointermove', handlePointerMove);
-  container.addEventListener('click', handleClick);
-  container.addEventListener('contextmenu', handleContextMenu);
-
-  const resizeObserver = new ResizeObserver(() => {
-    updateSize();
-  });
-  resizeObserver.observe(container);
-  if (container.parentElement) {
-    resizeObserver.observe(container.parentElement);
-  }
-
   function updateData(data: RendererData) {
-    ensureRendererDom();
-    updateSize();
-    customNodeRetry = 0;
-    baseRadiusById.clear();
-    nodeObjectCache.forEach((entry) => {
-      entry.material.dispose();
-    });
-    nodeObjectCache.clear();
-    edgeLabelCache.forEach((label) => {
-      if (label.material?.map) {
-        label.material.map.dispose?.();
-      }
-      label.material?.dispose?.();
-    });
-    edgeLabelCache.clear();
-    nodes = data.nodes.map((node) => {
-      baseRadiusById.set(node.id, node.radius ?? 24);
-      return { ...node };
-    });
-    edges = data.edges.map((edge) => ({ ...edge }));
-    nodeById = new Map(nodes.map((node) => [node.id, node]));
-    edgeById = new Map(edges.map((edge) => [edge.id, edge]));
-
-    const hasPosition = nodes.some(
-      (node) => Number.isFinite(node.x) && Number.isFinite(node.y) && Number.isFinite(node.z)
-    );
-    if (!hasPosition && nodes.length > 0) {
-      const radius = Math.cbrt(nodes.length) * 60 + 160;
-      nodes.forEach((node, index) => {
-        const angle = (index / nodes.length) * Math.PI * 2;
-        node.x = Math.cos(angle) * radius;
-        node.y = Math.sin(angle) * radius;
-        node.z = ((index % 9) - 4) * 30;
-      });
-    }
-
-    preloadMedia(nodes);
-    applyFilter();
-    updateHighlights();
-    refreshStyles();
-    graph.refresh?.();
-    scheduleCustomNodes(200);
-    renderOnce();
-    debugLog('data', {
-      nodes: nodes.length,
-      edges: edges.length,
-      visibleNodes: visibleNodeIds.size,
-      visibleEdges: visibleEdgeIds.size,
-    });
-
-    primeCamera();
-    graph.resumeAnimation?.();
-    ensureCameraValid();
-    graph.d3ReheatSimulation?.();
-    scheduleAutoFit(200);
-
-    let tickHandled = false;
-    graph.onEngineTick?.(() => {
-      if (tickHandled) return;
-      tickHandled = true;
-      scheduleAutoFit(0);
-      graph.onEngineTick?.(() => {});
-    });
-
-    window.setTimeout(() => {
-      if (tickHandled) return;
-      const graphData = graph.graphData?.();
-      const graphNodes: GraphNode[] = graphData?.nodes ?? [];
-      if (graphNodes.length) {
-        const hasPosition = graphNodes.some((node) =>
-          Number.isFinite(node.x) && Number.isFinite(node.y) && Number.isFinite(node.z)
-        );
-        if (!hasPosition) {
-          const radius = Math.cbrt(graphNodes.length) * 60 + 120;
-          graphNodes.forEach((node, index) => {
-            const angle = (index / graphNodes.length) * Math.PI * 2;
-            node.x = Math.cos(angle) * radius;
-            node.y = Math.sin(angle) * radius;
-            node.z = ((index % 7) - 3) * 30;
-          });
-          graph.graphData?.({ nodes: graphNodes, links: graphData?.links ?? [] });
-        }
-      }
-      scheduleAutoFit(0);
-    }, 700);
+    nodes = normalizeNodes(data);
+    edges = normalizeEdges(data);
+    rebuildIndexes();
+    applyFilter({ allowDefer: false });
+    relaxInitialLayout();
+    syncScene();
+    scheduleFit(80);
   }
 
-  function setActiveElement(nextActive: RendererActiveElement | null) {
-    activeElement = nextActive;
-    updateHighlights();
-    refreshStyles();
+  function applyPositions(positions: Map<string, Vector3>, fixed = true) {
+    void fixed;
+    positions.forEach((pos, id) => {
+      const node = nodeById.get(id);
+      if (!node) return;
+      node.x = pos.x;
+      node.y = pos.y;
+      node.z = pos.z;
+    });
+    syncScene();
+    scheduleFit(120);
+  }
+
+  function applyLayout(layout: string, config: LayoutConfig = {}) {
+    const layoutNodes = nodes.filter((node) => visibleNodeIds.has(node.id));
+    if (layoutNodes.length === 0) return;
+    const positions = new Map<string, Vector3>();
+    const count = layoutNodes.length;
+
+    if (['random', 'cose', 'fcose', 'cose-compact', 'cose-loose', 'null', 'preset'].includes(layout)) {
+      const radius = Math.max(180, Math.sqrt(count) * style.linkDistance * 0.78);
+      layoutNodes.forEach((node) => positions.set(node.id, sphericalSeed(`${layout}:${node.id}`, radius)));
+      applyPositions(positions, false);
+      return;
+    }
+
+    if (layout === 'circle' || layout === 'circle-large' || layout === 'circle-spiral') {
+      const baseRadius = Math.max(180, Math.sqrt(count) * style.linkDistance * 0.74);
+      const sorted = [...layoutNodes].sort((a, b) => nodeTypeKey(a).localeCompare(nodeTypeKey(b)) || a.id.localeCompare(b.id));
+      sorted.forEach((node, index) => {
+        const t = count <= 1 ? 0 : index / count;
+        const angle = t * Math.PI * 2;
+        const ringRadius = layout === 'circle-large' ? baseRadius * 1.35 : layout === 'circle-spiral' ? baseRadius * (0.25 + t) : baseRadius;
+        positions.set(node.id, new Vector3(
+          Math.cos(angle) * ringRadius,
+          Math.sin(angle) * ringRadius,
+          layout === 'circle-spiral' ? (t - 0.5) * baseRadius * 1.2 : Math.sin(angle * 2) * baseRadius * 0.16
+        ));
+      });
+      applyPositions(positions);
+      return;
+    }
+
+    if (layout === 'grid') {
+      const cols = Number(config.cols || 0) || Math.ceil(Math.sqrt(count));
+      const rows = Number(config.rows || 0) || Math.ceil(count / cols);
+      const spacing = Math.max(80, style.linkDistance * 0.82);
+      layoutNodes.forEach((node, index) => {
+        const row = Math.floor(index / cols);
+        const col = index % cols;
+        positions.set(node.id, new Vector3(
+          (col - (cols - 1) / 2) * spacing,
+          (row - (rows - 1) / 2) * spacing,
+          ((row + col) % 3 - 1) * spacing * 0.6
+        ));
+      });
+      applyPositions(positions);
+      return;
+    }
+
+    scheduleFit(160);
+  }
+
+  function setActiveElement(active: RendererActiveElement | null) {
+    activeElement = active;
+    updateActiveNeighborhood();
+    syncScene();
+    if (active?.type === 'node') {
+      const node = nodeById.get(active.id);
+      if (node) fitTo([node.id], 90);
+    } else if (active?.type === 'edge') {
+      const edge = edgeById.get(active.id);
+      if (edge) fitTo([edge.sourceId, edge.targetId], 120);
+    }
   }
 
   function setSearchHighlight(payload: { nodeIds?: string[]; edgeIds?: string[] }) {
     searchHighlightNodeIds = new Set(payload.nodeIds ?? []);
     searchHighlightEdgeIds = new Set(payload.edgeIds ?? []);
-    updateHighlights();
-    refreshStyles();
+    updateGlobalSearchHighlight();
+    syncScene();
   }
 
   function clearSearchHighlight() {
     searchHighlightNodeIds = new Set();
     searchHighlightEdgeIds = new Set();
-    updateHighlights();
-    refreshStyles();
+    updateGlobalSearchHighlight();
+    syncScene();
   }
 
   function setPathHighlight(payload: { nodeIds?: string[]; edgeIds?: string[] }) {
     pathHighlightNodeIds = new Set(payload.nodeIds ?? []);
     pathHighlightEdgeIds = new Set(payload.edgeIds ?? []);
-    updateHighlights();
-    refreshStyles();
+    syncScene();
   }
 
   function clearPathHighlight() {
     pathHighlightNodeIds = new Set();
     pathHighlightEdgeIds = new Set();
-    updateHighlights();
-    refreshStyles();
+    syncScene();
   }
 
   function setFilter(filter: {
@@ -1486,8 +912,6 @@ export function createRenderer3D(
       hiddenEdgeIds: filter.hiddenEdgeIds ?? new Set(),
     };
     applyFilter();
-    updateHighlights();
-    refreshStyles();
   }
 
   function setNodeSizeOverrides(overrides: Record<string, number> | Map<string, number> | null) {
@@ -1498,125 +922,96 @@ export function createRenderer3D(
     } else {
       nodeSizeOverrides = new Map(Object.entries(overrides));
     }
-    refreshStyles();
+    syncScene();
+  }
+
+  function getCameraState() {
+    const target = controls.target.clone();
+    const dx = camera.position.x - target.x;
+    const dy = camera.position.y - target.y;
+    const dz = camera.position.z - target.z;
+    const distance = Math.max(1, Math.hypot(dx, dy, dz));
+    return { target, dx, dy, dz, distance };
   }
 
   function zoomBy(factor: number) {
     const { target, dx, dy, dz, distance } = getCameraState();
     const nextDistance = Math.max(style.minDistance, Math.min(style.maxDistance, distance / factor));
     const scale = nextDistance / distance;
-    graph.cameraPosition(
-      {
-        x: target.x + dx * scale,
-        y: target.y + dy * scale,
-        z: target.z + dz * scale,
-      },
-      target,
-      200
-    );
-    lastCameraDistance = nextDistance;
-    updateLabelVisibility(nextDistance);
+    camera.position.set(target.x + dx * scale, target.y + dy * scale, target.z + dz * scale);
+    controls.target.copy(target);
+    controls.update();
   }
 
   function zoomTo(k: number) {
     const { target, dx, dy, dz, distance } = getCameraState();
-    if (baseDistance === null) {
-      baseDistance = distance;
-    }
-    const desiredDistance = Math.max(style.minDistance, Math.min(style.maxDistance, baseDistance / k));
-    const scale = desiredDistance / distance;
-    graph.cameraPosition(
-      {
-        x: target.x + dx * scale,
-        y: target.y + dy * scale,
-        z: target.z + dz * scale,
-      },
-      target,
-      300
-    );
-    lastCameraDistance = desiredDistance;
-    updateLabelVisibility(desiredDistance);
+    if (baseDistance === null) baseDistance = distance;
+    const nextDistance = Math.max(style.minDistance, Math.min(style.maxDistance, baseDistance / Math.max(k, 0.01)));
+    const scale = nextDistance / distance;
+    camera.position.set(target.x + dx * scale, target.y + dy * scale, target.z + dz * scale);
+    controls.target.copy(target);
+    controls.update();
   }
 
   function panTo(x: number, y: number) {
-    const { camera, target } = getCameraState();
-    const offset = {
-      x: camera.position.x - target.x,
-      y: camera.position.y - target.y,
-      z: camera.position.z - target.z,
-    };
-    const nextTarget = { x, y, z: 0 };
-    graph.cameraPosition(
-      {
-        x: nextTarget.x + offset.x,
-        y: nextTarget.y + offset.y,
-        z: nextTarget.z + offset.z,
-      },
-      nextTarget,
-      300
-    );
+    camera.position.x += x;
+    camera.position.y += y;
+    controls.target.x += x;
+    controls.target.y += y;
+    controls.update();
   }
 
   function center() {
-    fitTo(undefined, 80);
+    fitTo(undefined, style.fitPadding);
   }
 
-  function fitGraph(duration = 400, padding = style.fitPadding) {
-    const bounds = computeBounds();
-    if (bounds) {
-      applyBoundsFit(bounds, duration, padding);
-      return true;
-    }
-    return false;
+  function computeBounds(targetNodes: GraphNode[]) {
+    const positioned = targetNodes.filter(hasFinitePosition);
+    if (positioned.length === 0) return null;
+    const min = new Vector3(Infinity, Infinity, Infinity);
+    const max = new Vector3(-Infinity, -Infinity, -Infinity);
+    positioned.forEach((node) => {
+      min.x = Math.min(min.x, node.x!);
+      min.y = Math.min(min.y, node.y!);
+      min.z = Math.min(min.z, node.z!);
+      max.x = Math.max(max.x, node.x!);
+      max.y = Math.max(max.y, node.y!);
+      max.z = Math.max(max.z, node.z!);
+    });
+    const centerPoint = min.clone().add(max).multiplyScalar(0.5);
+    const span = Math.max(max.x - min.x, max.y - min.y, max.z - min.z, 1);
+    return { center: centerPoint, span };
   }
 
   function fitTo(nodeIds?: string[], padding = style.fitPadding) {
-    if (!hasValidPositions()) {
-      scheduleAutoFit(160);
+    if (!hasRenderableSize()) {
+      scheduleSizeRetry();
       return;
     }
-
-    if (!nodeIds || nodeIds.length === 0) {
-      fitGraph(400, padding);
-      ensureCameraValid();
-      return;
-    }
-
-    if (nodeIds.length === 1) {
-      const node = nodeById.get(nodeIds[0]);
-      if (
-        node
-        && Number.isFinite(node.x)
-        && Number.isFinite(node.y)
-        && Number.isFinite(node.z)
-      ) {
-        const nx = node.x ?? 0;
-        const ny = node.y ?? 0;
-        const nz = node.z ?? 0;
-        const distance = style.focusDistance;
-        const distRatio = 1 + distance / Math.hypot(nx, ny, nz || 1);
-        const newPos = nx || ny || nz
-          ? { x: nx * distRatio, y: ny * distRatio, z: nz * distRatio }
-          : { x: 0, y: 0, z: distance };
-        graph.cameraPosition(newPos, { x: nx, y: ny, z: nz }, 400);
-        lastCameraDistance = distance;
-        updateLabelVisibility(distance);
-        return;
-      }
-    }
-
-    const bounds = computeBounds(nodeIds);
-    if (bounds) {
-      applyBoundsFit(bounds, 400, padding);
-    }
-    ensureCameraValid();
+    const ids = nodeIds?.filter((id) => visibleNodeIds.has(id) && nodeById.has(id)) ?? [];
+    const targetNodes = ids.length > 0
+      ? ids.map((id) => nodeById.get(id)).filter((node): node is GraphNode => Boolean(node))
+      : nodes.filter((node) => visibleNodeIds.has(node.id));
+    const bounds = computeBounds(targetNodes);
+    if (!bounds) return;
+    const aspect = Math.max(0.56, width / Math.max(1, height));
+    const framing = aspect > 1 ? VIEW_FILL_FACTOR : VIEW_FILL_FACTOR * 1.22;
+    const distance = Math.max(
+      style.minDistance,
+      Math.min(style.maxDistance, bounds.span * framing + padding * 0.42 + style.focusDistance * 0.26)
+    );
+    camera.position.set(
+      bounds.center.x + distance * 0.74,
+      bounds.center.y + distance * 0.44,
+      bounds.center.z + distance * 0.82
+    );
+    controls.target.copy(bounds.center);
+    controls.update();
   }
 
   function getTransform() {
     const { target, distance } = getCameraState();
-    if (baseDistance === null) {
-      baseDistance = distance;
-    }
+    if (baseDistance === null) baseDistance = distance;
     const k = baseDistance / distance;
     return {
       x: width / 2 - target.x * k,
@@ -1634,12 +1029,17 @@ export function createRenderer3D(
   }
 
   function getEdgeById(id: string) {
-    return edgeById.get(id);
+    const edge = edgeById.get(id);
+    if (!edge) return undefined;
+    return {
+      ...edge,
+      source: edge.sourceId,
+      target: edge.targetId,
+    };
   }
 
   function getNeighbors(id: string) {
-    const node = nodeById.get(id);
-    return node ? node.neighbors : [];
+    return nodeById.get(id)?.neighbors ?? [];
   }
 
   function getAllNodes() {
@@ -1647,44 +1047,38 @@ export function createRenderer3D(
   }
 
   function getAllEdges() {
-    return edges;
+    return edges.map((edge) => ({
+      ...edge,
+      source: edge.sourceId,
+      target: edge.targetId,
+    }));
   }
 
   async function exportPNG(options?: { background?: string; scale?: number }) {
-    const renderer = graph.renderer();
-    if (!renderer?.domElement) {
-      throw new Error('3D renderer canvas not available');
-    }
-    const canvas = renderer.domElement as HTMLCanvasElement;
+    const canvas = renderer.domElement;
     const scale = options?.scale ?? 1;
-
-    if (scale === 1) {
+    if (options?.background || scale !== 1) {
+      const exportCanvas = document.createElement('canvas');
+      exportCanvas.width = Math.max(1, Math.round(canvas.width * scale));
+      exportCanvas.height = Math.max(1, Math.round(canvas.height * scale));
+      const ctx = exportCanvas.getContext('2d');
+      if (!ctx) throw new Error('Export canvas context is not available');
+      if (options?.background) {
+        ctx.fillStyle = options.background;
+        ctx.fillRect(0, 0, exportCanvas.width, exportCanvas.height);
+      }
+      ctx.drawImage(canvas, 0, 0, exportCanvas.width, exportCanvas.height);
       return new Promise<Blob>((resolve, reject) => {
-        canvas.toBlob((blob) => {
-          if (!blob) {
-            reject(new Error('Failed to export PNG'));
-            return;
-          }
-          resolve(blob);
+        exportCanvas.toBlob((blob) => {
+          if (!blob) reject(new Error('Failed to export PNG'));
+          else resolve(blob);
         }, 'image/png');
       });
     }
-
-    const exportCanvas = document.createElement('canvas');
-    exportCanvas.width = Math.max(1, Math.round(canvas.width * scale));
-    exportCanvas.height = Math.max(1, Math.round(canvas.height * scale));
-    const ctx = exportCanvas.getContext('2d');
-    if (!ctx) {
-      throw new Error('Export canvas context is not available');
-    }
-    ctx.drawImage(canvas, 0, 0, exportCanvas.width, exportCanvas.height);
     return new Promise<Blob>((resolve, reject) => {
-      exportCanvas.toBlob((blob) => {
-        if (!blob) {
-          reject(new Error('Failed to export PNG'));
-          return;
-        }
-        resolve(blob);
+      canvas.toBlob((blob) => {
+        if (!blob) reject(new Error('Failed to export PNG'));
+        else resolve(blob);
       }, 'image/png');
     });
   }
@@ -1693,17 +1087,87 @@ export function createRenderer3D(
     throw new Error('3D 模式暂不支持 SVG 导出，请切换到 2D 模式导出。');
   }
 
+  function updateSize() {
+    const nextSize = readContainerSize();
+    width = nextSize.width;
+    height = nextSize.height;
+    camera.aspect = width / height;
+    camera.updateProjectionMatrix();
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, style.maxPixelRatio));
+    renderer.setSize(width, height);
+    if (hasRenderableSize()) {
+      if (pendingGraphApply) {
+        pendingGraphApply = false;
+        applyFilter({ allowDefer: false });
+      }
+    } else if (pendingGraphApply) {
+      scheduleSizeRetry();
+    }
+  }
+
+  function pickNode(event: PointerEvent | MouseEvent) {
+    const rect = renderer.domElement.getBoundingClientRect();
+    pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+    pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+    raycaster.setFromCamera(pointer, camera);
+    const objects = Array.from(nodeVisuals.values()).map((visual) => visual.core);
+    const hit = raycaster.intersectObjects(objects, false)[0];
+    if (!hit) return null;
+    const id = hit.object.userData.id as string | undefined;
+    return id ? nodeById.get(id) ?? null : null;
+  }
+
+  function handlePointerMove(event: PointerEvent) {
+    const node = pickNode(event);
+    const nextType = node ? 'node' : 'background';
+    const nextId = node?.id ?? null;
+    if (nextType === hoveredType && nextId === hoveredId) return;
+    hoveredType = nextType;
+    hoveredId = nextId;
+    handlers.onHover?.(node
+      ? { type: 'node', id: node.id, x: event.clientX, y: event.clientY }
+      : { type: 'background', x: event.clientX, y: event.clientY });
+    syncScene();
+  }
+
+  function handleClick(event: MouseEvent) {
+    const node = pickNode(event);
+    if (!node) {
+      handlers.onClick?.({ type: 'background', x: event.clientX, y: event.clientY });
+      return;
+    }
+    handlers.onClick?.({ type: 'node', id: node.id, x: event.clientX, y: event.clientY });
+    const now = performance.now();
+    if (lastClickId === node.id && now - lastClickAt < 360) {
+      handlers.onDoubleClick?.({ type: 'node', id: node.id });
+    }
+    lastClickId = node.id;
+    lastClickAt = now;
+  }
+
+  function handleContextMenu(event: MouseEvent) {
+    event.preventDefault();
+    const node = pickNode(event);
+    handlers.onContextMenu?.(node
+      ? { type: 'node', id: node.id, x: event.clientX, y: event.clientY }
+      : { type: 'background', x: event.clientX, y: event.clientY });
+  }
+
+  const resizeObserver = new ResizeObserver(() => {
+    updateSize();
+    if (hasRenderableSize()) scheduleFit(160);
+  });
+  resizeObserver.observe(container);
   updateSize();
-  requestAnimationFrame(() => updateSize());
-  window.setTimeout(() => updateSize(), 120);
+
+  renderer.domElement.addEventListener('pointermove', handlePointerMove);
+  renderer.domElement.addEventListener('click', handleClick);
+  renderer.domElement.addEventListener('contextmenu', handleContextMenu);
+  startRenderLoop();
 
   return {
     updateData,
-    applyLayout: () => {
-      // 3D 布局暂不支持，保持接口一致
-      scheduleAutoFit(160);
-      graph.d3ReheatSimulation?.();
-    },
+    applyLayout,
     setActiveElement,
     setSearchHighlight,
     clearSearchHighlight,
@@ -1726,46 +1190,22 @@ export function createRenderer3D(
     exportPNG,
     exportSVG,
     destroy: () => {
+      destroyed = true;
+      if (fitTimer !== null) window.clearTimeout(fitTimer);
+      if (sizeRetryTimer !== null) window.clearTimeout(sizeRetryTimer);
+      stopRenderLoop();
       resizeObserver.disconnect();
-      container.removeEventListener('pointermove', handlePointerMove);
-      container.removeEventListener('click', handleClick);
-      container.removeEventListener('contextmenu', handleContextMenu);
-      if (doubleClickTimer) {
-        window.clearTimeout(doubleClickTimer);
-        doubleClickTimer = null;
-      }
-      const controls = graph.controls?.();
-      if (controls && controlsChangeHandler) {
-        controls.removeEventListener?.('change', controlsChangeHandler);
-      }
-      graph.pauseAnimation?.();
-      graph._destructor?.();
-      const renderer = graph.renderer?.();
-      if (renderer?.dispose) {
-        renderer.dispose();
-      }
-      if (renderer?.forceContextLoss) {
-        renderer.forceContextLoss();
-      }
-      if (renderer?.domElement?.parentElement) {
-        renderer.domElement.parentElement.removeChild(renderer.domElement);
-      }
+      renderer.domElement.removeEventListener('pointermove', handlePointerMove);
+      renderer.domElement.removeEventListener('click', handleClick);
+      renderer.domElement.removeEventListener('contextmenu', handleContextMenu);
+      nodeVisuals.forEach(disposeNodeVisual);
+      edgeVisuals.forEach(disposeEdgeVisual);
+      nodeVisuals.clear();
+      edgeVisuals.clear();
       sphereGeometry.dispose();
-      textureCache.forEach((texture) => texture.dispose());
-      if (starfield) {
-        starfield.geometry.dispose();
-        const material = starfield.material as PointsMaterial;
-        material.dispose();
-        starfield = null;
-      }
-      if (environmentTexture) {
-        environmentTexture.dispose();
-        environmentTexture = null;
-      }
-      if (pmremGenerator) {
-        pmremGenerator.dispose();
-        pmremGenerator = null;
-      }
+      renderer.dispose();
+      controls.dispose();
+      renderer.forceContextLoss();
       container.innerHTML = '';
     },
   };

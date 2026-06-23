@@ -53,7 +53,7 @@ export function PerformanceWarningDialog({
             </ListItemIcon>
             <ListItemText
               primary="使用 LIMIT 限制结果数量"
-              secondary="例如：MATCH (n) RETURN n LIMIT 100"
+              secondary="优先使用自动发现查询，并为探索型查询设置合理的返回上限"
             />
           </ListItem>
           <ListItem>
@@ -62,7 +62,7 @@ export function PerformanceWarningDialog({
             </ListItemIcon>
             <ListItemText
               primary="添加更具体的过滤条件"
-              secondary="例如：WHERE n.type = 'Crop' AND n.name CONTAINS '水稻'"
+              secondary="结合节点类型、业务字段或关键词逐步缩小结果范围"
             />
           </ListItem>
           <ListItem>

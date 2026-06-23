@@ -1,8 +1,9 @@
-import { lazy, Suspense } from 'react';
+import { lazy, Suspense, useEffect } from 'react';
 import { Box, Tab, Tabs } from '@mui/material';
 import { Article as ArticleIcon, Hub as HubIcon } from '@mui/icons-material';
 import { DocumentPanel } from './DocumentPanel';
 import { useGraphStore } from '../../store/graphStore';
+import type { GraphData } from '../../store/graphStore';
 import type { RendererAPI } from '../../renderers/core/types';
 import { LoadingState } from '../Loading/AppleSpinner';
 
@@ -20,6 +21,47 @@ interface MainWorkspaceProps {
 export function MainWorkspace({ rendererRef, onGroupingUpdate }: MainWorkspaceProps) {
   const activeTab = useGraphStore((state) => state.activeWorkspaceTab);
   const setWorkspaceTab = useGraphStore((state) => state.setWorkspaceTab);
+  const graphData = useGraphStore((state) => state.graphData);
+  const setGraphData = useGraphStore((state) => state.setGraphData);
+  const setSelectedNodeId = useGraphStore((state) => state.setSelectedNodeId);
+
+  useEffect(() => {
+    if (!import.meta.env.DEV || graphData) return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('graph_demo') !== '1') return;
+
+    const nodes: GraphData['nodes'] = [];
+    const edges: GraphData['edges'] = [];
+    const addNode = (id: string, label: string, labels: string[], extra: Record<string, unknown> = {}) => {
+      nodes.push({ id, labels, properties: { name: label, title: label, ...extra } });
+    };
+    const addEdge = (id: string, source: string, target: string, type: string) => {
+      edges.push({ id, source, target, type, properties: { relation: type } });
+    };
+
+    addNode('doc-wheat-rust', '小麦条锈病防治报告', ['Document'], { filename: '5种药剂对小麦条锈病的防效.pdf' });
+    for (let index = 1; index <= 6; index += 1) {
+      addNode(`chunk-${index}`, `试验片段 ${index}`, ['Chunk']);
+      addEdge(`doc-chunk-${index}`, 'doc-wheat-rust', `chunk-${index}`, 'HAS_CHUNK');
+    }
+    for (let index = 1; index <= 30; index += 1) {
+      addNode(`entity-${index}`, `农业实体 ${index}`, ['Entity']);
+      addEdge(`chunk-entity-${index}`, `chunk-${(index % 6) + 1}`, `entity-${index}`, 'MENTIONS');
+    }
+    for (let index = 1; index <= 8; index += 1) {
+      addNode(`fact-${index}`, `防效事实 ${index}`, ['Fact']);
+      addEdge(`fact-source-${index}`, `fact-${index}`, `chunk-${(index % 6) + 1}`, 'SUPPORTED_BY');
+      addEdge(`fact-entity-${index}`, `fact-${index}`, `entity-${((index * 3) % 30) + 1}`, 'ABOUT');
+    }
+
+    setGraphData({
+      nodes,
+      edges,
+      stats: { nodeCount: nodes.length, edgeCount: edges.length, executionTime: 0.032 },
+    });
+    setSelectedNodeId(null);
+    setWorkspaceTab('graph');
+  }, [graphData, setGraphData, setSelectedNodeId, setWorkspaceTab]);
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', height: '100%', minWidth: 0, overflow: 'hidden' }}>
