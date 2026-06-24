@@ -642,9 +642,9 @@ export function createRenderer3D(
     visual.core.material.color.set(color);
     visual.core.material.opacity = faded ? 0.22 : active ? 1 : highlighted ? 0.96 : style.nodeOpacity;
 
-    visual.halo.scale.setScalar(size * (active ? 2.2 : highlighted ? 1.8 : related ? 1.45 : 1.2));
+    visual.halo.scale.setScalar(size * (active ? 2.2 : highlighted ? 1.8 : related ? 1.28 : 1));
     visual.halo.material.color.set(active ? style.edgeHighlightColor : color);
-    visual.halo.material.opacity = active ? 0.2 : highlighted ? 0.15 : related ? 0.07 : 0;
+    visual.halo.material.opacity = active ? 0.2 : highlighted ? 0.15 : related ? 0.035 : 0;
 
     visual.label.text = getNodeDisplayLabel(node);
     visual.label.visible = shouldShowNodeLabel(node);

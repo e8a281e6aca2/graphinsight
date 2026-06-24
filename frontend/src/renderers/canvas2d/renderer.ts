@@ -36,7 +36,7 @@ type FilterState = {
 const NODE_LABEL_ZOOM = 0.55;
 const EDGE_LABEL_ZOOM = 1.05;
 const DEFAULT_EDGE_COLOR = 'rgba(15, 23, 42, 0.28)';
-const DEFAULT_NODE_STROKE = '#0f172a';
+const DEFAULT_NODE_STROKE = 'rgba(15, 23, 42, 0.10)';
 const ACTIVE_COLOR = '#ff4081';
 const HIGHLIGHT_COLOR = '#ffd700';
 const PATH_COLOR = '#ff6b6b';
@@ -783,10 +783,13 @@ export function createRenderer(
               : isActiveRelated
                 ? RELATED_NODE_STROKE
                 : DEFAULT_NODE_STROKE;
-      context.lineWidth = isActiveNode ? 3 : isPathHighlighted ? 2.5 : isSearchHighlighted ? 2 : isActiveRelated ? 2.2 : 1;
-      context.beginPath();
-      context.arc(node.x, node.y, radius, 0, Math.PI * 2);
-      context.stroke();
+      const strokeWidth = isActiveNode ? 3 : isPathHighlighted ? 2.5 : isSearchHighlighted ? 2 : isActiveRelated ? 2.2 : 0.75;
+      if (strokeWidth > 0) {
+        context.lineWidth = strokeWidth;
+        context.beginPath();
+        context.arc(node.x, node.y, radius, 0, Math.PI * 2);
+        context.stroke();
+      }
 
       if (currentTransform.k > NODE_LABEL_ZOOM && node.label) {
         context.save();
