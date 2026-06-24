@@ -41,6 +41,9 @@ const ACTIVE_COLOR = '#ff4081';
 const HIGHLIGHT_COLOR = '#ffd700';
 const PATH_COLOR = '#ff6b6b';
 const FONT_FAMILY = 'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+const RELATED_EDGE_COLOR = 'rgba(15, 23, 42, 0.72)';
+const RELATED_NODE_STROKE = '#334155';
+const FOCUS_FADED_ALPHA = 0.18;
 
 function stableHash(input: string) {
   let hash = 0;
@@ -619,6 +622,8 @@ export function createRenderer(
   }
 
   function drawEdges(context: CanvasRenderingContext2D, currentTransform: ZoomTransform) {
+    const hasFocusContext = Boolean(activeElement);
+
     edges.forEach((edge) => {
       if (!visibleEdgeIds.has(edge.id)) return;
       const { source, target } = getEdgeNodes(edge);
@@ -640,11 +645,16 @@ export function createRenderer(
       const isPathHighlighted = pathHighlightEdgeIds.has(edge.id);
       const isSearchHighlighted = searchHighlightEdgeIds.has(edge.id);
       const isActiveRelated = activeHighlightEdgeIds.has(edge.id);
+      const isFocused = isActiveEdge || isPathHighlighted || isSearchHighlighted || isActiveRelated;
       const baseColor = edge.color || DEFAULT_EDGE_COLOR;
-      const strokeColor = baseColor;
-      const lineWidth = isActiveEdge ? 3 : isPathHighlighted ? 2.5 : isSearchHighlighted ? 2 : isActiveRelated ? 2 : 1.2;
+      const strokeColor = isActiveEdge || isPathHighlighted || isSearchHighlighted
+        ? baseColor
+        : isActiveRelated
+          ? RELATED_EDGE_COLOR
+          : baseColor;
+      const lineWidth = isActiveEdge ? 3 : isPathHighlighted ? 2.5 : isSearchHighlighted ? 2 : isActiveRelated ? 2.2 : 1.2;
 
-      context.globalAlpha = 1;
+      context.globalAlpha = hasFocusContext && !isFocused ? FOCUS_FADED_ALPHA : isActiveRelated ? 1 : 0.86;
       context.strokeStyle = strokeColor;
       context.lineWidth = lineWidth;
       context.beginPath();
@@ -739,6 +749,8 @@ export function createRenderer(
   }
 
   function drawNodes(context: CanvasRenderingContext2D, currentTransform: ZoomTransform) {
+    const hasFocusContext = Boolean(activeElement);
+
     nodes.forEach((node) => {
       if (!visibleNodeIds.has(node.id)) return;
       if (node.x === undefined || node.y === undefined) return;
@@ -747,9 +759,10 @@ export function createRenderer(
       const isPathHighlighted = pathHighlightNodeIds.has(node.id);
       const isSearchHighlighted = searchHighlightNodeIds.has(node.id);
       const isActiveRelated = activeHighlightNodeIds.has(node.id);
+      const isFocused = isActiveNode || isPathHighlighted || isSearchHighlighted || isActiveRelated;
       const radius = node.radius ?? 24;
 
-      context.globalAlpha = 1;
+      context.globalAlpha = hasFocusContext && !isFocused ? FOCUS_FADED_ALPHA : 1;
 
       context.fillStyle = node.color;
       context.beginPath();
@@ -765,12 +778,12 @@ export function createRenderer(
         ? ACTIVE_COLOR
         : isPathHighlighted
           ? PATH_COLOR
-          : isSearchHighlighted
-            ? HIGHLIGHT_COLOR
-            : isActiveRelated
+            : isSearchHighlighted
               ? HIGHLIGHT_COLOR
-              : DEFAULT_NODE_STROKE;
-      context.lineWidth = isActiveNode ? 3 : isPathHighlighted ? 2.5 : isSearchHighlighted ? 2 : isActiveRelated ? 2 : 1;
+              : isActiveRelated
+                ? RELATED_NODE_STROKE
+                : DEFAULT_NODE_STROKE;
+      context.lineWidth = isActiveNode ? 3 : isPathHighlighted ? 2.5 : isSearchHighlighted ? 2 : isActiveRelated ? 2.2 : 1;
       context.beginPath();
       context.arc(node.x, node.y, radius, 0, Math.PI * 2);
       context.stroke();
