@@ -71,6 +71,8 @@ const OVERVIEW_LABEL_MAX = 14;
 const INITIAL_RELAX_ITERATIONS = 90;
 const MAX_REPULSION_NODES = 420;
 const VIEW_FILL_FACTOR = 0.84;
+const LARGE_GRAPH_NODE_THRESHOLD = 180;
+const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
 
 function stableHash(input: string) {
   let hash = 0;
@@ -162,6 +164,16 @@ function typeDepthBias(type: string) {
   if (key === 'entity') return 70;
   if (key === 'group') return -70;
   return 35;
+}
+
+function typeLayerBias(type: string) {
+  const key = type.trim().toLowerCase();
+  if (key === 'document' || key === 'doc') return -1.4;
+  if (key === 'chunk' || key === 'section' || key === 'paragraph') return -0.48;
+  if (key === 'entity') return 0.55;
+  if (key.includes('fact')) return 1.05;
+  if (key === 'group') return -0.92;
+  return 0.16;
 }
 
 function desiredLinkDistance(edge: GraphLink, source?: GraphNode, target?: GraphNode) {
@@ -442,6 +454,51 @@ export function createRenderer3D(
     return Math.max(4, (baseRadius * style.nodeScale * scale) / 3.2);
   }
 
+  function getSpatialTargets(layoutNodes: GraphNode[]) {
+    const groups = new Map<string, GraphNode[]>();
+    layoutNodes.forEach((node) => {
+      const key = nodeTypeKey(node);
+      groups.set(key, [...(groups.get(key) ?? []), node]);
+    });
+
+    const sortedGroups = [...groups.entries()].sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]));
+    const targets = new Map<string, Vector3>();
+    const graphRadius = Math.max(260, Math.sqrt(layoutNodes.length) * style.linkDistance * 0.64);
+    const groupOrbit = Math.max(160, graphRadius * 0.46);
+    const depthScale = Math.max(150, graphRadius * 0.34);
+
+    sortedGroups.forEach(([type, groupNodes], groupIndex) => {
+      const angle = groupIndex * GOLDEN_ANGLE;
+      const layer = typeLayerBias(type);
+      const orbitScale = 0.34 + Math.sqrt((groupIndex + 1) / Math.max(1, sortedGroups.length)) * 0.72;
+      const groupCenter = new Vector3(
+        Math.cos(angle) * groupOrbit * orbitScale,
+        Math.sin(angle) * groupOrbit * 0.64 * orbitScale,
+        layer * depthScale
+      );
+      const sortedNodes = [...groupNodes].sort((a, b) => (b.degree ?? 0) - (a.degree ?? 0) || a.id.localeCompare(b.id));
+      const shellRadius = Math.max(70, Math.min(graphRadius * 0.42, Math.sqrt(sortedNodes.length) * style.linkDistance * 0.5));
+
+      sortedNodes.forEach((node, index) => {
+        const local = fibonacciShell(index, sortedNodes.length, shellRadius, `${type}:${node.id}`);
+        targets.set(node.id, groupCenter.clone().add(local));
+      });
+    });
+
+    return targets;
+  }
+
+  function applySpatialTargets(layoutNodes: GraphNode[], strength = 1) {
+    const targets = getSpatialTargets(layoutNodes);
+    layoutNodes.forEach((node) => {
+      const target = targets.get(node.id);
+      if (!target) return;
+      node.x = (node.x ?? 0) + (target.x - (node.x ?? 0)) * strength;
+      node.y = (node.y ?? 0) + (target.y - (node.y ?? 0)) * strength;
+      node.z = (node.z ?? 0) + (target.z - (node.z ?? 0)) * strength;
+    });
+  }
+
   function normalizeNodes(data: RendererData): GraphNode[] {
     const previous = nodeById;
     const radius = Math.max(180, Math.sqrt(Math.max(1, data.nodes.length)) * style.linkDistance * 0.62);
@@ -472,6 +529,8 @@ export function createRenderer3D(
     if (nodes.length <= 1) return;
     const movableNodes = nodes.filter((node) => visibleNodeIds.has(node.id));
     if (movableNodes.length <= 1) return;
+    const largeGraph = movableNodes.length >= LARGE_GRAPH_NODE_THRESHOLD;
+    const spatialTargets = largeGraph ? getSpatialTargets(movableNodes) : null;
 
     const typeBuckets = new Map<string, GraphNode[]>();
     movableNodes.forEach((node) => {
@@ -481,7 +540,7 @@ export function createRenderer3D(
 
     const typeCenters = new Map<string, Vector3>();
     const sortedTypes = [...typeBuckets.keys()].sort();
-    const typeOrbit = Math.max(150, Math.sqrt(movableNodes.length) * style.linkDistance * 0.28);
+    const typeOrbit = Math.max(150, Math.sqrt(movableNodes.length) * style.linkDistance * (largeGraph ? 0.46 : 0.28));
     sortedTypes.forEach((type, index) => {
       const angle = sortedTypes.length <= 1 ? 0 : (index / sortedTypes.length) * Math.PI * 2;
       typeCenters.set(type, new Vector3(
@@ -504,7 +563,7 @@ export function createRenderer3D(
         const delta = targetPos.clone().sub(sourcePos);
         const distance = Math.max(1, delta.length());
         const desired = desiredLinkDistance(edge, source, target);
-        const correction = (distance - desired) * 0.024 * alpha;
+        const correction = (distance - desired) * (largeGraph ? 0.006 : 0.024) * alpha;
         delta.normalize().multiplyScalar(correction);
         source.x = (source.x ?? 0) + delta.x;
         source.y = (source.y ?? 0) + delta.y;
@@ -514,7 +573,7 @@ export function createRenderer3D(
         target.z = (target.z ?? 0) - delta.z;
       });
 
-      if (movableNodes.length <= MAX_REPULSION_NODES) {
+      if (!largeGraph && movableNodes.length <= MAX_REPULSION_NODES) {
         for (let i = 0; i < movableNodes.length; i += 1) {
           for (let j = i + 1; j < movableNodes.length; j += 1) {
             const a = movableNodes[i];
@@ -536,6 +595,13 @@ export function createRenderer3D(
       }
 
       movableNodes.forEach((node) => {
+        const spatialTarget = spatialTargets?.get(node.id);
+        if (spatialTarget) {
+          node.x = (node.x ?? 0) + (spatialTarget.x - (node.x ?? 0)) * 0.018 * alpha;
+          node.y = (node.y ?? 0) + (spatialTarget.y - (node.y ?? 0)) * 0.018 * alpha;
+          node.z = (node.z ?? 0) + (spatialTarget.z - (node.z ?? 0)) * 0.024 * alpha;
+          return;
+        }
         const center = typeCenters.get(nodeTypeKey(node));
         if (!center) return;
         node.x = (node.x ?? 0) + (center.x - (node.x ?? 0)) * 0.008 * alpha;
@@ -792,6 +858,10 @@ export function createRenderer3D(
     edges = normalizeEdges(data);
     rebuildIndexes();
     applyFilter({ allowDefer: false });
+    const layoutNodes = nodes.filter((node) => visibleNodeIds.has(node.id));
+    if (layoutNodes.length >= LARGE_GRAPH_NODE_THRESHOLD) {
+      applySpatialTargets(layoutNodes, 1);
+    }
     relaxInitialLayout();
     syncScene();
     scheduleFit(80);
@@ -816,7 +886,17 @@ export function createRenderer3D(
     const positions = new Map<string, Vector3>();
     const count = layoutNodes.length;
 
-    if (['random', 'cose', 'fcose', 'cose-compact', 'cose-loose', 'null', 'preset'].includes(layout)) {
+    if (['cose', 'fcose', 'cose-compact', 'cose-loose'].includes(layout)) {
+      const targets = getSpatialTargets(layoutNodes);
+      targets.forEach((position, id) => positions.set(id, position));
+      applyPositions(positions, false);
+      relaxInitialLayout();
+      syncScene();
+      scheduleFit(120);
+      return;
+    }
+
+    if (['random', 'null', 'preset'].includes(layout)) {
       const radius = Math.max(180, Math.sqrt(count) * style.linkDistance * 0.78);
       layoutNodes.forEach((node) => positions.set(node.id, sphericalSeed(`${layout}:${node.id}`, radius)));
       applyPositions(positions, false);
