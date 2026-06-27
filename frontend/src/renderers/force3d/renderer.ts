@@ -68,6 +68,8 @@ const DEFAULT_EDGE_COLOR = 'rgba(100, 116, 139, 0.32)';
 const DEFAULT_RADIUS = 18;
 const SMALL_LABEL_MAX = 34;
 const OVERVIEW_LABEL_MAX = 14;
+const ACTIVE_NEIGHBOR_LABEL_MAX = 18;
+const HOVER_NEIGHBOR_LABEL_MAX = 10;
 const INITIAL_RELAX_ITERATIONS = 90;
 const MAX_REPULSION_NODES = 420;
 const VIEW_FILL_FACTOR = 0.84;
@@ -293,6 +295,9 @@ export function createRenderer3D(
   let pathHighlightEdgeIds = new Set<string>();
   let activeNeighborNodeIds = new Set<string>();
   let activeNeighborEdgeIds = new Set<string>();
+  let hoverNeighborNodeIds = new Set<string>();
+  let hoverNeighborEdgeIds = new Set<string>();
+  let focusLabelNodeIds = new Set<string>();
   let hoveredType: 'node' | 'edge' | 'background' = 'background';
   let hoveredId: string | null = null;
   let filterState: FilterState = {
@@ -388,13 +393,13 @@ export function createRenderer3D(
   }
 
   function isNodeRelated(id: string) {
-    return activeNeighborNodeIds.has(id);
+    return activeNeighborNodeIds.has(id) || hoverNeighborNodeIds.has(id);
   }
 
   function isEdgeHighlighted(id: string) {
     return (
       activeElement?.type === 'edge' && activeElement.id === id
-    ) || isExplicitSearchEdge(id) || pathHighlightEdgeIds.has(id) || activeNeighborEdgeIds.has(id);
+    ) || isExplicitSearchEdge(id) || pathHighlightEdgeIds.has(id) || activeNeighborEdgeIds.has(id) || hoverNeighborEdgeIds.has(id);
   }
 
   function hasFocusContext() {
@@ -439,6 +444,7 @@ export function createRenderer3D(
   function shouldShowNodeLabel(node: GraphNode) {
     const id = node.id;
     if (hoveredType === 'node' && hoveredId === id) return true;
+    if (focusLabelNodeIds.has(id)) return true;
     if (isNodeHighlighted(id) || isExplicitSearchNode(id)) return true;
     if (visibleNodeIds.size <= SMALL_LABEL_MAX) return true;
     if (hasFocusContext()) return isNodeRelated(id) && (node.degree ?? 0) >= 2;
@@ -726,31 +732,96 @@ export function createRenderer3D(
     visual.line.material.color.set(toThreeColor(isEdgeHighlighted(edge.id) ? style.edgeHighlightColor : getEdgeBaseColor(edge)));
     const depthBoost = Math.min(0.16, Math.abs((source.z ?? 0) - (target.z ?? 0)) / 1300);
     visual.line.material.opacity = hasFocusContext()
-      ? activeNeighborEdgeIds.has(edge.id) || isEdgeHighlighted(edge.id) ? 0.78 : 0.14
+      ? activeNeighborEdgeIds.has(edge.id) || hoverNeighborEdgeIds.has(edge.id) || isEdgeHighlighted(edge.id) ? 0.78 : 0.14
       : Math.min(0.76, style.linkOpacity * 1.28 + depthBoost);
   }
 
   function updateActiveNeighborhood() {
     activeNeighborNodeIds = new Set();
     activeNeighborEdgeIds = new Set();
-    if (!activeElement) return;
+    if (!activeElement) {
+      rebuildFocusLabels();
+      return;
+    }
 
     if (activeElement.type === 'node') {
       const node = nodeById.get(activeElement.id);
-      if (!node) return;
+      if (!node) {
+        rebuildFocusLabels();
+        return;
+      }
       activeNeighborNodeIds.add(node.id);
       node.neighbors.forEach((id) => activeNeighborNodeIds.add(id));
       edges.forEach((edge) => {
         if (edge.sourceId === node.id || edge.targetId === node.id) activeNeighborEdgeIds.add(edge.id);
       });
+      rebuildFocusLabels();
       return;
     }
 
     const edge = edgeById.get(activeElement.id);
-    if (!edge) return;
+    if (!edge) {
+      rebuildFocusLabels();
+      return;
+    }
     activeNeighborEdgeIds.add(edge.id);
     activeNeighborNodeIds.add(edge.sourceId);
     activeNeighborNodeIds.add(edge.targetId);
+    rebuildFocusLabels();
+  }
+
+  function updateHoverNeighborhood() {
+    hoverNeighborNodeIds = new Set();
+    hoverNeighborEdgeIds = new Set();
+    if (hoveredType !== 'node' || !hoveredId) {
+      rebuildFocusLabels();
+      return;
+    }
+
+    const node = nodeById.get(hoveredId);
+    if (!node) {
+      rebuildFocusLabels();
+      return;
+    }
+
+    hoverNeighborNodeIds.add(node.id);
+    node.neighbors.forEach((id) => hoverNeighborNodeIds.add(id));
+    edges.forEach((edge) => {
+      if (edge.sourceId === node.id || edge.targetId === node.id) hoverNeighborEdgeIds.add(edge.id);
+    });
+    rebuildFocusLabels();
+  }
+
+  function addImportantNeighborLabels(
+    labelIds: Set<string>,
+    centerId: string | null,
+    neighborIds: Set<string>,
+    maxNeighbors: number
+  ) {
+    if (centerId) labelIds.add(centerId);
+    [...neighborIds]
+      .filter((id) => id !== centerId && visibleNodeIds.has(id))
+      .map((id) => nodeById.get(id))
+      .filter((node): node is GraphNode => Boolean(node))
+      .sort((a, b) => nodeRank(b) - nodeRank(a) || a.id.localeCompare(b.id))
+      .slice(0, maxNeighbors)
+      .forEach((node) => labelIds.add(node.id));
+  }
+
+  function rebuildFocusLabels() {
+    const next = new Set<string>();
+
+    if (activeElement?.type === 'node') {
+      addImportantNeighborLabels(next, activeElement.id, activeNeighborNodeIds, ACTIVE_NEIGHBOR_LABEL_MAX);
+    } else if (activeElement?.type === 'edge') {
+      activeNeighborNodeIds.forEach((id) => next.add(id));
+    }
+
+    if (hoveredType === 'node' && hoveredId) {
+      addImportantNeighborLabels(next, hoveredId, hoverNeighborNodeIds, HOVER_NEIGHBOR_LABEL_MAX);
+    }
+
+    focusLabelNodeIds = next;
   }
 
   function syncScene() {
@@ -829,6 +900,7 @@ export function createRenderer3D(
     updateGlobalSearchHighlight();
     rebuildOverviewLabels();
     updateActiveNeighborhood();
+    updateHoverNeighborhood();
     if (control.allowDefer !== false && !hasRenderableSize()) {
       pendingGraphApply = true;
       scheduleSizeRetry();
@@ -1204,6 +1276,7 @@ export function createRenderer3D(
     if (nextType === hoveredType && nextId === hoveredId) return;
     hoveredType = nextType;
     hoveredId = nextId;
+    updateHoverNeighborhood();
     handlers.onHover?.(node
       ? { type: 'node', id: node.id, x: event.clientX, y: event.clientY }
       : { type: 'background', x: event.clientX, y: event.clientY });
