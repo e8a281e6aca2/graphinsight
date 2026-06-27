@@ -769,6 +769,7 @@ export function GraphCanvas({ rendererRef: externalRendererRef, onGroupingUpdate
   return (
     <Box
       ref={containerRef}
+      data-testid="graph-canvas-root"
       sx={{
         position: 'relative',
         width: '100%',
@@ -786,6 +787,7 @@ export function GraphCanvas({ rendererRef: externalRendererRef, onGroupingUpdate
       />
       <Box
         ref={threeContainerRef}
+        data-testid="graph-canvas-3d"
         sx={{
           position: 'absolute',
           inset: 0,

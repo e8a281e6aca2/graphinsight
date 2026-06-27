@@ -173,6 +173,7 @@ export function AppLayout({ queryPanel, graphCanvas, detailPanel, onExportClick 
 
         {/* 右侧面板 - 详情面板 */}
         <Box
+          data-testid="workspace-right-panel"
           sx={{
             width: isRightCollapsed ? 0 : rightPanelWidth,
             minWidth: isRightCollapsed ? 0 : minPanelWidth,
