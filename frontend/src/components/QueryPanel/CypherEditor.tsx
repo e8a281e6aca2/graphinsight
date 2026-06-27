@@ -1,5 +1,5 @@
 import { useState, useRef, forwardRef, useImperativeHandle, useEffect } from 'react';
-import { Box, Alert, Paper, Chip, Typography } from '@mui/material';
+import { Box, Alert, Paper, Chip, Typography, TextField } from '@mui/material';
 import { PlayArrow as ExecuteIcon } from '@mui/icons-material';
 import Editor from '@monaco-editor/react';
 import type * as Monaco from 'monaco-editor';
@@ -11,11 +11,33 @@ import { getErrorMessage } from '../../utils/errorMessage';
 import { AppleSpinner } from '../Loading/AppleSpinner';
 import LoadingButton from '../Loading/LoadingButton';
 
-const DEFAULT_QUERY = `// 示例查询：查看当前图谱中的论文事实视图
-MATCH p=(a)-[:FACT_SOURCE|FACT_TARGET]-(f)-[:FACT_SOURCE|FACT_TARGET]-(b)
-WHERE f.view_scope = 'paper_wheat_four_type_fact_view'
-RETURN p
-LIMIT 200`;
+const FALLBACK_QUERY = `// 自动发现：当前图数据库暂未返回结构，先查看节点
+MATCH (n)
+RETURN n
+LIMIT 80`;
+
+const SCHEMA_CACHE_TTL_MS = 5000;
+
+let schemaCache: { value: GraphSchemaSummary; fetchedAt: number } | null = null;
+let schemaPromise: Promise<GraphSchemaSummary> | null = null;
+
+function loadGraphSchemaOnce() {
+  const now = Date.now();
+  if (schemaCache && now - schemaCache.fetchedAt < SCHEMA_CACHE_TTL_MS) {
+    return Promise.resolve(schemaCache.value);
+  }
+  if (!schemaPromise) {
+    schemaPromise = getGraphSchema()
+      .then((value) => {
+        schemaCache = { value, fetchedAt: Date.now() };
+        return value;
+      })
+      .finally(() => {
+        schemaPromise = null;
+      });
+  }
+  return schemaPromise;
+}
 
 export interface CypherEditorRef {
   setValue: (value: string) => void;
@@ -23,11 +45,13 @@ export interface CypherEditorRef {
 }
 
 export const CypherEditor = forwardRef<CypherEditorRef>((_props, ref) => {
-  const [query, setQuery] = useState(DEFAULT_QUERY);
+  const [query, setQuery] = useState('');
   const [schema, setSchema] = useState<GraphSchemaSummary | null>(null);
-  const [schemaLoading, setSchemaLoading] = useState(false);
+  const [schemaLoading, setSchemaLoading] = useState(true);
   const [schemaError, setSchemaError] = useState<string | null>(null);
   const userEditedRef = useRef(false);
+  const schemaQueryAppliedRef = useRef(false);
+  const programmaticQueryRef = useRef<string | null>(null);
   const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
 
   const isDarkMode = useGraphStore((state) => state.isDarkMode);
@@ -37,6 +61,21 @@ export const CypherEditor = forwardRef<CypherEditorRef>((_props, ref) => {
     await execute(query);
   };
 
+  const applyQueryValue = (value: string, options: { markEdited?: boolean } = {}) => {
+    const markEdited = options.markEdited ?? true;
+    if (markEdited) {
+      userEditedRef.current = true;
+      programmaticQueryRef.current = null;
+    } else {
+      programmaticQueryRef.current = value;
+    }
+    setQuery(value);
+    const editor = editorRef.current;
+    if (editor && editor.getValue() !== value) {
+      editor.setValue(value);
+    }
+  };
+
   useEffect(() => {
     let cancelled = false;
 
@@ -44,18 +83,23 @@ export const CypherEditor = forwardRef<CypherEditorRef>((_props, ref) => {
       setSchemaLoading(true);
       setSchemaError(null);
       try {
-        const discovered = await getGraphSchema();
+        const discovered = await loadGraphSchemaOnce();
         if (cancelled) {
           return;
         }
         setSchema(discovered);
-        if (!userEditedRef.current && discovered.sampleQuery) {
-          setQuery(discovered.sampleQuery);
-          editorRef.current?.setValue(discovered.sampleQuery);
+        const sampleQuery = discovered.sampleQuery?.trim() || FALLBACK_QUERY;
+        if (!userEditedRef.current && !schemaQueryAppliedRef.current) {
+          schemaQueryAppliedRef.current = true;
+          applyQueryValue(sampleQuery, { markEdited: false });
         }
       } catch (err: unknown) {
         if (!cancelled) {
           setSchemaError(formatGraphError(err, '图数据库结构探测失败'));
+          if (!userEditedRef.current && !schemaQueryAppliedRef.current) {
+            schemaQueryAppliedRef.current = true;
+            applyQueryValue(FALLBACK_QUERY, { markEdited: false });
+          }
         }
       } finally {
         if (!cancelled) {
@@ -74,11 +118,7 @@ export const CypherEditor = forwardRef<CypherEditorRef>((_props, ref) => {
   // 暴露方法给父组件
   useImperativeHandle(ref, () => ({
     setValue: (value: string) => {
-      userEditedRef.current = true;
-      setQuery(value);
-      if (editorRef.current) {
-        editorRef.current.setValue(value);
-      }
+      applyQueryValue(value, { markEdited: true });
     },
     executeQuery: () => {
       handleExecute();
@@ -96,6 +136,46 @@ export const CypherEditor = forwardRef<CypherEditorRef>((_props, ref) => {
       }
     );
   };
+
+  const handleFallbackChange = (value: string) => {
+    applyQueryValue(value, { markEdited: true });
+  };
+
+  const editorFallback = (
+    <TextField
+      value={query}
+      onChange={(event) => handleFallbackChange(event.target.value)}
+      onKeyDown={(event) => {
+        if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
+          event.preventDefault();
+          void handleExecute();
+        }
+      }}
+      multiline
+      fullWidth
+      variant="standard"
+      placeholder="输入 Cypher 查询..."
+      InputProps={{
+        disableUnderline: true,
+        sx: {
+          height: '100%',
+          alignItems: 'flex-start',
+          fontFamily: '"JetBrains Mono", "SFMono-Regular", Consolas, monospace',
+          fontSize: 13,
+          lineHeight: 1.5,
+          p: 1,
+        },
+      }}
+      sx={{
+        height: '100%',
+        '& .MuiInputBase-root': { height: '100%' },
+        '& textarea': {
+          height: '100% !important',
+          overflow: 'auto !important',
+        },
+      }}
+    />
+  );
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
@@ -116,9 +196,16 @@ export const CypherEditor = forwardRef<CypherEditorRef>((_props, ref) => {
           height="180px"
           defaultLanguage="sql" // 使用 SQL 作为 Cypher 的基础语法高亮
           value={query}
+          loading={editorFallback}
           onChange={(value) => {
+            const nextValue = value || '';
+            if (programmaticQueryRef.current === nextValue) {
+              programmaticQueryRef.current = null;
+              setQuery(nextValue);
+              return;
+            }
             userEditedRef.current = true;
-            setQuery(value || '');
+            setQuery(nextValue);
           }}
           onMount={handleEditorDidMount}
           theme={isDarkMode ? 'vs-dark' : 'light'}
@@ -145,7 +232,7 @@ export const CypherEditor = forwardRef<CypherEditorRef>((_props, ref) => {
         startIcon={<ExecuteIcon />}
         loading={isExecuting}
         onClick={handleExecute}
-        disabled={isExecuting}
+        disabled={isExecuting || !query.trim()}
         fullWidth
         label="执行查询 (Ctrl+Enter)"
         loadingLabel="执行中..."

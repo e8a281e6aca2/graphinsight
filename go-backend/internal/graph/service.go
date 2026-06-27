@@ -1034,16 +1034,6 @@ LIMIT 1
 }
 
 func buildSampleQuery(labels []GraphLabelSummary, patterns []GraphPatternSummary) string {
-	for _, item := range labels {
-		if strings.EqualFold(strings.TrimSpace(item.Label), "CausalFactView") ||
-			strings.EqualFold(strings.TrimSpace(item.Label), "TemporalFactView") {
-			return `// 当前图谱的论文事实视图查询
-MATCH p=(a)-[:FACT_SOURCE|FACT_TARGET]-(f)-[:FACT_SOURCE|FACT_TARGET]-(b)
-WHERE f.view_scope = 'paper_wheat_four_type_fact_view'
-RETURN p
-LIMIT 200`
-		}
-	}
 	if len(patterns) > 0 {
 		pattern := patterns[0]
 		source := firstNonEmpty(pattern.SourceLabels)
