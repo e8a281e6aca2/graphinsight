@@ -70,6 +70,8 @@ const SMALL_LABEL_MAX = 34;
 const OVERVIEW_LABEL_MAX = 14;
 const ACTIVE_NEIGHBOR_LABEL_MAX = 18;
 const HOVER_NEIGHBOR_LABEL_MAX = 10;
+const LABEL_ZOOM_MEDIUM = 1.35;
+const LABEL_ZOOM_FULL = 2.15;
 const INITIAL_RELAX_ITERATIONS = 90;
 const MAX_REPULSION_NODES = 420;
 const VIEW_FILL_FACTOR = 0.84;
@@ -448,6 +450,11 @@ export function createRenderer3D(
     if (isNodeHighlighted(id) || isExplicitSearchNode(id)) return true;
     if (visibleNodeIds.size <= SMALL_LABEL_MAX) return true;
     if (hasFocusContext()) return isNodeRelated(id) && (node.degree ?? 0) >= 2;
+    const zoom = getTransform().k;
+    if (zoom >= LABEL_ZOOM_FULL) return true;
+    if (zoom >= LABEL_ZOOM_MEDIUM) {
+      return overviewLabelNodeIds.has(id) || nodeRank(node) >= 1800;
+    }
     return overviewLabelNodeIds.has(id);
   }
 
@@ -1306,6 +1313,10 @@ export function createRenderer3D(
       : { type: 'background', x: event.clientX, y: event.clientY });
   }
 
+  function handleControlsChange() {
+    syncScene();
+  }
+
   const resizeObserver = new ResizeObserver(() => {
     updateSize();
     if (hasRenderableSize()) scheduleFit(160);
@@ -1316,6 +1327,7 @@ export function createRenderer3D(
   renderer.domElement.addEventListener('pointermove', handlePointerMove);
   renderer.domElement.addEventListener('click', handleClick);
   renderer.domElement.addEventListener('contextmenu', handleContextMenu);
+  controls.addEventListener('change', handleControlsChange);
   startRenderLoop();
 
   return {
@@ -1351,6 +1363,7 @@ export function createRenderer3D(
       renderer.domElement.removeEventListener('pointermove', handlePointerMove);
       renderer.domElement.removeEventListener('click', handleClick);
       renderer.domElement.removeEventListener('contextmenu', handleContextMenu);
+      controls.removeEventListener('change', handleControlsChange);
       nodeVisuals.forEach(disposeNodeVisual);
       edgeVisuals.forEach(disposeEdgeVisual);
       nodeVisuals.clear();
