@@ -30,5 +30,10 @@ test.describe('Workspace Layout', () => {
     await expect(page.getByRole('button', { name: '切换到 2D' })).toBeVisible();
     await expect(page.getByTestId('graph-canvas-3d')).toBeVisible();
     await expect(rightPanel).toBeVisible();
+
+    await page.getByRole('button', { name: '切换到 2D' }).click();
+    await expect(page.getByRole('button', { name: '切换到 3D' })).toBeVisible();
+    await expect(page.getByTestId('graph-canvas-root')).toBeVisible();
+    await expect(rightPanel).toBeVisible();
   });
 });

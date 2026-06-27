@@ -13,6 +13,7 @@ GraphInsight 的 3D 图谱渲染器已从旧的 `3d-force-graph` 包装层改为
 5. 节点颜色继续使用后端/adapter 传入的 `node.color`；3D 边颜色使用 3D 预设统一低噪声色，避免关系线抢占视觉。
 6. 3D 渲染器必须等容器具备真实尺寸和有效图谱数据后才初始化，避免隐藏容器下创建 WebGL 场景。
 7. 查询结果不再自动设置全量搜索高亮；全量高亮在 3D 中只作为视图范围信号，不触发所有节点和边标签展开。
+8. 节点信息采用分层显示：默认只展示关键节点；hover 显示当前节点和最多 10 个重要邻居；click 显示当前节点和最多 18 个重要邻居，并由右侧详情面板承载完整属性。
 
 ## 设计取舍
 
@@ -37,6 +38,7 @@ GraphInsight 的 3D 图谱渲染器已从旧的 `3d-force-graph` 包装层改为
 - Playwright 运行时验证：直接挂载 `createRenderer3D`，确认 58 节点 / 66 关系、canvas 尺寸正确、WebGL 渲染成功。
 - 真实工作台验证：`/workspace?graph_demo=1` 注入开发态图谱数据，确认 45 节点 / 52 关系、2D canvas 隐藏、3D WebGL canvas 可见。
 - 回归验证：没有 `Cannot read properties of undefined (reading 'tick')`、没有 `THREE.Color` rgba 警告。
+- 工作区 smoke：`npm run e2e:workspace` 覆盖 `/workspace?graph_demo=1`、右侧面板、2D/3D 切换和 3D 容器可见性。
 
 ## 后续边界
 

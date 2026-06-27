@@ -12,6 +12,7 @@
     "preview": "vite preview",
     "e2e": "playwright test",
     "e2e:business": "playwright test business-docqa-flow.spec.ts",
+    "e2e:workspace": "playwright test workspace-layout.spec.ts",
     "e2e:headed": "playwright test --headed",
     "e2e:install": "playwright install chromium"
   },
