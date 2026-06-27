@@ -26,7 +26,7 @@ import { triggerGraphBuild } from '../../services/graphBuild';
 import { reportClientLog } from '../../services/clientLog';
 import { useGraphStore } from '../../store/graphStore';
 import { askDocDeepResearch, askDocQa, type DocQaConversationTurn, type ReasoningProfile } from '../../services/docQa';
-import { executeQuery } from '../../services/graphService';
+import { loadDocumentOverviewGraph, loadFocusedDocumentGraph } from '../../services/documentGraphSync';
 import { uploadDocuments } from '../../services/documents';
 import { getErrorMessage } from '../../utils/errorMessage';
 import LoadingButton from '../Loading/LoadingButton';
@@ -109,48 +109,6 @@ const QUERY_STOPWORDS = new Set([
   '资料',
   '知识库',
 ]);
-
-const DOC_ENTITY_GRAPH_QUERY = `MATCH (e1:Entity)-[r]->(e2:Entity)
-WHERE r.source = 'document_ingest'
-RETURN e1 AS n, r, e2 AS m
-LIMIT 600`;
-
-const DOC_FALLBACK_GRAPH_QUERY = `MATCH (d:Document {source: 'document_ingest'})-[h:HAS_CHUNK]->(c:Chunk)
-OPTIONAL MATCH (c)-[m:MENTIONS]->(e:Entity)
-RETURN d, h, c, m, e
-LIMIT 600`;
-
-const DOC_CITATION_FOCUS_QUERY = `MATCH (d:Document)-[h:HAS_CHUNK]->(c:Chunk)
-WHERE d.source = 'document_ingest'
-  AND c.chunk_id IN $chunkIds
-MATCH (c)-[m:MENTIONS]->(e:Entity)
-WHERE size($keywords) = 0
-   OR toLower(e.name) IN $entityNames
-   OR any(k IN $keywords WHERE toLower(e.name) CONTAINS k OR k CONTAINS toLower(e.name))
-WITH DISTINCT d, h, c, m, e
-OPTIONAL MATCH (c)-[:MENTIONS]->(ePeer:Entity)
-WHERE ePeer <> e
-  AND (
-    size($keywords) = 0
-    OR toLower(ePeer.name) IN $entityNames
-    OR any(k IN $keywords WHERE toLower(ePeer.name) CONTAINS k OR k CONTAINS toLower(ePeer.name))
-  )
-OPTIONAL MATCH (e)-[r]-(ePeer)
-WHERE r.source = 'document_ingest'
-RETURN d, h, c, m, e, r, ePeer
-LIMIT 240`;
-
-const DOC_ENTITY_FOCUS_QUERY = `MATCH (e:Entity)
-WHERE toLower(e.name) IN $entityNames
-   OR (
-     size($keywords) > 0
-     AND any(k IN $keywords WHERE toLower(e.name) CONTAINS k OR k CONTAINS toLower(e.name))
-   )
-OPTIONAL MATCH (c:Chunk)-[m:MENTIONS]->(e)
-OPTIONAL MATCH (d:Document)-[h:HAS_CHUNK]->(c)
-WHERE d.source = 'document_ingest'
-RETURN d, h, c, m, e
-LIMIT 180`;
 
 export function DocChatPanel() {
   const setSelectedCitation = useGraphStore((state) => state.setSelectedCitation);
@@ -419,17 +377,12 @@ export function DocChatPanel() {
 
   const runDocGraphQuery = useCallback(async () => {
     try {
-      let result = await executeQuery(DOC_ENTITY_GRAPH_QUERY);
-      let queryUsed = DOC_ENTITY_GRAPH_QUERY;
-      if (!result?.edges?.length) {
-        result = await executeQuery(DOC_FALLBACK_GRAPH_QUERY);
-        queryUsed = DOC_FALLBACK_GRAPH_QUERY;
+      const { graphData, query } = await loadDocumentOverviewGraph();
+      setGraphData(graphData);
+      if (graphData.stats) {
+        setLastQueryStats(graphData.stats);
       }
-      setGraphData(result);
-      if (result.stats) {
-        setLastQueryStats(result.stats);
-      }
-      addQueryToHistory(queryUsed, result.nodes.length + result.edges.length);
+      addQueryToHistory(query, graphData.nodes.length + graphData.edges.length);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       reportClientLog({
@@ -474,34 +427,17 @@ export function DocChatPanel() {
       }
       setHighlightAll(false);
 
-      let result = null as Awaited<ReturnType<typeof executeQuery>> | null;
-      let queryUsed = '';
-
-      if (chunkIds.length > 0) {
-        result = await executeQuery(DOC_CITATION_FOCUS_QUERY, { chunkIds, entityNames, keywords });
-        queryUsed = DOC_CITATION_FOCUS_QUERY;
-      }
-
-      if ((!result || (!result.nodes.length && !result.edges.length)) && entityNames.length > 0) {
-        result = await executeQuery(DOC_ENTITY_FOCUS_QUERY, { entityNames, keywords });
-        queryUsed = DOC_ENTITY_FOCUS_QUERY;
-      }
-
-      if (!result || (!result.nodes.length && !result.edges.length)) {
-        result = await executeQuery(DOC_ENTITY_GRAPH_QUERY);
-        queryUsed = DOC_ENTITY_GRAPH_QUERY;
-      }
-
-      if (!result.nodes.length && !result.edges.length) {
-        result = await executeQuery(DOC_FALLBACK_GRAPH_QUERY);
-        queryUsed = DOC_FALLBACK_GRAPH_QUERY;
-      }
+      const { graphData: result, query } = await loadFocusedDocumentGraph({
+        chunkIds,
+        entityNames,
+        keywords,
+      });
 
       setGraphData(result);
       if (result.stats) {
         setLastQueryStats(result.stats);
       }
-      addQueryToHistory(queryUsed, result.nodes.length + result.edges.length);
+      addQueryToHistory(query, result.nodes.length + result.edges.length);
 
       if (focusCitations.length > 0) {
         applyCitationSelection(focusCitations[0], true, keywords);
