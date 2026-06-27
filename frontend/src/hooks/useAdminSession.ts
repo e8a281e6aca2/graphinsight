@@ -5,7 +5,9 @@ import { getAdminToken, subscribeAdminSessionChange } from '../utils/adminAuth';
 type AdminSessionState = 'checking' | 'authenticated' | 'anonymous';
 
 export function useAdminSession() {
-  const [status, setStatus] = useState<AdminSessionState>('checking');
+  const [status, setStatus] = useState<AdminSessionState>(() =>
+    getAdminToken() ? 'checking' : 'anonymous'
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -30,15 +32,6 @@ export function useAdminSession() {
       unsubscribe();
     };
   }, []);
-
-  useEffect(() => {
-    if (status !== 'checking') {
-      return;
-    }
-    if (!getAdminToken()) {
-      setStatus('anonymous');
-    }
-  }, [status]);
 
   return {
     status,

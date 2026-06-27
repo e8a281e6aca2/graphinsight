@@ -349,7 +349,7 @@ export const authApi = {
     try {
       await apiClient.post('/api/v1/admin/auth/logout');
       clearAdminSession();
-    } catch (error) {
+    } catch {
       // 即使失败也清除本地 token
       clearAdminSession();
     }

@@ -30,8 +30,9 @@ export function useCypher() {
       // 更新图数据
       setGraphData(result);
       console.log('💾 useCypher - Graph data updated in store');
-      // 查询面板：全量高亮，避免只亮少量节点
-      setHighlightAll(true);
+      // 查询结果本身就是当前图谱，不应再作为全量搜索命中高亮。
+      // 3D 模式下全量高亮会打开所有节点和边标签，导致画面不可读。
+      setHighlightAll(false);
       setSelectedCitation(null);
 
       // 更新统计信息
