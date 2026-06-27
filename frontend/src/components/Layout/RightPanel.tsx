@@ -87,6 +87,11 @@ export const RightPanel: React.FC<RightPanelProps> = ({ rendererRef, onLayoutCha
               fontSize: '0.75rem',
               fontWeight: 500,
               minWidth: 0,
+              px: 0.75,
+              whiteSpace: 'nowrap',
+            },
+            '& .MuiTab-iconWrapper': {
+              mr: 0.5,
             },
           }}
         >

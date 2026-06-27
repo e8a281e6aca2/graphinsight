@@ -186,7 +186,15 @@ export function AppLayout({ queryPanel, graphCanvas, detailPanel, onExportClick 
             borderLeft: 1,
             borderColor: 'divider',
             '@media (max-width: 1280px)': {
-              display: 'none',
+              width: isRightCollapsed ? 0 : 340,
+              minWidth: isRightCollapsed ? 0 : 340,
+              maxWidth: isRightCollapsed ? 0 : 380,
+              display: 'flex',
+            },
+            '@media (max-width: 1080px)': {
+              width: isRightCollapsed ? 0 : 320,
+              minWidth: isRightCollapsed ? 0 : 320,
+              maxWidth: isRightCollapsed ? 0 : 340,
             },
           }}
         >
